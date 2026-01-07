@@ -1,0 +1,193 @@
+"""Pydantic schemas for Project and related models."""
+from datetime import datetime
+from typing import Optional, List
+from uuid import UUID
+from pydantic import BaseModel, Field
+
+
+# --- Project Schemas ---
+class ProjectBase(BaseModel):
+    """Base project schema."""
+    title: str
+    region: Optional[str] = None
+    company: Optional[str] = None
+
+
+class ProjectCreate(ProjectBase):
+    """Project creation schema."""
+    pass
+
+
+class ProjectUpdate(BaseModel):
+    """Project update schema."""
+    title: Optional[str] = None
+    region: Optional[str] = None
+    company: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ProjectResponse(ProjectBase):
+    """Project response schema."""
+    id: UUID
+    status: str
+    progress: int
+    owner_id: Optional[UUID] = None
+    organization_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime
+    image_count: int = 0
+    
+    class Config:
+        from_attributes = True
+
+
+class ProjectListResponse(BaseModel):
+    """Paginated project list response."""
+    items: List[ProjectResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+# --- Image Schemas ---
+class ImageBase(BaseModel):
+    """Base image schema."""
+    filename: str
+
+
+class ImageResponse(ImageBase):
+    """Image response schema."""
+    id: UUID
+    project_id: UUID
+    original_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    captured_at: Optional[datetime] = None
+    resolution: Optional[str] = None
+    file_size: Optional[int] = None
+    has_error: bool = False
+    upload_status: str = "pending"
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ImageUploadResponse(BaseModel):
+    """Response after initiating image upload."""
+    image_id: UUID
+    upload_url: str  # tus upload URL
+    upload_id: str
+
+
+# --- EO Schemas ---
+class EOData(BaseModel):
+    """Single EO data point."""
+    image_id: str  # Image filename or ID
+    x: float
+    y: float
+    z: float
+    omega: float = 0.0
+    phi: float = 0.0
+    kappa: float = 0.0
+
+
+class EOConfig(BaseModel):
+    """EO file parsing configuration."""
+    delimiter: str = ","
+    has_header: bool = True
+    crs: str = "EPSG:4326"
+    columns: dict = Field(
+        default={"id": 0, "x": 1, "y": 2, "z": 3, "omega": 4, "phi": 5, "kappa": 6}
+    )
+
+
+class EOUploadResponse(BaseModel):
+    """EO upload response."""
+    parsed_count: int
+    matched_count: int
+    errors: List[str] = []
+
+
+# --- Camera Model Schemas ---
+class CameraModelBase(BaseModel):
+    """Base camera model schema."""
+    name: str
+    focal_length: Optional[float] = None
+    sensor_width: Optional[float] = None
+    sensor_height: Optional[float] = None
+    pixel_size: Optional[float] = None
+
+
+class CameraModelCreate(CameraModelBase):
+    """Camera model creation schema."""
+    is_custom: bool = True
+
+
+class CameraModelResponse(CameraModelBase):
+    """Camera model response schema."""
+    id: UUID
+    is_custom: bool
+    
+    class Config:
+        from_attributes = True
+
+
+# --- Processing Job Schemas ---
+class ProcessingOptions(BaseModel):
+    """Processing options schema."""
+    engine: str = "odm"  # odm, external
+    gsd: float = 5.0  # cm/pixel
+    output_crs: str = "EPSG:5186"
+    output_format: str = "GeoTiff"
+
+
+class ProcessingJobResponse(BaseModel):
+    """Processing job response schema."""
+    id: UUID
+    project_id: UUID
+    engine: str
+    gsd: float
+    output_crs: str
+    output_format: str
+    status: str
+    progress: int
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    result_path: Optional[str] = None
+    result_size: Optional[int] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class ProcessingStatusUpdate(BaseModel):
+    """WebSocket status update schema."""
+    job_id: UUID
+    status: str
+    progress: int
+    message: Optional[str] = None
+
+
+# --- QC Schemas ---
+class QCResultBase(BaseModel):
+    """Base QC result schema."""
+    issues: List[str] = []
+    status: str = "pending"
+    comment: Optional[str] = None
+
+
+class QCResultUpdate(QCResultBase):
+    """QC result update schema."""
+    pass
+
+
+class QCResultResponse(QCResultBase):
+    """QC result response schema."""
+    id: UUID
+    image_id: UUID
+    checked_by: Optional[UUID] = None
+    checked_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

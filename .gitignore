@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Build
+*.egg
+*.whl
+
+# Data (large files)
+data/
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+!src/**/*.png
+!src/**/*.jpg
+
+# Docker volumes (local)
+pgdata/
+redis_data/
+minio_data/
