@@ -155,9 +155,8 @@ export default function LoginPage() {
                     </div>
                 </div>
 
-                {/* Demo credentials */}
                 <div className="mt-4 text-center text-sm text-slate-400">
-                    <p>테스트 계정: demo@example.com / password123</p>
+                    <p>테스트 계정: test@example.com / password123</p>
                 </div>
             </div>
         </div>

@@ -1,20 +1,25 @@
 """Project API endpoints."""
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, Image
+from app.models.project import Project, Image, ExteriorOrientation
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
     ProjectResponse,
     ProjectListResponse,
+    EOConfig,
+    EOUploadResponse,
 )
+import re
 from app.auth.jwt import get_current_user, PermissionChecker
+from app.services.eo_parser import EOParserService
+from pyproj import Transformer
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -208,3 +213,174 @@ async def delete_project(
     
     await db.delete(project)
     # Note: Related images, jobs, etc. will be deleted via CASCADE
+
+
+@router.post("/{project_id}/eo", response_model=EOUploadResponse)
+async def upload_eo_data(
+    project_id: UUID,
+    file: UploadFile = File(...),
+    config: str = Query("{}"),  # JSON string of EOConfig
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload and parse EO data file for a project."""
+    # Check permission
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+    
+    # Parse config
+    import json
+    try:
+        eo_config_data = json.loads(config)
+        eo_config = EOConfig(**eo_config_data)
+    except Exception:
+        eo_config = EOConfig()
+        
+    # Read file content
+    content = (await file.read()).decode("utf-8")
+    
+    # Parse EO data
+    delimiter = eo_config.delimiter
+    if delimiter == "space":
+        delimiter = " "
+    elif delimiter == "tab":
+        delimiter = "\t"
+        
+    print(f"EO Upload: Starting parse with delimiter='{delimiter}', has_header={eo_config.has_header}")  # DEBUG
+    print(f"EO Upload: Content first 200 chars: {content[:200]}")  # DEBUG
+    try:
+        parsed_rows = EOParserService.parse_eo_file(
+            content=content,
+            delimiter=delimiter,
+            has_header=eo_config.has_header,
+            columns=eo_config.columns
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to parse EO file: {str(e)}",
+        )
+    
+    if not parsed_rows:
+        return EOUploadResponse(parsed_count=0, matched_count=0, errors=["No valid data found in file"])
+    
+    # Get all images for this project to match by filename
+    result = await db.execute(select(Image).where(Image.project_id == project_id))
+    images = result.scalars().all()
+    
+    print(f"EO Upload: Found {len(images)} images for project {project_id}")  # DEBUG
+    
+    # improved matching logic
+    import os
+    image_map = {img.filename: img for img in images}
+    # map stem (lowercase) to image for loose matching
+    # e.g. "img_001" -> Image(filename="IMG_001.JPG")
+    image_stem_map = {}
+    for img in images:
+        stem = os.path.splitext(img.filename)[0].lower()
+        if stem not in image_stem_map:
+            image_stem_map[stem] = img
+    
+    # Prepare EO records
+    eo_records = []
+    matched_count = 0
+    errors = []
+    
+    # Clear existing EO for these images if any (to avoid unique constraint errors)
+    # This is a simple overwrite policy
+    parsed_filenames = [row.image_name for row in parsed_rows]
+    valid_image_ids = [image_map[name].id for name in parsed_filenames if name in image_map]
+    
+    if valid_image_ids:
+        await db.execute(
+            delete(ExteriorOrientation).where(ExteriorOrientation.image_id.in_(valid_image_ids))
+        )
+    
+    # Prepare Transformer if CRS is not WGS84
+    transformer = None
+    target_crs = "EPSG:4326"
+    source_crs = eo_config.crs.upper()
+    
+    # Extract strict EPSG code using regex if present
+    # Matches "EPSG:1234" or "EPSG: 1234"
+    epsg_match = re.search(r'EPSG[:\s]+(\d+)', source_crs)
+    if epsg_match:
+        source_code = f"EPSG:{epsg_match.group(1)}"
+        if source_code != target_crs:
+             source_crs = source_code # Use clean code for pyproj
+    
+    # Handle common aliases or variations
+    if "WGS84" in source_crs or source_crs == "EPSG:4326":
+        transformer = None
+    else:
+        try:
+            # always_xy=True: input is (x, y) [long/east, lat/north], output is (long, lat)
+            transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
+        except Exception as e:
+            # If CRS is invalid, we proceed with raw values (or could raise error)
+            print(f"Failed to create transformer for {source_crs}: {e}")
+            pass
+
+    for row in parsed_rows:
+        # 1. Try exact match
+        image = image_map.get(row.image_name)
+        
+        # 2. Try exact match with lowercase (if file system convention differs)
+        if not image:
+             # Find case-insensitive match in full filenames
+             # This is O(N) per row, optimization possible but OK for 1000 images
+             for fname, img_obj in image_map.items():
+                 if fname.lower() == row.image_name.lower():
+                     image = img_obj
+                     break
+
+        # 3. Try stem match (if EO name has no extension)
+        if not image:
+            row_stem = os.path.splitext(row.image_name)[0].lower()
+            image = image_stem_map.get(row_stem)
+
+        if not image:
+            errors.append(f"Image not found for filename: {row.image_name}")
+            continue
+            
+        x_val = row.x
+        y_val = row.y
+        crs_val = source_crs
+        
+        # Transform keys if needed
+        if transformer:
+            try:
+                # Transform returns (lon, lat) because always_xy=True and target is 4326
+                # row.x (Easting), row.y (Northing) -> lon, lat
+                lon, lat = transformer.transform(row.x, row.y)
+                x_val = lon
+                y_val = lat
+                crs_val = target_crs # Stored as WGS84
+            except Exception as e:
+                errors.append(f"Transform error for {row.image_name}: {e}")
+                continue
+
+        eo = ExteriorOrientation(
+            image_id=image.id,
+            x=x_val,
+            y=y_val,
+            z=row.z,
+            omega=row.omega,
+            phi=row.phi,
+            kappa=row.kappa,
+            crs=crs_val
+        )
+        db.add(eo)
+        matched_count += 1
+        
+    await db.commit()
+    
+    return EOUploadResponse(
+        parsed_count=len(parsed_rows),
+        matched_count=matched_count,
+        errors=errors[:10]  # Return first 10 errors
+    )

@@ -67,6 +67,7 @@ class ImageResponse(ImageBase):
     has_error: bool = False
     upload_status: str = "pending"
     created_at: datetime
+    exterior_orientation: Optional["EOData"] = None  # Renamed from eo to avoid confusion? No, relationship is exterior_orientation
     
     class Config:
         from_attributes = True
@@ -82,13 +83,17 @@ class ImageUploadResponse(BaseModel):
 # --- EO Schemas ---
 class EOData(BaseModel):
     """Single EO data point."""
-    image_id: str  # Image filename or ID
+    image_id: Optional[UUID] = None  # Changed from str to UUID to match model
     x: float
     y: float
     z: float
     omega: float = 0.0
     phi: float = 0.0
     kappa: float = 0.0
+    crs: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 
 
 class EOConfig(BaseModel):

@@ -69,11 +69,13 @@ docker-compose ps
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| Frontend | http://localhost:3000 | Web UI |
-| API | http://localhost:8000 | Backend API |
-| API Docs | http://localhost:8000/docs | Swagger UI |
-| MinIO Console | http://localhost:9001 | Storage UI |
-| Flower | http://localhost:5555 | Celery Monitoring |
+| Frontend | [http://localhost:3000](http://localhost:3000) | Web UI (Dev Server) |
+| Nginx (Proxy) | [http://localhost:8081](http://localhost:8081) | Production Proxy |
+| API | [http://localhost:8001](http://localhost:8001) | Backend API |
+| API Docs | [http://localhost:8001/docs](http://localhost:8001/docs) | Swagger UI |
+| MinIO Console | [http://localhost:9003](http://localhost:9003) | Storage UI |
+| Flower | [http://localhost:5555](http://localhost:5555) | Celery Monitoring |
+| PostgreSQL | `localhost:5434` | Database |
 
 ## 📁 Project Structure
 
@@ -136,6 +138,7 @@ aerial-survey-manager/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/v1/upload/projects/{id}/images/init` | Init upload |
+| `POST` | `/api/v1/projects/{id}/eo` | Upload EO & Match data |
 | `POST` | `/api/v1/upload/hooks` | tus webhook |
 | `GET` | `/api/v1/download/projects/{id}/ortho` | Resumable download |
 | `HEAD` | `/api/v1/download/projects/{id}/ortho` | Get file info |
@@ -168,6 +171,8 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 
 ## 📋 Implementation Roadmap
 
+> 📌 상세 개발 계획은 [docs/ROADMAP.md](./docs/ROADMAP.md)를 참조하세요.
+
 ### ✅ Phase 1: Foundation (Completed)
 - [x] Backend project structure (FastAPI)
 - [x] Database schema (PostgreSQL + PostGIS)
@@ -190,11 +195,11 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Celery async workers (multi-queue)
 - [x] WebSocket real-time updates
 
-### 🔲 Phase 4: Project Management (TODO)
-- [ ] EO data parsing and storage
-- [ ] Camera model management
+### ✅ Phase 4: Project Management & Integration (In Progress)
+- [x] EO data parsing and storage
+- [/] Frontend-Backend API 연동 (UI 최적화 중)
+- [ ] Camera model management UI
 - [ ] Quality Control (QC) workflow
-- [ ] Frontend-Backend integration
 
 ### 🔲 Phase 5: Advanced Features (TODO)
 - [ ] Multi-user permission management
@@ -202,6 +207,43 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [ ] Map visualization (Leaflet/MapLibre)
 - [ ] Dashboard statistics
 - [ ] Batch export functionality
+
+## 🧪 Testing with Real Data
+
+실제 데이터를 사용하여 플랫폼을 테스트하는 방법은 다음과 같습니다.
+
+### 준비물
+1. **드론 촬영 이미지**: `.jpg` 또는 `.tif` 파일 세트
+2. **EO(외부표정요소) 파일**: 이미지 파일명과 매칭되는 좌표 정보가 포함된 `.csv` 또는 `.txt` 파일
+    - 포맷 예시: `filename, x, y, z, omega, phi, kappa` (쉼표 구분)
+
+### 테스트 단계
+
+1. **사용자 등록 및 로그인**
+   - [http://localhost:3000](http://localhost:3000) 또는 [http://localhost:8081](http://localhost:8081)에 접속하여 계정을 생성하고 로그인합니다.
+
+2. **프로젝트 생성**
+   - '새 프로젝트' 버튼을 클릭하여 이름, 지역, 회사 정보를 입력합니다.
+
+3. **이미지 업로드 (Upload Wizard)**
+   - 프로젝트 내 '업로드' 버튼을 클릭합니다.
+   - 드론 촬영 이미지를 선택하거나 드래그하여 업로드합니다. (대용량인 경우 tus 프로토콜이 적용되어 중단 시 재개 가능합니다)
+
+4. **EO 데이터 파일 업로드**
+   - 이미지 업로드 후, 구성 파일(EO) 업로드 섹션에 `.csv` 파일을 선택합니다.
+   - 컬럼 매핑 정보가 기본값과 다른 경우 설정 창에서 수정할 수 있습니다.
+
+5. **정사영상 생성 시작**
+   - '처리 시작' 버튼을 클릭합니다.
+   - 엔진 선택 (ODM 또는 External API), 최종 결과물 해상도(GSD), 좌표계(CRS)를 설정합니다.
+
+6. **모니터링 및 결과 확인**
+   - 우측 사이드바 또는 프로젝트 리스트에서 실시간 진행 상태(%)를 확인합니다.
+   - 처리가 완료되면 정사영상을 미리보기 하거나 다운로드합니다.
+
+### 💡 팁
+- 대량의 이미지(100장 이상) 테스트 시에는 ODM 엔진 사용을 권장하며, Docker 리소스를 충분히 할당해 주세요.
+- 외부 API 엔진을 테스트하려면 `EXTERNAL_ENGINE_URL` 및 API Key가 필요합니다.
 
 ## 🛠️ Development
 

@@ -3,8 +3,8 @@
  * Handles all communication with the backend
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const TUS_URL = import.meta.env.VITE_TUS_URL || 'http://localhost:1080/files/';
+const API_BASE = import.meta.env.VITE_API_URL || '';
+const TUS_URL = import.meta.env.VITE_TUS_URL || '/files/';
 
 class ApiClient {
     constructor() {
@@ -34,6 +34,11 @@ class ApiClient {
             ...options.headers,
         };
 
+        // If body is FormData, delete Content-Type to let browser set boundary
+        if (options.body instanceof FormData) {
+            delete headers['Content-Type'];
+        }
+
         if (this.token) {
             headers['Authorization'] = `Bearer ${this.token}`;
         }
@@ -57,7 +62,13 @@ class ApiClient {
             throw new Error(error.detail || `Request failed: ${response.status}`);
         }
 
-        return response.json();
+        if (response.status === 204) {
+            return null;
+        }
+
+        const text = await response.text();
+        return text ? JSON.parse(text) : {};
+
     }
 
     async refreshAccessToken() {
@@ -226,6 +237,31 @@ class ApiClient {
                 ws.close();
             },
         };
+    }
+
+    // --- Camera Models ---
+    async getCameraModels() {
+        return this.request('/camera-models');
+    }
+
+    async createCameraModel(data) {
+        return this.request('/camera-models', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    /**
+     * Upload EO data file for a project
+     */
+    async uploadEoData(projectId, file, config = {}) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        return this.request(`/projects/${projectId}/eo?config=${encodeURIComponent(JSON.stringify(config))}`, {
+            method: 'POST',
+            body: formData,
+        });
     }
 }
 

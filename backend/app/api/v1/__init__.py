@@ -6,6 +6,7 @@ from app.api.v1.projects import router as projects_router
 from app.api.v1.upload import router as upload_router
 from app.api.v1.download import router as download_router
 from app.api.v1.processing import router as processing_router
+from app.api.v1.camera_models import router as camera_models_router
 
 router = APIRouter()
 
@@ -14,3 +15,4 @@ router.include_router(projects_router)
 router.include_router(upload_router)
 router.include_router(download_router)
 router.include_router(processing_router)
+router.include_router(camera_models_router)

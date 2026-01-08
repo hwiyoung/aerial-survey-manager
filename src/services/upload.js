@@ -5,7 +5,7 @@
 
 import * as tus from 'tus-js-client';
 
-const TUS_URL = import.meta.env.VITE_TUS_URL || 'http://localhost:1080/files/';
+const TUS_URL = import.meta.env.VITE_TUS_URL || '/files/';
 
 export class ResumableUploader {
     constructor(authToken) {

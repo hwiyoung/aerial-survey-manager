@@ -87,10 +87,22 @@ async def tus_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON")
     
     event_type = data.get("Type")
-    upload_info = data.get("Upload", {})
+    # tusd sends metadata under Event.Upload (not direct Upload)
+    event_data = data.get("Event", {})
+    upload_info = event_data.get("Upload", {})
     metadata = upload_info.get("MetaData", {})
     
+    print(f"TUS Webhook RAW: {data}")  # Full payload
+    print(f"TUS Webhook: {event_type} - {metadata}") # DEBUG LOG
+    
     if event_type == "pre-create":
+        # Check if this is a partial upload (from parallel uploads)
+        is_partial = upload_info.get("IsPartial", False)
+        
+        # Partial uploads don't have metadata - allow them
+        if is_partial:
+            return {}  # Accept partial upload
+        
         # Validate the upload (check user auth, file type, etc.)
         project_id = metadata.get("projectId")
         filename = metadata.get("filename", "")
@@ -168,11 +180,15 @@ async def list_project_images(
             detail="Access denied",
         )
     
+    from sqlalchemy.orm import joinedload
+    from app.models.project import ExteriorOrientation
+
     result = await db.execute(
         select(Image)
+        .options(joinedload(Image.exterior_orientation))
         .where(Image.project_id == project_id)
         .order_by(Image.created_at)
     )
-    images = result.scalars().all()
+    images = result.scalars().unique().all()
     
     return [ImageResponse.model_validate(img) for img in images]

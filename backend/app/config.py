@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_GB: int = 500
     
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8081"]
     
     class Config:
         env_file = ".env"

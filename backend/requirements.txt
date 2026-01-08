@@ -12,6 +12,7 @@ geoalchemy2==0.14.3
 # Authentication
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 
 # Validation
 pydantic==2.6.1

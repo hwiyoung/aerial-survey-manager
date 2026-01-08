@@ -10,10 +10,10 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "3000:3000"
+      - "3000:80"
     environment:
-      - VITE_API_URL=http://localhost:8000
-      - VITE_TUS_URL=http://localhost:1080
+      - VITE_API_URL=http://localhost:8081
+      - VITE_TUS_URL=http://localhost:8081/files/
     depends_on:
       - api
     networks:
@@ -25,9 +25,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/aerial_survey
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -38,6 +38,7 @@ services:
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
       - TUS_ENDPOINT=http://tusd:1080/files/
     volumes:
+      - ./backend:/app
       - ./data/processing:/data/processing
     depends_on:
       db:
@@ -60,6 +61,7 @@ services:
       -hooks-enabled-events pre-create,post-finish,post-terminate
       -max-size 0
       -behind-proxy
+      -base-path /files/
     environment:
       - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -78,13 +80,14 @@ services:
       dockerfile: Dockerfile
     command: celery -A app.workers.tasks worker -Q odm --loglevel=info --concurrency=2
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/aerial_survey
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
     volumes:
+      - ./backend:/app
       - ./data/processing:/data/processing
       - /var/run/docker.sock:/var/run/docker.sock  # For ODM Docker-in-Docker
     depends_on:
@@ -101,7 +104,7 @@ services:
       dockerfile: Dockerfile
     command: celery -A app.workers.tasks worker -Q external --loglevel=info --concurrency=4
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/aerial_survey
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -110,6 +113,7 @@ services:
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
     volumes:
+      - ./backend:/app
       - ./data/processing:/data/processing
     depends_on:
       - redis
@@ -124,8 +128,10 @@ services:
       dockerfile: Dockerfile
     command: celery -A app.workers.tasks beat --loglevel=info
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/aerial_survey
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend:/app
     depends_on:
       - redis
     networks:
@@ -142,7 +148,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -156,7 +162,7 @@ services:
     image: redis:7-alpine
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -170,8 +176,8 @@ services:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"  # Console UI
+      - "9002:9000"
+      - "9003:9001"  # Console UI
     volumes:
       - minio_data:/data
     healthcheck:
@@ -202,8 +208,8 @@ services:
   nginx:
     image: nginx:alpine
     ports:
-      - "80:80"
-      - "443:443"
+      - "8081:80"
+      - "4443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
@@ -224,6 +230,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
     ports:
       - "5555:5555"
+    volumes:
+      - ./backend:/app
     depends_on:
       - redis
     networks:

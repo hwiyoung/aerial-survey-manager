@@ -17,13 +17,16 @@ export function useProjects(options = {}) {
         setLoading(true);
         setError(null);
         try {
-            const response = await api.getProjects({
+            // Filter out undefined values to prevent "undefined" string in URL params
+            const queryParams = {
                 page: params.page || 1,
                 page_size: params.pageSize || 20,
-                status: params.status,
-                region: params.region,
-                search: params.search,
-            });
+            };
+            if (params.status && params.status !== 'ALL') queryParams.status = params.status;
+            if (params.region && params.region !== 'ALL') queryParams.region = params.region;
+            if (params.search) queryParams.search = params.search;
+
+            const response = await api.getProjects(queryParams);
             setProjects(response.items || []);
             setPagination({
                 total: response.total,

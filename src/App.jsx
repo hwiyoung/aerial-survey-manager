@@ -4,7 +4,7 @@ import {
   Layers, FileImage, AlertTriangle, Loader2, X,
   Download, Box, Maximize2,
   Sparkles, CheckCircle2, MapPin, UploadCloud,
-  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut
+  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2
 } from 'lucide-react';
 
 // API & Auth imports
@@ -13,6 +13,11 @@ import { useProjects, useProcessingStatus } from './hooks/useApi';
 import LoginPage from './components/LoginPage';
 import api from './api/client';
 import ResumableUploader from './services/upload';
+
+// Leaflet
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
 import ResumableDownloader from './services/download';
 
 // --- 1. CONSTANTS ---
@@ -41,6 +46,28 @@ const generatePlaceholderImages = (projectId, count) => {
 };
 
 // --- 2. COMPONENTS ---
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-red-50 p-10">
+          <div className="bg-white p-8 rounded-xl shadow-lg max-w-2xl w-full">
+            <h1 className="text-2xl font-bold text-red-600 mb-4">Application Error</h1>
+            <pre className="bg-slate-900 text-slate-100 p-4 rounded overflow-auto text-sm font-mono whitespace-pre-wrap">
+              {this.state.error?.toString()}
+              {this.state.error?.stack}
+            </pre>
+            <button onClick={() => window.location.reload()} className="mt-6 px-4 py-2 bg-slate-800 text-white rounded hover:bg-slate-900">Reload Page</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // [Export Dialog Component]
 function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
@@ -207,18 +234,43 @@ function UploadWizard({ isOpen, onClose, onComplete }) {
   const [imageCount, setImageCount] = useState(0);
   const [eoFileName, setEoFileName] = useState(null);
   const [cameraModel, setCameraModel] = useState("UltraCam Eagle 4.1");
-  const [eoConfig, setEoConfig] = useState({
-    delimiter: ',',
-    hasHeader: true,
-    crs: 'WGS84 (EPSG:4326)',
-    columns: { id: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 }
-  });
+  const [cameraModels, setCameraModels] = useState([]);
+  const [isAddingCamera, setIsAddingCamera] = useState(false);
+  const [newCamera, setNewCamera] = useState({ name: '', focal_length: 80, sensor_width: 53.4, sensor_height: 40, pixel_size: 5.2 });
 
-  const rawEoData = `ImageID,Lat,Lon,Alt,Omega,Phi,Kappa
+  useEffect(() => {
+    if (isOpen) {
+      api.getCameraModels().then(setCameraModels).catch(console.error);
+    }
+  }, [isOpen]);
+
+  const selectedCamera = useMemo(() => {
+    return cameraModels.find(c => c.name === cameraModel) || { focal_length: 0, sensor_width: 0, sensor_height: 0, pixel_size: 0 };
+  }, [cameraModel, cameraModels]);
+
+  const handleAddCamera = async () => {
+    try {
+      const created = await api.createCameraModel({ ...newCamera, name: newCamera.name || 'Custom Camera' });
+      setCameraModels(prev => [...prev, created]);
+      setCameraModel(created.name);
+      setIsAddingCamera(false);
+    } catch (err) {
+      alert("Failed to add camera model");
+    }
+  };
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [selectedEoFile, setSelectedEoFile] = useState(null);
+  const [eoConfig, setEoConfig] = useState({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } });
+
+  const folderInputRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
+  const eoInputRef = React.useRef(null);
+
+  const [rawEoData, setRawEoData] = useState(`ImageID,Lat,Lon,Alt,Omega,Phi,Kappa
 IMG_001,37.1234,127.5543,150.2,0.1,-0.2,1.5
 IMG_002,37.1235,127.5544,150.3,0.1,-0.2,1.5
 IMG_003,37.1236,127.5545,150.2,0.0,-0.2,1.4
-IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`;
+IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
 
   const parsedPreview = useMemo(() => {
     if (!eoFileName) return [];
@@ -234,7 +286,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`;
       const getVal = (colIdx) => parts[colIdx] || '-';
       return {
         key: idx,
-        id: getVal(eoConfig.columns.id),
+        image_name: getVal(eoConfig.columns.image_name),
         x: getVal(eoConfig.columns.x),
         y: getVal(eoConfig.columns.y),
         z: getVal(eoConfig.columns.z),
@@ -250,27 +302,51 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`;
       setStep(1);
       setImageCount(0);
       setEoFileName(null);
-      setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { id: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } });
+      setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } });
     }
   }, [isOpen]);
 
-  const handleFolderSelect = () => setImageCount(142);
-  const handleFileSelect = () => setImageCount(12);
+  const handleFolderSelect = (e) => {
+    const files = Array.from(e.target.files);
+    setSelectedFiles(files);
+    setImageCount(files.length);
+  };
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files);
+    setSelectedFiles(files);
+    setImageCount(files.length);
+  };
 
-  const handleFinish = () => {
-    const newProject = {
-      id: `NEW-BL-${Math.floor(Math.random() * 100)}`,
-      title: `NEW-BLOCK-WORK`,
+  const handleEoFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setSelectedEoFile(file);
+      setEoFileName(file.name);
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setRawEoData(e.target.result);
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const handleFinish = async () => {
+    // Pass raw data to parent for processing
+    const projectData = {
+      title: `Project_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`,
       region: '경기권역',
       company: '신규 업로드',
-      status: '대기',
-      progress: 0,
-      imageCount: imageCount || 100,
-      images: generateImages('NEW', 20),
-      bounds: { x: 30, y: 30, w: 40, h: 40 },
-      orthoResult: null
     };
-    onComplete(newProject);
+
+    console.log('handleFinish - selectedEoFile:', selectedEoFile); // DEBUG
+    await onComplete({
+      projectData,
+      files: selectedFiles,
+      eoFile: selectedEoFile,
+      eoConfig,
+      cameraModel
+    });
     onClose();
   };
 
@@ -285,8 +361,41 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`;
             <div className="space-y-6 max-w-2xl mx-auto h-full flex flex-col justify-center">
               <h4 className="text-xl font-bold text-slate-800 text-center mb-6">1. 원본 이미지 선택</h4>
               <div className="grid grid-cols-2 gap-4">
-                <button onClick={handleFolderSelect} className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${imageCount === 142 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}><FolderOpen size={48} className="text-blue-600" /><div><div className="font-bold text-slate-700 text-lg">폴더 선택</div><div className="text-sm text-slate-500">폴더 내 전체 로드</div></div></button>
-                <button onClick={handleFileSelect} className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${imageCount === 12 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}><FilePlus size={48} className="text-emerald-600" /><div><div className="font-bold text-slate-700 text-lg">이미지 선택</div><div className="text-sm text-slate-500">개별 파일 선택</div></div></button>
+                <input
+                  type="file"
+                  webkitdirectory="true"
+                  directory="true"
+                  ref={folderInputRef}
+                  onChange={handleFolderSelect}
+                  className="hidden"
+                />
+                <input
+                  type="file"
+                  multiple
+                  ref={fileInputRef}
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => folderInputRef.current.click()}
+                  className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectedFiles.length > 0 && folderInputRef.current?.files.length > 0 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
+                >
+                  <FolderOpen size={48} className="text-blue-600" />
+                  <div>
+                    <div className="font-bold text-slate-700 text-lg">폴더 선택</div>
+                    <div className="text-sm text-slate-500">폴더 내 전체 로드</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => fileInputRef.current.click()}
+                  className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectedFiles.length > 0 && fileInputRef.current?.files.length > 0 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
+                >
+                  <FilePlus size={48} className="text-emerald-600" />
+                  <div>
+                    <div className="font-bold text-slate-700 text-lg">이미지 선택</div>
+                    <div className="text-sm text-slate-500">개별 파일 선택</div>
+                  </div>
+                </button>
               </div>
               {imageCount > 0 && <div className="text-center p-4 bg-slate-100 rounded-lg text-slate-700 animate-in fade-in flex items-center justify-center gap-2"><CheckCircle2 size={20} className="text-blue-600" />총 <span className="font-bold text-blue-600">{imageCount}</span>장의 이미지가 확인되었습니다.</div>}
             </div>
@@ -295,7 +404,17 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`;
             <div className="flex flex-col h-full gap-6">
               <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { id: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
               <div className="flex gap-6 shrink-0 h-[220px]">
-                <div className={`w-1/4 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${eoFileName ? 'border-emerald-500 bg-emerald-50' : 'border-slate-300 hover:bg-slate-50'}`} onClick={() => setEoFileName("2025_Block7_EO.txt")}>
+                <input
+                  type="file"
+                  accept=".txt,.csv,.json"
+                  ref={eoInputRef}
+                  onChange={handleEoFileSelect}
+                  className="hidden"
+                />
+                <div
+                  className={`w-1/4 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${eoFileName ? 'border-emerald-500 bg-emerald-50' : 'border-slate-300 hover:bg-slate-50'}`}
+                  onClick={() => eoInputRef.current.click()}
+                >
                   {eoFileName ? (<><div className="p-3 bg-emerald-100 rounded-full text-emerald-600"><FileText size={32} /></div><div className="text-center px-4"><div className="text-sm font-bold text-slate-800 truncate max-w-[150px]">{eoFileName}</div><div className="text-[10px] text-emerald-600 font-bold mt-1">로드 성공</div></div></>) : (<><div className="p-3 bg-slate-100 rounded-full text-slate-400"><UploadCloud size={32} /></div><div className="text-center"><div className="text-sm font-bold text-slate-600">EO 파일 선택</div><div className="text-xs text-slate-400 mt-1">.txt, .csv, .json</div></div></>)}
                 </div>
                 <div className="flex-1 bg-slate-50 p-5 rounded-xl border border-slate-200 flex flex-col justify-between">
@@ -314,16 +433,73 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`;
                 <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center shrink-0"><span className="text-sm font-bold text-slate-700 flex items-center gap-2"><TableIcon size={16} className="text-slate-400" /> 데이터 파싱 미리보기</span>{eoFileName && <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded font-bold">실시간 업데이트 중</span>}</div>
                 <div className="flex-1 overflow-auto custom-scrollbar relative">
                   {!eoFileName ? (<div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300"><FileText size={48} className="mb-3 opacity-30" /><p className="text-sm font-medium">상단에서 EO 파일을 로드하면<br />이곳에 미리보기가 표시됩니다.</p></div>) : (
-                    <table className="w-full text-sm text-left"><thead className="bg-slate-50 sticky top-0 z-10 text-slate-500 text-xs uppercase"><tr><th className="p-3 border-b font-semibold w-[15%]">Image ID ({eoConfig.columns.id})</th><th className="p-3 border-b font-semibold">Lat/X ({eoConfig.columns.x})</th><th className="p-3 border-b font-semibold">Lon/Y ({eoConfig.columns.y})</th><th className="p-3 border-b font-semibold">Alt/Z ({eoConfig.columns.z})</th><th className="p-3 border-b font-semibold">Ω ({eoConfig.columns.omega})</th><th className="p-3 border-b font-semibold">Φ ({eoConfig.columns.phi})</th><th className="p-3 border-b font-semibold">K ({eoConfig.columns.kappa})</th></tr></thead><tbody className="divide-y divide-slate-100">{parsedPreview.map((row) => (<tr key={row.key} className="hover:bg-blue-50 transition-colors group"><td className="p-3 font-mono text-slate-700 font-medium group-hover:text-blue-700">{row.id}</td><td className="p-3 font-mono text-slate-500">{row.x}</td><td className="p-3 font-mono text-slate-500">{row.y}</td><td className="p-3 font-mono text-slate-500">{row.z}</td><td className="p-3 font-mono text-slate-400">{row.omega}</td><td className="p-3 font-mono text-slate-400">{row.phi}</td><td className="p-3 font-mono text-slate-400">{row.kappa}</td></tr>))}</tbody></table>
+                    <table className="w-full text-sm text-left"><thead className="bg-slate-50 sticky top-0 z-10 text-slate-500 text-xs uppercase"><tr><th className="p-3 border-b font-semibold w-[15%]">Image ID ({eoConfig.columns.image_name})</th><th className="p-3 border-b font-semibold">Lat/X ({eoConfig.columns.x})</th><th className="p-3 border-b font-semibold">Lon/Y ({eoConfig.columns.y})</th><th className="p-3 border-b font-semibold">Alt/Z ({eoConfig.columns.z})</th><th className="p-3 border-b font-semibold">Ω ({eoConfig.columns.omega})</th><th className="p-3 border-b font-semibold">Φ ({eoConfig.columns.phi})</th><th className="p-3 border-b font-semibold">K ({eoConfig.columns.kappa})</th></tr></thead><tbody className="divide-y divide-slate-100">{parsedPreview.map((row) => (<tr key={row.key} className="hover:bg-blue-50 transition-colors group"><td className="p-3 font-mono text-slate-700 font-medium group-hover:text-blue-700">{row.image_name}</td><td className="p-3 font-mono text-slate-500">{row.x}</td><td className="p-3 font-mono text-slate-500">{row.y}</td><td className="p-3 font-mono text-slate-500">{row.z}</td><td className="p-3 font-mono text-slate-400">{row.omega}</td><td className="p-3 font-mono text-slate-400">{row.phi}</td><td className="p-3 font-mono text-slate-400">{row.kappa}</td></tr>))}</tbody></table>
                   )}
                 </div>
               </div>
             </div>
           )}
           {step === 3 && (
-            <div className="space-y-6 text-center max-w-2xl mx-auto h-full flex flex-col justify-center">
+            <div className="space-y-6 text-center max-w-2xl mx-auto h-full flex flex-col justify-center overflow-y-auto py-4">
               <h4 className="text-xl font-bold text-slate-800">3. 카메라 모델 (IO) 선택</h4>
-              <div className="max-w-sm mx-auto space-y-6 w-full"><div className="p-6 bg-slate-50 rounded-full w-32 h-32 mx-auto flex items-center justify-center border border-slate-200"><Camera size={56} className="text-slate-400" /></div><select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none" value={cameraModel} onChange={(e) => setCameraModel(e.target.value)}><option value="UltraCam Eagle 4.1">UltraCam Eagle 4.1</option><option value="Leica DMC III">Leica DMC III</option><option value="Phase One iXU">Phase One iXU</option><option value="Sony A7R IV">Sony A7R IV (Custom)</option></select><div className="bg-slate-50 p-5 rounded-xl text-left space-y-2 border border-slate-200"><div className="flex justify-between text-sm"><span className="text-slate-500">Focal Length</span><span className="font-mono font-bold text-slate-700">80 mm</span></div><div className="flex justify-between text-sm"><span className="text-slate-500">Sensor Size</span><span className="font-mono font-bold text-slate-700">53.4 x 40.0 mm</span></div><div className="flex justify-between text-sm"><span className="text-slate-500">Pixel Size</span><span className="font-mono font-bold text-slate-700">5.2 µm</span></div></div></div>
+              <div className="max-w-sm mx-auto space-y-6 w-full pb-4">
+                <div className="p-6 bg-slate-50 rounded-full w-32 h-32 mx-auto flex items-center justify-center border border-slate-200 shrink-0"><Camera size={56} className="text-slate-400" /></div>
+
+                {isAddingCamera ? (
+                  <div className="bg-white p-6 rounded-xl border border-blue-200 shadow-lg space-y-4 text-left animate-in fade-in zoom-in-95 duration-200">
+                    <div className="flex justify-between items-center mb-2">
+                      <h5 className="font-bold text-blue-600">새 카메라 추가</h5>
+                      <button onClick={() => setIsAddingCamera(false)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-500">모델명</label>
+                      <input type="text" className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none" value={newCamera.name} onChange={e => setNewCamera({ ...newCamera, name: e.target.value })} placeholder="Ex: Sony A7R IV" autoFocus />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-500">초점거리 (mm)</label>
+                        <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.focal_length} onChange={e => setNewCamera({ ...newCamera, focal_length: parseFloat(e.target.value) })} />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-500">Pixel Size (µm)</label>
+                        <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.pixel_size} onChange={e => setNewCamera({ ...newCamera, pixel_size: parseFloat(e.target.value) })} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-500">Sensor W (mm)</label>
+                        <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_width} onChange={e => setNewCamera({ ...newCamera, sensor_width: parseFloat(e.target.value) })} />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-500">Sensor H (mm)</label>
+                        <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_height} onChange={e => setNewCamera({ ...newCamera, sensor_height: parseFloat(e.target.value) })} />
+                      </div>
+                    </div>
+                    <button onClick={handleAddCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">저장 및 선택</button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="relative">
+                      <select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none" value={cameraModel} onChange={(e) => setCameraModel(e.target.value)}>
+                        {Array.isArray(cameraModels) && cameraModels.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                        {!cameraModels?.length && <option value="" disabled>카메라 모델 로딩 중...</option>}
+                        <option value="UltraCam Eagle 4.1">UltraCam Eagle 4.1</option>
+                        <option value="Leica DMC III">Leica DMC III</option>
+                      </select>
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
+                    </div>
+                    <button onClick={() => setIsAddingCamera(true)} className="w-full py-3 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-2">
+                      <FilePlus size={18} /> 새 카메라 모델 추가
+                    </button>
+                  </div>
+                )}
+
+                <div className="bg-slate-50 p-5 rounded-xl text-left space-y-2 border border-slate-200">
+                  <div className="flex justify-between text-sm"><span className="text-slate-500">Focal Length</span><span className="font-mono font-bold text-slate-700">{selectedCamera.focal_length} mm</span></div>
+                  <div className="flex justify-between text-sm"><span className="text-slate-500">Sensor Size</span><span className="font-mono font-bold text-slate-700">{selectedCamera.sensor_width} x {selectedCamera.sensor_height} mm</span></div>
+                  <div className="flex justify-between text-sm"><span className="text-slate-500">Pixel Size</span><span className="font-mono font-bold text-slate-700">{selectedCamera.pixel_size} µm</span></div>
+                </div>
+              </div>
             </div>
           )}
           {step === 4 && (
@@ -386,7 +562,7 @@ function Header() {
 }
 
 // [Sidebar]
-function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple }) {
+function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
 
@@ -421,55 +597,141 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="p-2 space-y-1">
           {filteredProjects.map(project => (
-            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} onSelect={() => onSelectProject(project.id)} onToggle={() => onToggleCheck(project.id)} />
+            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} onSelect={() => onSelectProject(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} />
           ))}
         </div>
       </div>
       {checkedProjectIds.size > 0 && (
-        <div className="p-4 border-t border-slate-200 bg-slate-50 animate-in slide-in-from-bottom duration-200">
-          <button onClick={onBulkExport} className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-lg text-sm font-bold shadow-md transition-all"><Download size={16} className="text-white" /><span>선택한 {checkedProjectIds.size}건 정사영상 내보내기</span></button>
+        <div className="p-4 border-t border-slate-200 bg-slate-50 animate-in slide-in-from-bottom duration-200 space-y-2">
+          <button onClick={onBulkExport} className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-lg text-sm font-bold shadow-md transition-all">
+            <Download size={16} className="text-white" />
+            <span>선택한 {checkedProjectIds.size}건 정사영상 내보내기</span>
+          </button>
+          <button onClick={onBulkDelete} className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-lg text-sm font-bold shadow-md transition-all">
+            <Trash2 size={16} className="text-white" />
+            <span>선택한 {checkedProjectIds.size}건 삭제</span>
+          </button>
         </div>
       )}
     </aside>
   );
 }
 
-function ProjectItem({ project, isSelected, isChecked, onSelect, onToggle }) {
+function ProjectItem({ project, isSelected, isChecked, onSelect, onToggle, onDelete }) {
+  const handleDelete = (e) => {
+    e.stopPropagation();
+    if (window.confirm(`"${project.title}" 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.`)) {
+      onDelete();
+    }
+  };
+
   return (
-    <div onClick={onSelect} className={`relative flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-all border ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+    <div onClick={onSelect} className={`relative flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
       <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
       <div className="flex-1 min-w-0">
-        <div className="flex justify-between items-start"><h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4><span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ml-2 shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span></div>
+        <div className="flex justify-between items-start">
+          <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
+          <div className="flex items-center gap-1">
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+            <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제">
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
         <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span><span className="text-slate-300">|</span><span>{project.company}</span></div>
       </div>
     </div>
   );
 }
 
-// [Map Placeholder]
-function MapPlaceholder({ project, isProcessingMode, selectedImageId, onSelectImage }) {
+// [Map Component - Real Leaflet]
+function FitBounds({ images }) {
+  const map = useMap();
+  useEffect(() => {
+    if (images && images.length > 0) {
+      const bounds = L.latLngBounds(images.map(img => [img.wy, img.wx])); // y=lat, x=lon
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    }
+  }, [images, map]);
+  return null;
+}
+
+function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
   const [isLoading, setIsLoading] = useState(false);
-  useEffect(() => { if (project) { setIsLoading(true); const t = setTimeout(() => setIsLoading(false), 800); return () => clearTimeout(t); } }, [project]);
+
+  // Images are already normalized/processed in Dashboard, but here we need RAW coords (wx, wy)
+  // Dashboard passes 'project.images' which has wx, wy
+  const images = useMemo(() => {
+    if (!project?.images) return [];
+    return project.images.filter(img => img.hasEo);
+  }, [project]);
 
   if (!project) return <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 map-grid text-slate-400"><div className="bg-white p-6 rounded-xl shadow-sm text-center"><Layers size={48} className="mx-auto mb-4 text-slate-300" /><p className="text-lg font-medium text-slate-600">프로젝트를 선택하세요</p></div></div>;
 
   return (
-    <div className="w-full h-full relative overflow-hidden bg-[#e5e7eb] map-grid select-none">
-      <div className="absolute inset-0 opacity-10 pointer-events-none"><div className="absolute top-1/4 left-1/4 w-96 h-96 bg-slate-400 rounded-full blur-3xl"></div><div className="absolute bottom-1/3 right-1/4 w-80 h-80 bg-blue-300 rounded-full blur-3xl"></div></div>
-      <div className={`absolute transition-all duration-700 ease-out flex flex-col overflow-hidden ${isProcessingMode ? 'border border-blue-400 bg-blue-50/10' : ''}`} style={{ left: `${project.bounds.x}%`, top: `${project.bounds.y}%`, width: `${project.bounds.w}%`, height: `${project.bounds.h}%`, ...(isProcessingMode ? {} : { backgroundColor: '#78716c', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }) }}>
-        <div className={`absolute top-2 left-2 backdrop-blur-sm text-white text-[10px] px-2 py-1 rounded shadow-sm font-bold flex items-center gap-1 z-20 ${isProcessingMode ? 'bg-blue-600' : 'bg-black/60'}`}>{isProcessingMode ? <MapPin size={10} /> : <Layers size={10} />}{project.title} {isProcessingMode ? '(Points)' : 'Ortho'}</div>
-        <div className="w-full h-full relative" style={{ opacity: isLoading ? 0 : 1 }}>
-          {project.images.map((img) => (
-            <div key={img.id} onClick={(e) => { e.stopPropagation(); onSelectImage(img.id); }} className={`absolute rounded-full flex items-center justify-center cursor-pointer transition-all ${isProcessingMode ? 'w-2 h-2 bg-yellow-400 hover:scale-150' : `w-4 h-4 -ml-2 -mt-2 group ${img.id === selectedImageId ? 'z-30 scale-150' : 'z-10 hover:z-20 hover:scale-125'}`}`} style={{ left: `${img.x}%`, top: `${img.y}%` }}>
-              {!isProcessingMode && (<div className={`w-2 h-2 rounded-full shadow-sm transition-colors duration-200 ${img.id === selectedImageId ? 'bg-blue-500 ring-2 ring-white' : 'bg-white/30 group-hover:bg-white ring-1 ring-white'}`} />)}
-            </div>
-          ))}
+    <div className="w-full h-full relative bg-slate-200 z-0">
+      <MapContainer
+        center={[36.5, 127.5]}
+        zoom={7}
+        style={{ height: '100%', width: '100%', background: '#f1f5f9' }}
+        zoomControl={false}
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        {images.length > 0 && <FitBounds images={images} />}
+
+        {images.map(img => (
+          <CircleMarker
+            key={img.id}
+            center={[img.wy, img.wx]}
+            radius={isProcessingMode ? 2 : (img.id === selectedImageId ? 8 : 5)}
+            pathOptions={{
+              color: img.id === selectedImageId ? '#2563eb' : (isProcessingMode ? '#eab308' : '#ffffff'),
+              fillColor: img.id === selectedImageId ? '#3b82f6' : (isProcessingMode ? '#facc15' : '#64748b'),
+              fillOpacity: 0.8,
+              weight: 2
+            }}
+            eventHandlers={{
+              click: (e) => {
+                L.DomEvent.stopPropagation(e);
+                onSelectImage(img.id);
+              }
+            }}
+          >
+            <Popup>
+              <div className="text-xs">
+                <strong className="block mb-1 text-slate-700">{img.name}</strong>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-slate-500">
+                  <span>Lat: {img.wy.toFixed(6)}</span>
+                  <span>Lon: {img.wx.toFixed(6)}</span>
+                  <span>Alt: {img.z || '-'}</span>
+                  <span>Omega: {img.omega || '0'}</span>
+                  <span>Phi: {img.phi || '0'}</span>
+                  <span>Kappa: {img.kappa || '0'}</span>
+                </div>
+              </div>
+            </Popup>
+          </CircleMarker>
+        ))}
+      </MapContainer>
+
+      {/* Overlay for non-EO projects */}
+      {images.length === 0 && project.images?.length > 0 && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-[1000] pointer-events-none">
+          <div className="bg-white p-4 rounded shadow text-slate-700 font-bold">
+            EO 데이터가 없어 지도에 표시할 수 없습니다.
+          </div>
         </div>
-      </div>
-      <div className="absolute right-4 bottom-4 flex flex-col gap-2 z-10"><button className="w-9 h-9 bg-white rounded shadow-sm font-bold">+</button><button className="w-9 h-9 bg-white rounded shadow-sm font-bold">-</button></div>
+      )}
     </div>
   );
 }
+// Renaming for compatibility with existing usage
+const MapPlaceholder = ProMap;
 
 // [Inspector Panel]
 function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onExport }) {
@@ -516,7 +778,7 @@ function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onEx
 // --- 3. MAIN DASHBOARD ---
 function Dashboard() {
   // Use API hook for projects
-  const { projects: apiProjects, loading: projectsLoading, error: projectsError, refresh: refreshProjects, createProject } = useProjects();
+  const { projects: apiProjects, loading: projectsLoading, error: projectsError, refresh: refreshProjects, createProject, deleteProject } = useProjects();
 
   // Transform API projects to match UI expectations
   const projects = useMemo(() => {
@@ -525,26 +787,132 @@ function Dashboard() {
       status: STATUS_MAP[p.status] || p.status,
       imageCount: p.image_count || 0,
       startDate: p.created_at?.slice(0, 10) || '',
-      images: generatePlaceholderImages(p.id, p.image_count || 10),
       bounds: { x: 15 + Math.random() * 60, y: 15 + Math.random() * 60, w: 30, h: 30 },
       orthoResult: p.status === 'completed' ? { resolution: '5cm GSD', fileSize: '4.2GB', generatedAt: p.updated_at?.slice(0, 10) } : null,
     }));
   }, [apiProjects]);
 
-  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  // Read project ID from URL query parameter on initial load
+  const initialProjectId = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('projectId');
+  }, []);
+
+  // Read viewMode from URL query parameter
+  const initialViewMode = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('viewMode') || 'dashboard';
+  }, []);
+
+  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
+  const [projectImages, setProjectImages] = useState([]); // Store fetched images
+  const [loadingImages, setLoadingImages] = useState(false);
+  const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
+
+  // Fetch images when project is selected
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setProjectImages([]);
+      return;
+    }
+
+    setLoadingImages(true);
+    api.getProjectImages(selectedProjectId)
+      .then(images => {
+        // Normalize logic
+        if (images.length === 0) {
+          setProjectImages([]);
+          return;
+        }
+
+        // Extract coordinates from EO data if available
+        // Backend returns exterior_orientation object
+        const points = images.map(img => {
+          const eo = img.exterior_orientation;
+          return {
+            id: img.id,
+            name: img.filename,
+            // If EO exists, use it. Otherwise random fallback or 0
+            wx: eo ? eo.x : 0,
+            wy: eo ? eo.y : 0,
+            hasEo: !!eo,
+            thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)` // Still random color for now
+          };
+        });
+
+        const validPoints = points.filter(p => p.hasEo);
+
+        if (validPoints.length > 0) {
+          // Calculate bounds
+          const xs = validPoints.map(p => p.wx);
+          const ys = validPoints.map(p => p.wy);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+
+          const rangeX = maxX - minX || 1;
+          const rangeY = maxY - minY || 1;
+
+          // Normalize to 0-100%
+          const normalized = points.map(p => {
+            if (!p.hasEo) return { ...p, x: 50, y: 50 }; // Center if no EO
+            return {
+              ...p,
+              // Map world coords to 5-95% of container
+              x: 5 + ((p.wx - minX) / rangeX) * 90,
+              y: 95 - ((p.wy - minY) / rangeY) * 90 // Invert Y for screen coords
+            };
+          });
+          setProjectImages(normalized);
+        } else {
+          // Fallback to placeholder if no EO data at all
+          setProjectImages(generatePlaceholderImages(selectedProjectId, images.length));
+        }
+      })
+      .catch(err => {
+        console.error("Failed to fetch images:", err);
+        setProjectImages([]);
+      })
+      .finally(() => setLoadingImages(false));
+  }, [selectedProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
 
-  const [viewMode, setViewMode] = useState('dashboard');
+  const [viewMode, setViewMode] = useState(initialViewMode);
   const [processingProject, setProcessingProject] = useState(null);
+
+  // Set processingProject when viewMode is processing and project is loaded
+  useEffect(() => {
+    if (initialViewMode === 'processing' && initialProjectId && projects.length > 0) {
+      const proj = projects.find(p => p.id === initialProjectId);
+      if (proj && !processingProject) {
+        setProcessingProject({
+          ...proj,
+          images: projectImages
+        });
+      }
+    }
+  }, [initialViewMode, initialProjectId, projects, projectImages, processingProject]);
 
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
 
-  const selectedProject = viewMode === 'processing' ? processingProject : projects.find(p => p.id === selectedProjectId) || null;
+  const selectedProject = useMemo(() => {
+    if (viewMode === 'processing') return processingProject;
+    const proj = projects.find(p => p.id === selectedProjectId);
+    if (!proj) return null;
+
+    // Merge fetched images
+    return {
+      ...proj,
+      images: projectImages
+    };
+  }, [viewMode, processingProject, projects, selectedProjectId, projectImages]);
+
   const selectedImage = selectedProject?.images?.find(img => img.id === selectedImageId) || null;
   const [qcData, setQcData] = useState(() => JSON.parse(localStorage.getItem('innopam_qc_data') || '{}'));
 
@@ -556,32 +924,77 @@ function Dashboard() {
     return () => { window.removeEventListener('mousemove', handleMove); window.removeEventListener('mouseup', handleUp); };
   }, [isResizing]);
 
-  const handleUploadComplete = async (newProject) => {
-    // Create project via API
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel }) => {
     try {
+      // 1. Create Project via API
+      console.log('Creating project:', projectData);
       const created = await createProject({
-        title: newProject.id,
-        region: newProject.region,
-        company: newProject.company,
+        title: projectData.title,
+        region: projectData.region,
+        company: projectData.company,
       });
+      console.log('Project created:', created);
 
+      // 2. Initialize Images (Create records in DB)
+      if (files && files.length > 0) {
+        console.log('Initializing image records...');
+        try {
+          await Promise.all(files.map(file => api.initImageUpload(created.id, file.name, file.size)));
+        } catch (err) {
+          console.error('Failed to initialize images:', err);
+          alert('이미지 초기화 실패: ' + err.message);
+          return;
+        }
+      }
+
+      // 3. Upload EO Data if exists (Now that images exist)
+      if (eoFile) {
+        console.log('Uploading EO data...');
+        try {
+          await api.uploadEoData(created.id, eoFile, eoConfig);
+          alert("EO data uploaded successfully.");
+        } catch (e) {
+          console.error(e);
+          alert("Failed to upload EO data: " + e.message);
+        }
+      }
+
+      // 4. Initiate TUS Image Uploads
+      if (files && files.length > 0) {
+        console.log(`Starting upload for ${files.length} images...`);
+        alert(`${files.length}개의 이미지 업로드를 시작합니다.\n(백그라운드에서 진행됩니다)`);
+
+        const uploader = new ResumableUploader(api.token);
+        uploader.uploadFiles(files, created.id, {
+          onFileComplete: (idx, name) => console.log(`Uploaded ${name}`),
+          onAllComplete: async () => {
+            console.log('All uploads finished');
+            alert("모든 이미지 업로드가 완료되었습니다. 처리 화면으로 이동합니다.");
+            // Reload the page with project ID and viewMode in URL to maintain context
+            window.location.href = `${window.location.origin}${window.location.pathname}?projectId=${created.id}&viewMode=processing`;
+          },
+          onError: (idx, name, err) => console.error(`Failed ${name}`, err)
+        });
+      }
+
+      // 4. Update UI State (Switch to Processing View immediately or show new project)
       // Transform for processing view
       const projectForProcessing = {
         ...created,
-        ...newProject,
-        id: created.id,
-        status: STATUS_MAP[created.status] || '대기',
-        images: generatePlaceholderImages(created.id, newProject.imageCount),
+        status: '대기', // Initial status
+        imageCount: files?.length || 0,
+        images: generatePlaceholderImages(created.id, files?.length || 0), // Placeholders until real images load
+        bounds: { x: 30, y: 30, w: 40, h: 40 },
+        cameraModel: cameraModel
       };
 
       setProcessingProject(projectForProcessing);
       setViewMode('processing');
       refreshProjects();
+
     } catch (err) {
       console.error('Failed to create project:', err);
-      // Fallback to local-only
-      setProcessingProject(newProject);
-      setViewMode('processing');
+      alert('프로젝트 생성 실패: ' + err.message);
     }
   };
 
@@ -643,6 +1056,34 @@ function Dashboard() {
             onSelectMultiple={handleSelectMultiple}
             onOpenUpload={() => setIsUploadOpen(true)}
             onBulkExport={() => openExportDialog(Array.from(checkedProjectIds))}
+            onDeleteProject={async (id) => {
+              try {
+                await deleteProject(id);
+                if (selectedProjectId === id) setSelectedProjectId(null);
+                alert('프로젝트가 삭제되었습니다.');
+              } catch (err) {
+                alert('삭제 실패: ' + err.message);
+              }
+            }}
+            onBulkDelete={async () => {
+              const count = checkedProjectIds.size;
+              if (!window.confirm(`선택한 ${count}개의 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.`)) return;
+
+              let successCount = 0;
+              let failCount = 0;
+              for (const id of checkedProjectIds) {
+                try {
+                  await deleteProject(id);
+                  successCount++;
+                  if (selectedProjectId === id) setSelectedProjectId(null);
+                } catch (err) {
+                  failCount++;
+                  console.error(`Failed to delete ${id}:`, err);
+                }
+              }
+              setCheckedProjectIds(new Set());
+              alert(`${successCount}개 삭제 완료${failCount > 0 ? `, ${failCount}개 실패` : ''}`);
+            }}
           />
         )}
         <div className="w-1.5 bg-slate-200 hover:bg-blue-400 cursor-col-resize z-20 flex items-center justify-center group" onMouseDown={startResizing}><div className="h-8 w-1 bg-slate-300 rounded-full group-hover:bg-white/50" /></div>
@@ -693,7 +1134,7 @@ export default function App() {
     );
   }
 
-  return isAuthenticated ? <Dashboard /> : <LoginPage />;
+  return isAuthenticated ? <ErrorBoundary><Dashboard /></ErrorBoundary> : <LoginPage />;
 }
 
 // --- 5. APP WITH PROVIDER ---
