@@ -195,17 +195,22 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Celery async workers (multi-queue)
 - [x] WebSocket real-time updates
 
-### ✅ Phase 4: Project Management & Integration (In Progress)
+### ✅ Phase 4: Project Management & Dashboard (Completed)
 - [x] EO data parsing and storage
-- [/] Frontend-Backend API 연동 (UI 최적화 중)
-- [ ] Camera model management UI
-- [ ] Quality Control (QC) workflow
+- [x] Frontend-Backend API integration
+- [x] Dashboard with layout toggle (Wide/Narrow/Auto)
+- [x] Footprint map with project polygons
+- [x] Processing start highlight animation
+- [x] Extended project info in Inspector Panel
+- [x] Compact mode hover action icons
+- [x] Project deletion (single/multi)
 
-### 🔲 Phase 5: Advanced Features (TODO)
+### 🔄 Phase 5: Advanced Features (In Progress)
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
-- [ ] Map visualization (Leaflet/MapLibre)
-- [ ] Dashboard statistics
+- [x] Map visualization (Leaflet + Footprints)
+- [x] Dashboard statistics cards
+- [ ] Orthoimage overlay on map
 - [ ] Batch export functionality
 
 ## 🧪 Testing with Real Data

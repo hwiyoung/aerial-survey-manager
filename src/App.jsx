@@ -19,6 +19,7 @@ import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaf
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import ResumableDownloader from './services/download';
+import DashboardView from './components/Dashboard/DashboardView';
 
 // --- 1. CONSTANTS ---
 const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
@@ -533,7 +534,15 @@ function Header() {
 
   return (
     <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 z-20 shadow-sm shrink-0">
-      <div className="flex items-center gap-2">
+      <div
+        className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
+        onClick={() => {
+          // URL 파라미터 초기화하여 깨끗한 상태로 메인 페이지 복귀
+          window.history.pushState({}, '', window.location.pathname);
+          window.location.reload();
+        }}
+        title="메인 페이지로 이동"
+      >
         <div className="bg-blue-600 p-1.5 rounded text-white"><Map size={20} /></div>
         <h1 className="font-bold text-lg text-slate-800 tracking-tight">InnoPAM <span className="font-normal text-slate-500 text-sm hidden sm:inline">| 실감정사영상 생성 플랫폼</span></h1>
       </div>
@@ -562,9 +571,16 @@ function Header() {
 }
 
 // [Sidebar]
-function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete }) {
+function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
+
+  // Width-based size mode calculation
+  const sizeMode = useMemo(() => {
+    if (width < 400) return 'compact';
+    if (width < 600) return 'normal';
+    return 'expanded';
+  }, [width]);
 
   const filteredProjects = projects.filter(p => {
     const matchText = p.title.toLowerCase().includes(searchTerm.toLowerCase()) || p.company.includes(searchTerm);
@@ -597,7 +613,7 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="p-2 space-y-1">
           {filteredProjects.map(project => (
-            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} onSelect={() => onSelectProject(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} />
+            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} onSelect={() => onSelectProject(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} />
           ))}
         </div>
       </div>
@@ -617,7 +633,7 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
   );
 }
 
-function ProjectItem({ project, isSelected, isChecked, onSelect, onToggle, onDelete }) {
+function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onToggle, onDelete, onOpenProcessing, onOpenExport }) {
   const handleDelete = (e) => {
     e.stopPropagation();
     if (window.confirm(`"${project.title}" 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.`)) {
@@ -625,20 +641,121 @@ function ProjectItem({ project, isSelected, isChecked, onSelect, onToggle, onDel
     }
   };
 
-  return (
-    <div onClick={onSelect} className={`relative flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
-      <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
-      <div className="flex-1 min-w-0">
-        <div className="flex justify-between items-start">
-          <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
-          <div className="flex items-center gap-1">
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
-            <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제">
-              <Trash2 size={14} />
-            </button>
+  const handleProcessing = (e) => {
+    e.stopPropagation();
+    onOpenProcessing();
+  };
+
+  const handleExport = (e) => {
+    e.stopPropagation();
+    onOpenExport();
+  };
+
+  // Compact mode: minimal info with hover action icons
+  if (sizeMode === 'compact') {
+    return (
+      <div onClick={onSelect} className={`relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+        <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} />}</div>
+        <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+        {/* Hover action icons */}
+        <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+          <button onClick={handleProcessing} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="처리 시작"><Play size={14} /></button>
+          <button onClick={handleExport} disabled={project.status !== '완료'} className="p-1.5 text-slate-500 hover:bg-slate-100 rounded transition-colors disabled:opacity-30" title="내보내기"><Download size={14} /></button>
+        </div>
+      </div>
+    );
+  }
+
+  // Expanded mode: full info with always-visible buttons
+  if (sizeMode === 'expanded') {
+    return (
+      <div onClick={onSelect} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+        <div className="flex items-start gap-3">
+          <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex justify-between items-start">
+              <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
+              <div className="flex items-center gap-1">
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+                <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span><span className="text-slate-300">|</span><span>{project.company}</span></div>
+            {/* Extended info for expanded mode */}
+            <div className="flex items-center gap-3 text-xs text-slate-400 mt-2">
+              <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
+              {project.startDate && <span className="flex items-center gap-1">📅 {project.startDate}</span>}
+            </div>
+            {/* Progress bar for processing status */}
+            {project.status === '진행중' && (
+              <div className="mt-2">
+                <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span><span className="text-slate-300">|</span><span>{project.company}</span></div>
+        {/* Always visible action buttons in expanded mode */}
+        <div className="flex gap-2 pl-7">
+          <button
+            onClick={handleProcessing}
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+            title="처리 옵션 설정"
+          >
+            <Play size={12} /> 처리
+          </button>
+          <button
+            onClick={handleExport}
+            disabled={project.status !== '완료'}
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="정사영상 내보내기"
+          >
+            <Download size={12} /> 내보내기
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Normal mode (default): current layout
+  return (
+    <div onClick={onSelect} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+      <div className="flex items-start gap-3">
+        <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex justify-between items-start">
+            <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
+            <div className="flex items-center gap-1">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+              <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span><span className="text-slate-300">|</span><span>{project.company}</span></div>
+        </div>
+      </div>
+      {/* Action buttons - shown on select or hover */}
+      <div className={`flex gap-2 pl-7 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+        <button
+          onClick={handleProcessing}
+          className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+          title="처리 옵션 설정"
+        >
+          <Play size={12} /> 처리
+        </button>
+        <button
+          onClick={handleExport}
+          disabled={project.status !== '완료'}
+          className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          title="정사영상 내보내기"
+        >
+          <Download size={12} /> 내보내기
+        </button>
       </div>
     </div>
   );
@@ -749,6 +866,9 @@ function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onEx
           <div className="space-y-4 text-sm">
             <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역/업체</span><span className="font-medium">{project.region}/{project.company}</span></div>
             <div className="flex justify-between border-b pb-2"><span className="text-slate-500">상태</span><span className={`font-bold ${project.status === '완료' ? 'text-emerald-600' : project.status === '오류' ? 'text-red-600' : 'text-blue-600'}`}>{project.status}</span></div>
+            <div className="flex justify-between border-b pb-2"><span className="text-slate-500">원본사진</span><span className="font-medium">{project.imageCount || 0}장</span></div>
+            {project.startDate && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">촬영일</span><span className="font-medium">{project.startDate}</span></div>}
+            {project.dataSize && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">데이터용량</span><span className="font-medium">{project.dataSize}</span></div>}
           </div>
         </div>
         <div className="flex-1 p-6 bg-slate-50 overflow-y-auto">
@@ -901,6 +1021,9 @@ function Dashboard() {
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
 
+  // Highlight state for post-processing animation
+  const [highlightProjectId, setHighlightProjectId] = useState(null);
+
   const selectedProject = useMemo(() => {
     if (viewMode === 'processing') return processingProject;
     const proj = projects.find(p => p.id === selectedProjectId);
@@ -1001,9 +1124,11 @@ function Dashboard() {
   const handleStartProcessing = async () => {
     if (!processingProject) return;
 
+    const projectId = processingProject.id;
+
     try {
       // Start processing via API
-      await api.startProcessing(processingProject.id, {
+      await api.startProcessing(projectId, {
         engine: 'odm',
         gsd: 5.0,
         output_crs: 'EPSG:5186',
@@ -1013,9 +1138,11 @@ function Dashboard() {
       console.error('Failed to start processing:', err);
     }
 
-    setSelectedProjectId(processingProject.id);
+    // Go to dashboard with highlight (not select the project directly)
+    setSelectedProjectId(null);
     setViewMode('dashboard');
     setProcessingProject(null);
+    setHighlightProjectId(projectId); // Highlight the project on map for 3.5 seconds
     refreshProjects();
   };
 
@@ -1084,24 +1211,53 @@ function Dashboard() {
               setCheckedProjectIds(new Set());
               alert(`${successCount}개 삭제 완료${failCount > 0 ? `, ${failCount}개 실패` : ''}`);
             }}
+            onOpenProcessing={(projectId) => {
+              const proj = projects.find(p => p.id === projectId);
+              if (proj) {
+                setProcessingProject({
+                  ...proj,
+                  images: projectImages
+                });
+                setSelectedProjectId(projectId);
+                setViewMode('processing');
+              }
+            }}
+            onOpenExport={(projectId) => {
+              openExportDialog([projectId]);
+            }}
           />
         )}
         <div className="w-1.5 bg-slate-200 hover:bg-blue-400 cursor-col-resize z-20 flex items-center justify-center group" onMouseDown={startResizing}><div className="h-8 w-1 bg-slate-300 rounded-full group-hover:bg-white/50" /></div>
-        <div className="flex flex-col flex-1 min-w-0 bg-slate-200">
-          <main className="flex-1 relative overflow-hidden">
-            <MapPlaceholder project={selectedProject} isProcessingMode={viewMode === 'processing'} selectedImageId={selectedImageId} onSelectImage={(id) => setSelectedImageId(id)} />
-          </main>
-          {viewMode === 'dashboard' && (
-            <div className="h-[350px] border-t border-slate-300 bg-white shadow-sm z-20 relative flex items-center justify-center text-slate-400">
-              <InspectorPanel
-                project={selectedProject}
-                image={selectedImage}
-                qcData={qcData[selectedImageId] || {}}
-                onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
-                onCloseImage={() => setSelectedImageId(null)}
-                onExport={() => openExportDialog([selectedProject.id])}
-              />
-            </div>
+        <div className="flex flex-col flex-1 min-w-0 bg-slate-50">
+          {/* Show DashboardView when no project selected in dashboard mode */}
+          {viewMode === 'dashboard' && !selectedProjectId ? (
+            <DashboardView
+              projects={projects}
+              sidebarWidth={sidebarWidth}
+              onProjectClick={(project) => {
+                setSelectedProjectId(project.id);
+              }}
+              highlightProjectId={highlightProjectId}
+              onHighlightEnd={() => setHighlightProjectId(null)}
+            />
+          ) : (
+            <>
+              <main className="flex-1 relative overflow-hidden">
+                <MapPlaceholder project={selectedProject} isProcessingMode={viewMode === 'processing'} selectedImageId={selectedImageId} onSelectImage={(id) => setSelectedImageId(id)} />
+              </main>
+              {viewMode === 'dashboard' && selectedProjectId && (
+                <div className="h-[350px] border-t border-slate-300 bg-white shadow-sm z-20 relative flex items-center justify-center text-slate-400">
+                  <InspectorPanel
+                    project={selectedProject}
+                    image={selectedImage}
+                    qcData={qcData[selectedImageId] || {}}
+                    onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
+                    onCloseImage={() => setSelectedImageId(null)}
+                    onExport={() => openExportDialog([selectedProject.id])}
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
