@@ -197,11 +197,15 @@ export default function DashboardView({
     }, [highlightProjectId, onHighlightEnd]);
 
     // Determine layout based on user preference or auto-detect
+    // When in auto mode, prioritize sidebarWidth (if provided) over containerWidth
     const isWideLayout = useMemo(() => {
         if (layoutMode === 'wide') return true;
         if (layoutMode === 'narrow') return false;
-        return containerWidth > 900; // auto mode
-    }, [layoutMode, containerWidth]);
+        // Auto mode: if sidebar is wide, use narrow layout for main content
+        // Sidebar > 450px means less space for content => narrow layout
+        if (sidebarWidth > 450) return false;
+        return containerWidth > 700; // Lowered threshold for better responsiveness
+    }, [layoutMode, containerWidth, sidebarWidth]);
 
     // Calculate stats from projects
     const stats = useMemo(() => {
@@ -233,12 +237,13 @@ export default function DashboardView({
 
             {/* WIDE LAYOUT: Map (left) + Stats (right) side by side */}
             {isWideLayout ? (
-                <div className="grid grid-cols-2 gap-6">
-                    {/* Left Column - Footprint Map */}
-                    <div className="flex flex-col gap-6">
+                <div className="grid grid-cols-2 gap-6" style={{ minHeight: 'calc(100vh - 180px)' }}>
+                    {/* Left Column - Footprint Map (full height) */}
+                    <div className="flex flex-col">
                         <FootprintMap
                             projects={projects}
-                            height={500}
+                            height="100%"
+                            style={{ flex: 1, minHeight: '500px' }}
                             onProjectClick={onProjectClick}
                             highlightProjectId={highlightProjectId}
                         />

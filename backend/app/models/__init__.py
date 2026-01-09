@@ -8,6 +8,7 @@ from app.models.project import (
     ProcessingJob,
     QCResult,
 )
+from app.models.preset import ProcessingPreset
 
 __all__ = [
     "User",
@@ -19,4 +20,6 @@ __all__ = [
     "CameraModel",
     "ProcessingJob",
     "QCResult",
+    "ProcessingPreset",
 ]
+

@@ -97,9 +97,12 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
         { lat: f.bounds[1][0], lng: f.bounds[1][1] }
     ]);
 
+    const containerStyle = typeof height === 'number' ? { height } : { height, minHeight: '400px' };
+    const isFlexHeight = height === '100%';
+
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${isFlexHeight ? 'flex flex-col h-full' : ''}`}>
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <div>
                     <h3 className="text-sm font-bold text-slate-700">대한민국 전역 처리 현황</h3>
                     <p className="text-xs text-slate-400 mt-0.5">배경지도 및 정사영상 오버레이</p>
@@ -117,7 +120,7 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                 </div>
             </div>
 
-            <div style={{ height }}>
+            <div className={isFlexHeight ? 'flex-1' : ''} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0 }}>
                 <MapContainer
                     center={[36.5, 127.5]}
                     zoom={7}

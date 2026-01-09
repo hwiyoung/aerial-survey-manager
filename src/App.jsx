@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Map, Settings, Bell, User, Search,
   Layers, FileImage, AlertTriangle, Loader2, X,
   Download, Box, Maximize2,
   Sparkles, CheckCircle2, MapPin, UploadCloud,
-  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2
+  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2, Bookmark
 } from 'lucide-react';
 
 // API & Auth imports
@@ -115,7 +115,7 @@ function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
   if (!isOpen) return null;
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="bg-white rounded-xl shadow-2xl w-[500px] overflow-hidden">
         <div className="h-14 border-b border-slate-200 bg-slate-50 flex items-center justify-between px-6">
           <h3 className="font-bold text-slate-800 flex items-center gap-2">
@@ -200,31 +200,262 @@ function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
 
 // [Processing Options Sidebar]
 function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
+  const [presets, setPresets] = useState([]);
+  const [defaultPresets, setDefaultPresets] = useState([]);
+  const [selectedPresetId, setSelectedPresetId] = useState(null);
+  const [loadingPresets, setLoadingPresets] = useState(true);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [newPresetDesc, setNewPresetDesc] = useState('');
+
+  // Processing options state
+  const [options, setOptions] = useState({
+    engine: 'odm',
+    gsd: 5.0,
+    output_crs: 'EPSG:5186',
+    output_format: 'GeoTiff'
+  });
+
+  // Load presets on mount
+  useEffect(() => {
+    const loadPresets = async () => {
+      setLoadingPresets(true);
+      try {
+        const [userPresetsRes, defaultPresetsRes] = await Promise.all([
+          api.getPresets().catch(() => ({ items: [] })),
+          api.getDefaultPresets().catch(() => ({ items: [] }))
+        ]);
+        setPresets(userPresetsRes.items || []);
+        setDefaultPresets(defaultPresetsRes.items || []);
+      } catch (err) {
+        console.error('Failed to load presets:', err);
+      } finally {
+        setLoadingPresets(false);
+      }
+    };
+    loadPresets();
+  }, []);
+
+  // Apply preset options when selected
+  const handlePresetSelect = (presetId) => {
+    setSelectedPresetId(presetId);
+    if (!presetId) return;
+
+    const allPresets = [...presets, ...defaultPresets];
+    const preset = allPresets.find(p => p.id === presetId);
+    if (preset?.options) {
+      setOptions({
+        engine: preset.options.engine || 'odm',
+        gsd: preset.options.gsd || 5.0,
+        output_crs: preset.options.output_crs || 'EPSG:5186',
+        output_format: preset.options.output_format || 'GeoTiff'
+      });
+    }
+  };
+
+  // Save current settings as new preset
+  const handleSavePreset = async () => {
+    if (!newPresetName.trim()) {
+      alert('프리셋 이름을 입력하세요.');
+      return;
+    }
+    try {
+      const created = await api.createPreset({
+        name: newPresetName.trim(),
+        description: newPresetDesc.trim() || null,
+        options: options,
+        is_default: false
+      });
+      setPresets(prev => [...prev, created]);
+      setSelectedPresetId(created.id);
+      setIsSaveModalOpen(false);
+      setNewPresetName('');
+      setNewPresetDesc('');
+      alert('프리셋이 저장되었습니다.');
+    } catch (err) {
+      console.error('Failed to save preset:', err);
+      alert('프리셋 저장 실패: ' + err.message);
+    }
+  };
+
+  // Delete a user preset
+  const handleDeletePreset = async (presetId) => {
+    if (!window.confirm('이 프리셋을 삭제하시겠습니까?')) return;
+    try {
+      await api.deletePreset(presetId);
+      setPresets(prev => prev.filter(p => p.id !== presetId));
+      if (selectedPresetId === presetId) setSelectedPresetId(null);
+    } catch (err) {
+      console.error('Failed to delete preset:', err);
+      alert('삭제 실패: ' + err.message);
+    }
+  };
+
+  // Start processing with current options
+  const handleStart = () => {
+    onStartProcessing(options);
+  };
+
   return (
     <aside className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-xl shrink-0 transition-all relative animate-in slide-in-from-left duration-300" style={{ width: width }}>
       <div className="p-5 border-b border-slate-200 bg-slate-50">
         <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><Settings className="text-blue-600" size={20} />처리 옵션 설정</h3>
         <p className="text-xs text-slate-500 mt-1">프로젝트: {project?.title}</p>
       </div>
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-8">
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6">
+        {/* Preset Selection */}
+        <div className="space-y-3">
+          <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
+            <Bookmark size={14} className="text-blue-500" />프리셋 선택
+          </h4>
+          <div className="flex gap-2">
+            <select
+              className="flex-1 border border-slate-200 p-2 rounded text-sm bg-white"
+              value={selectedPresetId || ''}
+              onChange={(e) => handlePresetSelect(e.target.value || null)}
+              disabled={loadingPresets}
+            >
+              <option value="">-- 프리셋 선택 --</option>
+              {defaultPresets.length > 0 && (
+                <optgroup label="기본 프리셋">
+                  {defaultPresets.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </optgroup>
+              )}
+              {presets.length > 0 && (
+                <optgroup label="내 프리셋">
+                  {presets.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            {selectedPresetId && presets.find(p => p.id === selectedPresetId) && (
+              <button
+                onClick={() => handleDeletePreset(selectedPresetId)}
+                className="p-2 text-red-500 hover:bg-red-50 rounded"
+                title="프리셋 삭제"
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => setIsSaveModalOpen(true)}
+            className="w-full text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 py-2 rounded flex items-center justify-center gap-1"
+          >
+            <Save size={14} /> 현재 설정을 프리셋으로 저장
+          </button>
+        </div>
+
+        {/* Input Data Info */}
         <div className="space-y-3">
           <h4 className="text-sm font-bold text-slate-700 border-b pb-2">1. 입력 데이터 정보</h4>
           <div className="grid grid-cols-2 gap-4 text-sm"><div><span className="text-slate-500 block text-xs">이미지 수</span><span className="font-mono">{project?.imageCount || 0} 장</span></div><div><span className="text-slate-500 block text-xs">EO 데이터</span><span className="text-emerald-600 font-bold">로드됨</span></div></div>
         </div>
+
+        {/* Processing Parameters */}
         <div className="space-y-3">
           <h4 className="text-sm font-bold text-slate-700 border-b pb-2">2. 처리 파라미터</h4>
-          <div className="space-y-2"><label className="block text-sm text-slate-600">GSD (cm/pixel)</label><input type="number" defaultValue={5} className="border p-2 rounded w-full text-sm" /></div>
-          <div className="space-y-2"><label className="block text-sm text-slate-600">좌표계</label><select className="w-full border p-2 rounded text-sm bg-white"><option>GRS80 / TM Middle</option></select></div>
+          <div className="space-y-2">
+            <label className="block text-sm text-slate-600">GSD (cm/pixel)</label>
+            <input
+              type="number"
+              value={options.gsd}
+              onChange={(e) => setOptions(prev => ({ ...prev, gsd: parseFloat(e.target.value) || 5.0 }))}
+              className="border border-slate-200 p-2 rounded w-full text-sm"
+              step="0.5"
+              min="0.5"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="block text-sm text-slate-600">좌표계</label>
+            <select
+              className="w-full border border-slate-200 p-2 rounded text-sm bg-white"
+              value={options.output_crs}
+              onChange={(e) => setOptions(prev => ({ ...prev, output_crs: e.target.value }))}
+            >
+              <option value="EPSG:5186">GRS80 / TM Middle (EPSG:5186)</option>
+              <option value="EPSG:5187">GRS80 / TM East (EPSG:5187)</option>
+              <option value="EPSG:5185">GRS80 / TM West (EPSG:5185)</option>
+              <option value="EPSG:4326">WGS84 (EPSG:4326)</option>
+            </select>
+          </div>
         </div>
+
+        {/* Output Format */}
         <div className="space-y-3">
           <h4 className="text-sm font-bold text-slate-700 border-b pb-2">3. 출력 형식</h4>
-          <div className="flex gap-4"><label className="flex items-center gap-2 text-sm"><input type="checkbox" defaultChecked /> GeoTiff</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" /> JPG</label></div>
+          <div className="flex gap-4">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                name="output_format"
+                value="GeoTiff"
+                checked={options.output_format === 'GeoTiff'}
+                onChange={(e) => setOptions(prev => ({ ...prev, output_format: e.target.value }))}
+              /> GeoTiff
+            </label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                name="output_format"
+                value="JPG"
+                checked={options.output_format === 'JPG'}
+                onChange={(e) => setOptions(prev => ({ ...prev, output_format: e.target.value }))}
+              /> JPG
+            </label>
+          </div>
         </div>
       </div>
       <div className="p-5 border-t border-slate-200 bg-slate-50 flex gap-3">
         <button onClick={onCancel} className="flex-1 py-3 text-slate-600 font-bold text-sm hover:bg-slate-200 rounded-lg">취소</button>
-        <button onClick={onStartProcessing} className="flex-[2] py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-lg flex items-center justify-center gap-2 shadow-md"><Play size={16} fill="currentColor" /> 처리 시작</button>
+        <button onClick={handleStart} className="flex-[2] py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-lg flex items-center justify-center gap-2 shadow-md"><Play size={16} fill="currentColor" /> 처리 시작</button>
       </div>
+
+      {/* Save Preset Modal */}
+      {isSaveModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50" onClick={() => setIsSaveModalOpen(false)}>
+          <div className="bg-white rounded-xl p-6 w-96 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-4 flex items-center gap-2"><Save size={18} className="text-blue-600" /> 프리셋 저장</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-slate-600 mb-1">프리셋 이름 *</label>
+                <input
+                  type="text"
+                  value={newPresetName}
+                  onChange={(e) => setNewPresetName(e.target.value)}
+                  className="w-full border border-slate-200 p-2 rounded text-sm"
+                  placeholder="예: 고해상도 설정"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-600 mb-1">설명 (선택)</label>
+                <textarea
+                  value={newPresetDesc}
+                  onChange={(e) => setNewPresetDesc(e.target.value)}
+                  className="w-full border border-slate-200 p-2 rounded text-sm"
+                  rows={2}
+                  placeholder="이 프리셋에 대한 설명"
+                />
+              </div>
+              <div className="bg-slate-50 p-3 rounded text-xs text-slate-600">
+                <strong>저장될 설정:</strong>
+                <div className="mt-1 grid grid-cols-2 gap-1">
+                  <span>GSD: {options.gsd} cm</span>
+                  <span>좌표계: {options.output_crs}</span>
+                  <span>형식: {options.output_format}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setIsSaveModalOpen(false)} className="flex-1 py-2 border border-slate-200 rounded text-sm font-medium hover:bg-slate-50">취소</button>
+              <button onClick={handleSavePreset} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-bold">저장</button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -238,6 +469,8 @@ function UploadWizard({ isOpen, onClose, onComplete }) {
   const [cameraModels, setCameraModels] = useState([]);
   const [isAddingCamera, setIsAddingCamera] = useState(false);
   const [newCamera, setNewCamera] = useState({ name: '', focal_length: 80, sensor_width: 53.4, sensor_height: 40, pixel_size: 5.2 });
+  const [projectName, setProjectName] = useState('');
+  const [showMismatchWarning, setShowMismatchWarning] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -304,13 +537,29 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
       setImageCount(0);
       setEoFileName(null);
       setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } });
+      setProjectName('');
+      setShowMismatchWarning(false);
+      setSelectedFiles([]);
+      setSelectedEoFile(null);
     }
   }, [isOpen]);
 
+  // Image file extensions to filter
+  const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.dng', '.raw', '.arw', '.cr2', '.nef'];
+
   const handleFolderSelect = (e) => {
-    const files = Array.from(e.target.files);
-    setSelectedFiles(files);
-    setImageCount(files.length);
+    const allFiles = Array.from(e.target.files);
+    const imageFiles = allFiles.filter(f =>
+      IMAGE_EXTENSIONS.some(ext => f.name.toLowerCase().endsWith(ext))
+    );
+    setSelectedFiles(imageFiles);
+    setImageCount(imageFiles.length);
+    // Auto-set project name from folder name if not set
+    if (!projectName && allFiles.length > 0) {
+      const path = allFiles[0].webkitRelativePath || '';
+      const folderName = path.split('/')[0];
+      if (folderName) setProjectName(folderName);
+    }
   };
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files);
@@ -332,10 +581,40 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
     }
   };
 
+  // Count EO data lines (excluding header if applicable)
+  const eoLineCount = useMemo(() => {
+    if (!rawEoData) return 0;
+    const lines = rawEoData.split('\n').filter(l => l.trim());
+    return eoConfig.hasHeader ? Math.max(0, lines.length - 1) : lines.length;
+  }, [rawEoData, eoConfig.hasHeader]);
+
+  const handleProceedToStep4 = () => {
+    if (imageCount !== eoLineCount) {
+      setShowMismatchWarning(true);
+    } else {
+      setStep(4);
+    }
+  };
+
+  const handleConfirmMismatch = () => {
+    setShowMismatchWarning(false);
+    setStep(4);
+  };
+
+  const handleCancelUpload = () => {
+    if (imageCount > 0 || eoFileName) {
+      if (window.confirm('업로드를 취소하시겠습니까? 모든 선택이 초기화됩니다.')) {
+        onClose();
+      }
+    } else {
+      onClose();
+    }
+  };
+
   const handleFinish = async () => {
     // Pass raw data to parent for processing
     const projectData = {
-      title: `Project_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`,
+      title: projectName || `Project_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`,
       region: '경기권역',
       company: '신규 업로드',
     };
@@ -354,9 +633,15 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
   if (!isOpen) return null;
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="bg-white rounded-xl shadow-2xl w-[900px] flex flex-col max-h-[95vh]">
-        <div className="h-16 border-b border-slate-200 flex items-center justify-between px-8 bg-slate-50"><h3 className="font-bold text-slate-800 text-lg flex items-center gap-2"><UploadCloud size={24} className="text-blue-600" />새 프로젝트 데이터 업로드</h3><div className="flex items-center gap-1">{[1, 2, 3, 4].map(s => (<div key={s} className={`w-2 h-2 rounded-full ${step === s ? 'bg-blue-600 scale-125' : step > s ? 'bg-blue-300' : 'bg-slate-200'}`} />))}</div></div>
+        <div className="h-16 border-b border-slate-200 flex items-center justify-between px-8 bg-slate-50">
+          <h3 className="font-bold text-slate-800 text-lg flex items-center gap-2"><UploadCloud size={24} className="text-blue-600" />새 프로젝트 데이터 업로드</h3>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1">{[1, 2, 3, 4].map(s => (<div key={s} className={`w-2 h-2 rounded-full ${step === s ? 'bg-blue-600 scale-125' : step > s ? 'bg-blue-300' : 'bg-slate-200'}`} />))}</div>
+            <button onClick={handleCancelUpload} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg transition-colors" title="닫기"><X size={20} /></button>
+          </div>
+        </div>
         <div className="p-8 flex-1 overflow-y-auto min-h-[500px]">
           {step === 1 && (
             <div className="space-y-6 max-w-2xl mx-auto h-full flex flex-col justify-center">
@@ -507,8 +792,20 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             <div className="space-y-8 max-w-2xl mx-auto h-full flex flex-col justify-center">
               <h4 className="text-2xl font-bold text-slate-800 text-center">4. 업로드 결과 요약</h4>
               <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-lg space-y-6">
+                {/* Project Name Input */}
+                <div className="pb-4 border-b border-slate-100">
+                  <label className="text-slate-500 font-medium block mb-2">프로젝트 이름</label>
+                  <input
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="프로젝트 이름을 입력하세요"
+                    className="w-full p-3 border border-slate-300 rounded-lg text-lg font-bold focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">비워두면 자동으로 생성됩니다</p>
+                </div>
                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">입력 이미지</span><div className="text-right"><span className="text-xl font-bold text-slate-800">{imageCount}</span><span className="text-sm text-slate-400 ml-1">장</span></div></div>
-                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoConfig.crs}</div></div></div>
+                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoConfig.crs} · {eoLineCount}줄</div></div></div>
                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{cameraModel}</span></div>
                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
               </div>
@@ -516,12 +813,35 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             </div>
           )}
         </div>
-        <div className="h-20 border-t border-slate-200 px-8 flex items-center justify-end gap-3 bg-slate-50">
-          {step > 1 && <button onClick={() => setStep(s => s - 1)} className="px-5 py-2.5 text-slate-500 font-bold hover:bg-slate-200 rounded-lg transition-colors">이전</button>}
-          {step === 1 && <button onClick={() => setStep(2)} disabled={imageCount === 0} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm">확인</button>}
-          {step === 2 && <button onClick={() => setStep(3)} disabled={!eoFileName} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm flex items-center gap-2">다음 <ArrowRight size={18} /></button>}
-          {step === 3 && <button onClick={() => setStep(4)} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm flex items-center gap-2">다음 <ArrowRight size={18} /></button>}
-          {step === 4 && <button onClick={handleFinish} className="px-8 py-2.5 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 flex items-center gap-2 shadow-md transition-all active:scale-95"><CheckCircle2 size={18} /> 확인 및 설정 이동</button>}
+        {/* EO/Image count mismatch warning modal */}
+        {showMismatchWarning && (
+          <div className="absolute inset-0 z-[1100] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md animate-in zoom-in-95">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-amber-100 rounded-full text-amber-600"><AlertTriangle size={24} /></div>
+                <h4 className="font-bold text-slate-800">데이터 불일치</h4>
+              </div>
+              <p className="text-sm text-slate-600 mb-4">
+                이미지 수(<span className="font-bold text-blue-600">{imageCount}장</span>)와
+                EO 데이터 수(<span className="font-bold text-amber-600">{eoLineCount}줄</span>)가 일치하지 않습니다.
+              </p>
+              <p className="text-xs text-slate-500 mb-6">그래도 진행하시겠습니까?</p>
+              <div className="flex gap-3">
+                <button onClick={() => setShowMismatchWarning(false)} className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">돌아가기</button>
+                <button onClick={handleConfirmMismatch} className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-bold hover:bg-amber-600">그래도 진행</button>
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="h-20 border-t border-slate-200 px-8 flex items-center justify-between bg-slate-50">
+          <button onClick={handleCancelUpload} className="px-4 py-2 text-slate-400 hover:text-slate-600 text-sm">취소</button>
+          <div className="flex items-center gap-3">
+            {step > 1 && <button onClick={() => setStep(s => s - 1)} className="px-5 py-2.5 text-slate-500 font-bold hover:bg-slate-200 rounded-lg transition-colors">이전</button>}
+            {step === 1 && <button onClick={() => setStep(2)} disabled={imageCount === 0} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm">확인</button>}
+            {step === 2 && <button onClick={() => setStep(3)} disabled={!eoFileName} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm flex items-center gap-2">다음 <ArrowRight size={18} /></button>}
+            {step === 3 && <button onClick={handleProceedToStep4} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm flex items-center gap-2">다음 <ArrowRight size={18} /></button>}
+            {step === 4 && <button onClick={handleFinish} className="px-8 py-2.5 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 flex items-center gap-2 shadow-md transition-all active:scale-95"><CheckCircle2 size={18} /> 확인 및 설정 이동</button>}
+          </div>
         </div>
       </div>
     </div>
@@ -667,43 +987,53 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
     );
   }
 
-  // Expanded mode: full info with always-visible buttons
+  // Expanded mode: full info with always-visible buttons - HORIZONTAL LAYOUT
   if (sizeMode === 'expanded') {
     return (
-      <div onClick={onSelect} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
-        <div className="flex items-start gap-3">
-          <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
-          <div className="flex-1 min-w-0">
-            <div className="flex justify-between items-start">
-              <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
-              <div className="flex items-center gap-1">
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
-                <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제">
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span><span className="text-slate-300">|</span><span>{project.company}</span></div>
-            {/* Extended info for expanded mode */}
-            <div className="flex items-center gap-3 text-xs text-slate-400 mt-2">
-              <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
-              {project.startDate && <span className="flex items-center gap-1">📅 {project.startDate}</span>}
-            </div>
-            {/* Progress bar for processing status */}
-            {project.status === '진행중' && (
-              <div className="mt-2">
-                <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{ width: '60%' }}></div>
-                </div>
-              </div>
-            )}
+      <div onClick={onSelect} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+        {/* Main row: checkbox + title + inline info + status + delete */}
+        <div className="flex items-center gap-3">
+          <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
+
+          {/* Title */}
+          <h4 className="text-sm font-bold text-slate-800 truncate min-w-0 max-w-[200px]">{project.title}</h4>
+
+          {/* Inline metadata - horizontal */}
+          <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+            <span className="bg-slate-100 px-1.5 py-0.5 rounded">{project.region}</span>
+            <span className="text-slate-300">|</span>
+            <span className="truncate max-w-[100px]">{project.company}</span>
+            <span className="text-slate-300">|</span>
+            <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
+            {project.startDate && <><span className="text-slate-300">|</span><span>📅 {project.startDate}</span></>}
           </div>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Status badge */}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+
+          {/* Delete button */}
+          <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all shrink-0" title="프로젝트 삭제">
+            <Trash2 size={14} />
+          </button>
         </div>
-        {/* Always visible action buttons in expanded mode */}
-        <div className="flex gap-2 pl-7">
+
+        {/* Progress bar for processing status */}
+        {project.status === '진행중' && (
+          <div className="mt-2 ml-8">
+            <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+              <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+            </div>
+          </div>
+        )}
+
+        {/* Action buttons row */}
+        <div className="flex gap-2 mt-2 ml-8">
           <button
             onClick={handleProcessing}
-            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+            className="flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
             title="처리 옵션 설정"
           >
             <Play size={12} /> 처리
@@ -711,7 +1041,7 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
           <button
             onClick={handleExport}
             disabled={project.status !== '완료'}
-            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title="정사영상 내보내기"
           >
             <Download size={12} /> 내보내기
@@ -788,7 +1118,7 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
   if (!project) return <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 map-grid text-slate-400"><div className="bg-white p-6 rounded-xl shadow-sm text-center"><Layers size={48} className="mx-auto mb-4 text-slate-300" /><p className="text-lg font-medium text-slate-600">프로젝트를 선택하세요</p></div></div>;
 
   return (
-    <div className="w-full h-full relative bg-slate-200 z-0">
+    <div className="w-full h-full relative bg-slate-200" style={{ isolation: 'isolate', zIndex: 0 }}>
       <MapContainer
         center={[36.5, 127.5]}
         zoom={7}
@@ -1039,12 +1369,37 @@ function Dashboard() {
   const selectedImage = selectedProject?.images?.find(img => img.id === selectedImageId) || null;
   const [qcData, setQcData] = useState(() => JSON.parse(localStorage.getItem('innopam_qc_data') || '{}'));
 
+  // RAF-based smooth resize handling
+  const rafRef = useRef(null);
   const startResizing = useCallback(() => setIsResizing(true), []);
   useEffect(() => {
-    const handleMove = (e) => isResizing && setSidebarWidth(Math.max(240, Math.min(800, e.clientX)));
-    const handleUp = () => setIsResizing(false);
-    if (isResizing) { window.addEventListener('mousemove', handleMove); window.addEventListener('mouseup', handleUp); }
-    return () => { window.removeEventListener('mousemove', handleMove); window.removeEventListener('mouseup', handleUp); };
+    const handleMove = (e) => {
+      if (!isResizing) return;
+      if (rafRef.current) return; // Skip if RAF is pending
+      rafRef.current = requestAnimationFrame(() => {
+        setSidebarWidth(Math.max(240, Math.min(800, e.clientX)));
+        rafRef.current = null;
+      });
+    };
+    const handleUp = () => {
+      setIsResizing(false);
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+    if (isResizing) {
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
   }, [isResizing]);
 
   const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel }) => {
@@ -1121,21 +1476,26 @@ function Dashboard() {
     }
   };
 
-  const handleStartProcessing = async () => {
+  const handleStartProcessing = async (options = {}) => {
     if (!processingProject) return;
 
     const projectId = processingProject.id;
 
+    // Use provided options or defaults
+    const processingOptions = {
+      engine: options.engine || 'odm',
+      gsd: options.gsd || 5.0,
+      output_crs: options.output_crs || 'EPSG:5186',
+      output_format: options.output_format || 'GeoTiff',
+    };
+
     try {
       // Start processing via API
-      await api.startProcessing(projectId, {
-        engine: 'odm',
-        gsd: 5.0,
-        output_crs: 'EPSG:5186',
-        output_format: 'GeoTiff',
-      });
+      await api.startProcessing(projectId, processingOptions);
     } catch (err) {
       console.error('Failed to start processing:', err);
+      alert('처리 시작 실패: ' + err.message);
+      return;
     }
 
     // Go to dashboard with highlight (not select the project directly)

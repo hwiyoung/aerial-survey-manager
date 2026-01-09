@@ -197,12 +197,12 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 
 ### ✅ Phase 4: Project Management & Dashboard (Completed)
 - [x] EO data parsing and storage
-- [x] Frontend-Backend API integration
 - [x] Dashboard with layout toggle (Wide/Narrow/Auto)
 - [x] Footprint map with project polygons
-- [x] Processing start highlight animation
-- [x] Extended project info in Inspector Panel
+- [x] Processing start pulse animation & highlight
 - [x] Compact mode hover action icons
+- [x] Sidebar resizing performance (RAF based)
+- [x] Upload Wizard improvements (Project name, image filter)
 - [x] Project deletion (single/multi)
 
 ### 🔄 Phase 5: Advanced Features (In Progress)

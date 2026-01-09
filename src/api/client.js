@@ -263,6 +263,33 @@ class ApiClient {
             body: formData,
         });
     }
+
+    // --- Processing Presets ---
+    async getPresets() {
+        return this.request('/presets');
+    }
+
+    async getDefaultPresets() {
+        return this.request('/presets/defaults');
+    }
+
+    async createPreset(data) {
+        return this.request('/presets', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async updatePreset(presetId, data) {
+        return this.request(`/presets/${presetId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async deletePreset(presetId) {
+        return this.request(`/presets/${presetId}`, { method: 'DELETE' });
+    }
 }
 
 export const api = new ApiClient();

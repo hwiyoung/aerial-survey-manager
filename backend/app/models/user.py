@@ -51,6 +51,9 @@ class User(Base):
     permissions: Mapped[list["ProjectPermission"]] = relationship(
         "ProjectPermission", back_populates="user"
     )
+    presets: Mapped[list["ProcessingPreset"]] = relationship(
+        "ProcessingPreset", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class ProjectPermission(Base):
