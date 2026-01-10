@@ -157,12 +157,76 @@ function LayoutToggle({ layout, onToggle }) {
 }
 
 /**
+ * Project Detail View - shows when a project is selected via single click
+ * Replaces the statistics section with project-specific information
+ */
+function ProjectDetailView({ project }) {
+    if (!project) return null;
+
+    const statusColor = {
+        '완료': 'bg-emerald-100 text-emerald-700',
+        '진행중': 'bg-blue-100 text-blue-700',
+        '대기': 'bg-slate-100 text-slate-600',
+        '오류': 'bg-red-100 text-red-700'
+    }[project.status] || 'bg-slate-100 text-slate-600';
+
+    return (
+        <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between mb-4">
+                <div>
+                    <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
+                    <p className="text-sm text-slate-500">{project.region} · {project.company}</p>
+                </div>
+                <span className={`px-3 py-1 text-sm font-medium rounded-full ${statusColor}`}>
+                    {project.status}
+                </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+                <DashboardStatsCard
+                    icon={<Camera size={18} />}
+                    value={project.imageCount?.toLocaleString() || '0'}
+                    unit="장"
+                    label="원본 사진"
+                />
+                <DashboardStatsCard
+                    icon={<MapPin size={18} />}
+                    value={project.area?.toFixed(1) || '0'}
+                    unit="km²"
+                    label="촬영 면적"
+                />
+                <DashboardStatsCard
+                    icon={<HardDrive size={18} />}
+                    value={project.size || '0'}
+                    unit="GB"
+                    label="데이터 용량"
+                />
+                <DashboardStatsCard
+                    icon={<FolderCheck size={18} />}
+                    value={project.date || '-'}
+                    label="촬영일"
+                />
+            </div>
+
+            {/* Additional info if available */}
+            {project.description && (
+                <div className="mt-4 pt-4 border-t border-slate-100">
+                    <p className="text-sm text-slate-600">{project.description}</p>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/**
  * Main Dashboard View Component
  * Displays footprint map, statistics, and charts
+ * When a project is selected, shows project details instead of statistics
  * Layout can be forced to wide/narrow or auto-adapt based on container width
  */
 export default function DashboardView({
     projects = [],
+    selectedProject = null,
     sidebarWidth = 320,
     onProjectClick,
     highlightProjectId = null,
@@ -191,7 +255,7 @@ export default function DashboardView({
         if (highlightProjectId && onHighlightEnd) {
             const timer = setTimeout(() => {
                 onHighlightEnd();
-            }, 3500); // 3.5 seconds
+            }, 2000); // 2 seconds (~3-4 blinks)
             return () => clearTimeout(timer);
         }
     }, [highlightProjectId, onHighlightEnd]);
@@ -249,21 +313,27 @@ export default function DashboardView({
                         />
                     </div>
 
-                    {/* Right Column - Stats */}
+                    {/* Right Column - Stats or Project Details */}
                     <div className="flex flex-col gap-6">
-                        {/* Stats Summary (4 cards in 2x2 grid) */}
-                        <StatsSummary stats={stats} isCompact={true} />
+                        {selectedProject ? (
+                            <ProjectDetailView project={selectedProject} />
+                        ) : (
+                            <>
+                                {/* Stats Summary (4 cards in 2x2 grid) */}
+                                <StatsSummary stats={stats} isCompact={true} />
 
-                        {/* Additional Charts */}
-                        <TrendLineChart data={MOCK_MONTHLY_DATA} height={180} />
-                        <div className="grid grid-cols-2 gap-4">
-                            <DistributionPieChart data={MOCK_REGION_DATA} height={160} />
-                            <ProgressDonutChart
-                                completed={stats.completed}
-                                total={stats.completed + stats.processing}
-                                height={160}
-                            />
-                        </div>
+                                {/* Additional Charts */}
+                                <TrendLineChart data={MOCK_MONTHLY_DATA} height={180} />
+                                <div className="grid grid-cols-2 gap-4">
+                                    <DistributionPieChart data={MOCK_REGION_DATA} height={160} />
+                                    <ProgressDonutChart
+                                        completed={stats.completed}
+                                        total={stats.completed + stats.processing}
+                                        height={160}
+                                    />
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             ) : (
@@ -277,21 +347,28 @@ export default function DashboardView({
                         highlightProjectId={highlightProjectId}
                     />
 
-                    {/* Stats Summary (4 cards in a row) */}
-                    <StatsSummary stats={stats} isCompact={false} />
+                    {/* Stats or Project Details */}
+                    {selectedProject ? (
+                        <ProjectDetailView project={selectedProject} />
+                    ) : (
+                        <>
+                            {/* Stats Summary (4 cards in a row) */}
+                            <StatsSummary stats={stats} isCompact={false} />
 
-                    {/* Additional Charts */}
-                    <TrendLineChart data={MOCK_MONTHLY_DATA} height={200} />
+                            {/* Additional Charts */}
+                            <TrendLineChart data={MOCK_MONTHLY_DATA} height={200} />
 
-                    <div className={`grid gap-4 ${containerWidth > 600 ? 'grid-cols-3' : containerWidth > 400 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                        <DistributionPieChart data={MOCK_REGION_DATA} height={180} />
-                        <ProgressDonutChart
-                            completed={stats.completed}
-                            total={stats.completed + stats.processing}
-                            height={180}
-                        />
-                        <MonthlyBarChart data={MOCK_MONTHLY_DATA} height={180} />
-                    </div>
+                            <div className={`grid gap-4 ${containerWidth > 600 ? 'grid-cols-3' : containerWidth > 400 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                                <DistributionPieChart data={MOCK_REGION_DATA} height={180} />
+                                <ProgressDonutChart
+                                    completed={stats.completed}
+                                    total={stats.completed + stats.processing}
+                                    height={180}
+                                />
+                                <MonthlyBarChart data={MOCK_MONTHLY_DATA} height={180} />
+                            </div>
+                        </>
+                    )}
                 </div>
             )}
         </div>

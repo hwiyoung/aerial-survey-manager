@@ -206,6 +206,9 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Project deletion (single/multi)
 
 ### 🔄 Phase 5: Advanced Features (In Progress)
+- [x] **Click/Double-click separation**:
+  - Single click: Map highlight (4 blinks) + Project details display
+  - Double click: Full map + Inspector Panel
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)

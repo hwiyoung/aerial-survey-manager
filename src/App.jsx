@@ -891,7 +891,7 @@ function Header() {
 }
 
 // [Sidebar]
-function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport }) {
+function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
 
@@ -933,7 +933,7 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="p-2 space-y-1">
           {filteredProjects.map(project => (
-            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} onSelect={() => onSelectProject(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} />
+            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} onSelect={() => onSelectProject(project.id)} onOpenInspector={() => onOpenInspector(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} />
           ))}
         </div>
       </div>
@@ -953,7 +953,34 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
   );
 }
 
-function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onToggle, onDelete, onOpenProcessing, onOpenExport }) {
+function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onOpenInspector, onToggle, onDelete, onOpenProcessing, onOpenExport }) {
+  // Timer ref for click/double-click distinction
+  const clickTimeoutRef = useRef(null);
+  const CLICK_DELAY = 250; // ms delay to distinguish single vs double click
+
+  const handleClick = (e) => {
+    // Prevent default and clear any existing timeout
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+    // Set a timeout - if no double click happens, this fires
+    clickTimeoutRef.current = setTimeout(() => {
+      onSelect(); // Single click: select project only
+      clickTimeoutRef.current = null;
+    }, CLICK_DELAY);
+  };
+
+  const handleDoubleClick = (e) => {
+    // Cancel the single click timeout
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+    onSelect(); // Also select the project
+    onOpenInspector(); // Double click: open inspector
+  };
+
   const handleDelete = (e) => {
     e.stopPropagation();
     if (window.confirm(`"${project.title}" 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.`)) {
@@ -971,10 +998,19 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
     onOpenExport();
   };
 
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Compact mode: minimal info with hover action icons
   if (sizeMode === 'compact') {
     return (
-      <div onClick={onSelect} className={`relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+      <div onClick={handleClick} onDoubleClick={handleDoubleClick} className={`relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent"}`}>
         <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} />}</div>
         <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
         <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
@@ -990,7 +1026,7 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
   // Expanded mode: full info with always-visible buttons - HORIZONTAL LAYOUT
   if (sizeMode === 'expanded') {
     return (
-      <div onClick={onSelect} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+      <div onClick={handleClick} onDoubleClick={handleDoubleClick} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
         {/* Main row: checkbox + title + inline info + status + delete */}
         <div className="flex items-center gap-3">
           <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
@@ -1053,7 +1089,7 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
 
   // Normal mode (default): current layout
   return (
-    <div onClick={onSelect} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+    <div onClick={handleClick} onDoubleClick={handleDoubleClick} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
       <div className="flex items-start gap-3">
         <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
         <div className="flex-1 min-w-0">
@@ -1331,6 +1367,7 @@ function Dashboard() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [showInspector, setShowInspector] = useState(false); // Inspector only opens on double-click
 
   const [viewMode, setViewMode] = useState(initialViewMode);
   const [processingProject, setProcessingProject] = useState(null);
@@ -1538,7 +1575,8 @@ function Dashboard() {
             projects={projects}
             selectedProjectId={selectedProjectId}
             checkedProjectIds={checkedProjectIds}
-            onSelectProject={(id) => { setSelectedProjectId(id); setSelectedImageId(null); }}
+            onSelectProject={(id) => { setSelectedProjectId(id); setSelectedImageId(null); setShowInspector(false); }}
+            onOpenInspector={(id) => { setSelectedProjectId(id); setShowInspector(true); }}
             onToggleCheck={handleToggleCheck}
             onSelectMultiple={handleSelectMultiple}
             onOpenUpload={() => setIsUploadOpen(true)}
@@ -1589,34 +1627,46 @@ function Dashboard() {
         )}
         <div className="w-1.5 bg-slate-200 hover:bg-blue-400 cursor-col-resize z-20 flex items-center justify-center group" onMouseDown={startResizing}><div className="h-8 w-1 bg-slate-300 rounded-full group-hover:bg-white/50" /></div>
         <div className="flex flex-col flex-1 min-w-0 bg-slate-50">
-          {/* Show DashboardView when no project selected in dashboard mode */}
-          {viewMode === 'dashboard' && !selectedProjectId ? (
-            <DashboardView
-              projects={projects}
-              sidebarWidth={sidebarWidth}
-              onProjectClick={(project) => {
-                setSelectedProjectId(project.id);
-              }}
-              highlightProjectId={highlightProjectId}
-              onHighlightEnd={() => setHighlightProjectId(null)}
-            />
+          {/* Dashboard mode view logic */}
+          {viewMode === 'dashboard' ? (
+            <>
+              {/* When double-clicked (showInspector=true): show Map + Inspector */}
+              {showInspector && selectedProjectId ? (
+                <>
+                  <main className="flex-1 relative overflow-hidden">
+                    <MapPlaceholder project={selectedProject} isProcessingMode={false} selectedImageId={selectedImageId} onSelectImage={(id) => setSelectedImageId(id)} />
+                  </main>
+                  <div className="h-[350px] border-t border-slate-300 bg-white shadow-sm z-20 relative flex items-center justify-center text-slate-400">
+                    <InspectorPanel
+                      project={selectedProject}
+                      image={selectedImage}
+                      qcData={qcData[selectedImageId] || {}}
+                      onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
+                      onCloseImage={() => setSelectedImageId(null)}
+                      onExport={() => openExportDialog([selectedProject.id])}
+                    />
+                  </div>
+                </>
+              ) : (
+                /* Single click or no selection: show DashboardView with project details */
+                <DashboardView
+                  projects={projects}
+                  selectedProject={selectedProject}
+                  sidebarWidth={sidebarWidth}
+                  onProjectClick={(project) => {
+                    setSelectedProjectId(project.id);
+                  }}
+                  highlightProjectId={selectedProjectId || highlightProjectId}
+                  onHighlightEnd={() => setHighlightProjectId(null)}
+                />
+              )}
+            </>
           ) : (
+            /* Processing mode: show Map + Inspector */
             <>
               <main className="flex-1 relative overflow-hidden">
                 <MapPlaceholder project={selectedProject} isProcessingMode={viewMode === 'processing'} selectedImageId={selectedImageId} onSelectImage={(id) => setSelectedImageId(id)} />
               </main>
-              {viewMode === 'dashboard' && selectedProjectId && (
-                <div className="h-[350px] border-t border-slate-300 bg-white shadow-sm z-20 relative flex items-center justify-center text-slate-400">
-                  <InspectorPanel
-                    project={selectedProject}
-                    image={selectedImage}
-                    qcData={qcData[selectedImageId] || {}}
-                    onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
-                    onCloseImage={() => setSelectedImageId(null)}
-                    onExport={() => openExportDialog([selectedProject.id])}
-                  />
-                </div>
-              )}
             </>
           )}
         </div>

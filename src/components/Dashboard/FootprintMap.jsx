@@ -46,16 +46,25 @@ function HighlightFlyTo({ footprint }) {
  */
 export function FootprintMap({ projects = [], height = 400, onProjectClick, highlightProjectId = null }) {
     const [highlightPulse, setHighlightPulse] = useState(false);
+    const blinkCountRef = useRef(0);
 
-    // Pulse animation for highlight
+    // Pulse animation for highlight - exactly 4 blinks
     useEffect(() => {
         if (highlightProjectId) {
+            blinkCountRef.current = 0;
             const interval = setInterval(() => {
                 setHighlightPulse(prev => !prev);
-            }, 500);
+                blinkCountRef.current += 1;
+                // 8 toggles = 4 full blinks
+                if (blinkCountRef.current >= 8) {
+                    clearInterval(interval);
+                    setHighlightPulse(false);
+                }
+            }, 250); // 250ms for faster blinking
             return () => clearInterval(interval);
         } else {
             setHighlightPulse(false);
+            blinkCountRef.current = 0;
         }
     }, [highlightProjectId]);
 
