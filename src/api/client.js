@@ -290,6 +290,33 @@ class ApiClient {
     async deletePreset(presetId) {
         return this.request(`/presets/${presetId}`, { method: 'DELETE' });
     }
+
+    // --- Project Groups ---
+    async getGroups(flat = false) {
+        return this.request(`/groups?flat=${flat}`);
+    }
+
+    async createGroup(data) {
+        return this.request('/groups', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async updateGroup(groupId, data) {
+        return this.request(`/groups/${groupId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async deleteGroup(groupId, mode = 'keep') {
+        return this.request(`/groups/${groupId}?mode=${mode}`, { method: 'DELETE' });
+    }
+
+    async moveProjectToGroup(projectId, groupId) {
+        return this.updateProject(projectId, { group_id: groupId });
+    }
 }
 
 export const api = new ApiClient();

@@ -4,7 +4,8 @@ import {
   Layers, FileImage, AlertTriangle, Loader2, X,
   Download, Box, Maximize2,
   Sparkles, CheckCircle2, MapPin, UploadCloud,
-  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2, Bookmark
+  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2, Bookmark,
+  Folder, FolderPlus, ChevronRight, ChevronDown, GripVertical, MoreHorizontal, Edit2, Plus
 } from 'lucide-react';
 
 // API & Auth imports
@@ -890,6 +891,85 @@ function Header() {
   );
 }
 
+// [Group Item with Drag-Drop]
+function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDelete, selectedProjectId, onSelectProject, onOpenInspector, checkedProjectIds, onToggleCheck, sizeMode, onOpenProcessing, onOpenExport, onDeleteProject }) {
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+
+  const groupProjects = projects.filter(p => p.group_id === group.id);
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const projectId = e.dataTransfer.getData('projectId');
+    if (projectId) {
+      onDrop(projectId, group.id);
+    }
+  };
+
+  return (
+    <div className="mb-1">
+      <div
+        className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${isDragOver ? 'bg-blue-100 ring-2 ring-blue-400' : 'hover:bg-slate-100'}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <button onClick={onToggle} className="p-0.5 hover:bg-slate-200 rounded">
+          {isExpanded ? <ChevronDown size={14} className="text-slate-500" /> : <ChevronRight size={14} className="text-slate-500" />}
+        </button>
+        <div className="w-4 h-4 rounded flex-shrink-0" style={{ backgroundColor: group.color || '#94a3b8' }} />
+        <span className="text-sm font-medium text-slate-700 flex-1 truncate">{group.name}</span>
+        <span className="text-xs text-slate-400">{groupProjects.length}</span>
+        <div className="relative">
+          <button onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className="p-1 hover:bg-slate-200 rounded opacity-0 group-hover:opacity-100">
+            <MoreHorizontal size={14} className="text-slate-400" />
+          </button>
+          {showMenu && (
+            <div className="absolute right-0 top-6 bg-white border border-slate-200 rounded-md shadow-lg z-50 py-1 min-w-[120px]">
+              <button onClick={() => { onEdit(group); setShowMenu(false); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-slate-100 flex items-center gap-2">
+                <Edit2 size={14} /> 수정
+              </button>
+              <button onClick={() => { onDelete(group); setShowMenu(false); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-red-50 text-red-600 flex items-center gap-2">
+                <Trash2 size={14} /> 삭제
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      {isExpanded && groupProjects.length > 0 && (
+        <div className="pl-6 space-y-1 mt-1">
+          {groupProjects.map(project => (
+            <ProjectItem
+              key={project.id}
+              project={project}
+              isSelected={project.id === selectedProjectId}
+              isChecked={checkedProjectIds.has(project.id)}
+              sizeMode={sizeMode}
+              onSelect={() => onSelectProject(project.id)}
+              onOpenInspector={() => onOpenInspector(project.id)}
+              onToggle={() => onToggleCheck(project.id)}
+              onDelete={() => onDeleteProject(project.id)}
+              onOpenProcessing={() => onOpenProcessing(project.id)}
+              onOpenExport={() => onOpenExport(project.id)}
+              draggable
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // [Sidebar]
 function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport }) {
   const [searchTerm, setSearchTerm] = useState('');
@@ -953,10 +1033,17 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
   );
 }
 
-function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onOpenInspector, onToggle, onDelete, onOpenProcessing, onOpenExport }) {
+function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onOpenInspector, onToggle, onDelete, onOpenProcessing, onOpenExport, draggable = false }) {
   // Timer ref for click/double-click distinction
   const clickTimeoutRef = useRef(null);
   const CLICK_DELAY = 250; // ms delay to distinguish single vs double click
+
+  // Drag handlers
+  const handleDragStart = (e) => {
+    if (!draggable) return;
+    e.dataTransfer.setData('projectId', project.id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
 
   const handleClick = (e) => {
     // Prevent default and clear any existing timeout
@@ -1010,7 +1097,7 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
   // Compact mode: minimal info with hover action icons
   if (sizeMode === 'compact') {
     return (
-      <div onClick={handleClick} onDoubleClick={handleDoubleClick} className={`relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+      <div onClick={handleClick} onDoubleClick={handleDoubleClick} draggable={draggable} onDragStart={handleDragStart} className={`relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent"}`}>
         <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} />}</div>
         <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
         <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
@@ -1026,7 +1113,7 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
   // Expanded mode: full info with always-visible buttons - HORIZONTAL LAYOUT
   if (sizeMode === 'expanded') {
     return (
-      <div onClick={handleClick} onDoubleClick={handleDoubleClick} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+      <div onClick={handleClick} onDoubleClick={handleDoubleClick} draggable={draggable} onDragStart={handleDragStart} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
         {/* Main row: checkbox + title + inline info + status + delete */}
         <div className="flex items-center gap-3">
           <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
@@ -1089,7 +1176,7 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
 
   // Normal mode (default): current layout
   return (
-    <div onClick={handleClick} onDoubleClick={handleDoubleClick} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
+    <div onClick={handleClick} onDoubleClick={handleDoubleClick} draggable={draggable} onDragStart={handleDragStart} className={`relative flex flex-col gap-2 p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
       <div className="flex items-start gap-3">
         <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
         <div className="flex-1 min-w-0">

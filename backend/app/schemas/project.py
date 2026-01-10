@@ -15,7 +15,7 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     """Project creation schema."""
-    pass
+    group_id: Optional[UUID] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -24,6 +24,7 @@ class ProjectUpdate(BaseModel):
     region: Optional[str] = None
     company: Optional[str] = None
     status: Optional[str] = None
+    group_id: Optional[UUID] = None
 
 
 class ProjectResponse(ProjectBase):
@@ -33,6 +34,8 @@ class ProjectResponse(ProjectBase):
     progress: int
     owner_id: Optional[UUID] = None
     organization_id: Optional[UUID] = None
+    group_id: Optional[UUID] = None
+    group_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     image_count: int = 0

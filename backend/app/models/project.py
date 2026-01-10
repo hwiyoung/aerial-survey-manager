@@ -35,12 +35,18 @@ class Project(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True
     )
     
+    # Group (hierarchical organization)
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_groups.id", ondelete="SET NULL"), nullable=True
+    )
+    
     # Spatial data (PostGIS)
     bounds = mapped_column(Geometry("POLYGON", srid=4326), nullable=True)
     
     # Relationships
     owner: Mapped["User"] = relationship("User", back_populates="owned_projects")
     organization: Mapped["Organization"] = relationship("Organization", back_populates="projects")
+    group: Mapped["ProjectGroup | None"] = relationship("ProjectGroup", back_populates="projects")
     permissions: Mapped[list["ProjectPermission"]] = relationship(
         "ProjectPermission", back_populates="project", cascade="all, delete-orphan"
     )

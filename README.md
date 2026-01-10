@@ -10,6 +10,7 @@
 - **정사영상 생성**: OpenDroneMap + 외부 처리 엔진 API 듀얼 지원
 - **결과물 다운로드**: 대용량 정사영상 Resumable Download
 - **다중 사용자**: JWT 기반 인증, 조직별 권한 관리
+- **고급 관리 기능**: 프로젝트 그룹핑(폴더), 처리 옵션 프리셋, 다중 선택 일괄 작업
 
 ## 🏗️ Architecture
 
@@ -134,6 +135,14 @@ aerial-survey-manager/
 | `PATCH` | `/api/v1/projects/{id}` | Update project |
 | `DELETE` | `/api/v1/projects/{id}` | Delete project |
 
+### Project Groups
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/groups` | List groups |
+| `POST` | `/api/v1/groups` | Create group |
+| `PATCH` | `/api/v1/groups/{id}` | Update group |
+| `DELETE` | `/api/v1/groups/{id}` | Delete group |
+
 ### Upload & Download
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -204,17 +213,18 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Sidebar resizing performance (RAF based)
 - [x] Upload Wizard improvements (Project name, image filter)
 - [x] Project deletion (single/multi)
+- [x] Processing options presets (CRUD)
+- [x] Click/Double-click behavior separation
 
 ### 🔄 Phase 5: Advanced Features (In Progress)
-- [x] **Click/Double-click separation**:
-  - Single click: Map highlight (4 blinks) + Project details display
-  - Double click: Full map + Inspector Panel
+- [x] **Project Grouping (Backend & Scaffolding)**:
+  - Folders, drag-and-drop support, hierarchical management
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)
 - [x] Dashboard statistics cards
 - [ ] Orthoimage overlay on map
-- [ ] Batch export functionality
+- [x] Batch export functionality (Completed)
 
 ## 🧪 Testing with Real Data
 

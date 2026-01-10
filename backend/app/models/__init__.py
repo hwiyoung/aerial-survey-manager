@@ -9,6 +9,7 @@ from app.models.project import (
     QCResult,
 )
 from app.models.preset import ProcessingPreset
+from app.models.group import ProjectGroup
 
 __all__ = [
     "User",
@@ -21,5 +22,5 @@ __all__ = [
     "ProcessingJob",
     "QCResult",
     "ProcessingPreset",
+    "ProjectGroup",
 ]
-

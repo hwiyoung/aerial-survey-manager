@@ -35,6 +35,14 @@ from app.schemas.project import (
     QCResultUpdate,
     QCResultResponse,
 )
+from app.schemas.group import (
+    GroupBase,
+    GroupCreate,
+    GroupUpdate,
+    GroupResponse,
+    GroupTreeNode,
+    GroupListResponse,
+)
 
 __all__ = [
     # User/Auth
@@ -71,4 +79,11 @@ __all__ = [
     "QCResultBase",
     "QCResultUpdate",
     "QCResultResponse",
+    # Group
+    "GroupBase",
+    "GroupCreate",
+    "GroupUpdate",
+    "GroupResponse",
+    "GroupTreeNode",
+    "GroupListResponse",
 ]
