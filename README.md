@@ -151,6 +151,7 @@ aerial-survey-manager/
 | `POST` | `/api/v1/upload/hooks` | tus webhook |
 | `GET` | `/api/v1/download/projects/{id}/ortho` | Resumable download |
 | `HEAD` | `/api/v1/download/projects/{id}/ortho` | Get file info |
+| `GET` | `/api/v1/download/projects/{id}/cog-url` | COG streaming URL |
 
 ### Processing
 | Method | Endpoint | Description |
@@ -226,7 +227,7 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)
 - [x] Dashboard statistics cards
-- [ ] Orthoimage overlay on map (COG streaming)
+- [/] Orthoimage overlay on map (COG streaming, Verification in progress)
 - [x] Batch export functionality (Completed)
 
 ## 🧪 Testing with Real Data

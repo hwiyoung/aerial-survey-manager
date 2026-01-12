@@ -228,3 +228,83 @@ async def get_download_info(
             "X-File-Size": str(file_size),
         },
     )
+
+
+@router.get("/projects/{project_id}/cog-url")
+async def get_cog_url(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get a presigned URL for COG streaming.
+    
+    This URL can be used by geotiff.js to stream the orthophoto
+    directly from storage with Range Request support.
+    
+    Returns:
+        url: Presigned URL for the COG file
+        bounds: Geographic bounds [west, south, east, north]
+        file_size: Size of the file in bytes
+    """
+    # Check permission
+    permission_checker = PermissionChecker("view")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+    
+    # Get the latest completed processing job
+    result = await db.execute(
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.status == "completed",
+        )
+        .order_by(ProcessingJob.completed_at.desc())
+    )
+    job = result.scalar_one_or_none()
+    
+    if not job or not job.result_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No completed orthophoto found for this project",
+        )
+    
+    file_path = job.result_path
+    
+    # Check if file exists locally
+    if os.path.exists(file_path):
+        file_size = os.path.getsize(file_path)
+        # For local files, return the streaming endpoint URL
+        # The /ortho endpoint already supports Range requests
+        return {
+            "url": f"/api/v1/download/projects/{project_id}/ortho",
+            "local": True,
+            "file_size": file_size,
+            "project_id": str(project_id),
+        }
+    
+    # For MinIO files, generate presigned URL
+    storage = StorageService()
+    object_name = file_path  # Assuming result_path is the MinIO object name
+    
+    if not storage.object_exists(object_name):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Result file not found in storage",
+        )
+    
+    file_size = storage.get_object_size(object_name)
+    
+    # Generate presigned URL valid for 1 hour
+    presigned_url = storage.get_presigned_url(object_name, expires=3600)
+    
+    return {
+        "url": presigned_url,
+        "local": False,
+        "file_size": file_size,
+        "project_id": str(project_id),
+    }
+

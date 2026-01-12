@@ -327,6 +327,11 @@ class ApiClient {
     async getRegionalStats() {
         return this.request('/projects/stats/regional');
     }
+
+    // --- COG/Orthoimage ---
+    async getCogUrl(projectId) {
+        return this.request(`/download/projects/${projectId}/cog-url`);
+    }
 }
 
 export const api = new ApiClient();
