@@ -919,7 +919,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
   return (
     <div className="mb-1">
       <div
-        className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${isDragOver ? 'bg-blue-100 ring-2 ring-blue-400' : 'hover:bg-slate-100'}`}
+        className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${isDragOver ? 'bg-blue-100 ring-2 ring-blue-400' : 'hover:bg-slate-100'}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -971,9 +971,10 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
 }
 
 // [Sidebar]
-function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport }) {
+function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
+  const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
 
   // Width-based size mode calculation
   const sizeMode = useMemo(() => {
@@ -988,6 +989,19 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
     return matchText && matchRegion;
   });
 
+  // Separate projects by group
+  const ungroupedProjects = filteredProjects.filter(p => !p.group_id);
+  const groupedProjectsMap = useMemo(() => {
+    const map = {};
+    groups.forEach(g => { map[g.id] = []; });
+    filteredProjects.forEach(p => {
+      if (p.group_id && map[p.group_id]) {
+        map[p.group_id].push(p);
+      }
+    });
+    return map;
+  }, [filteredProjects, groups]);
+
   const isAllSelected = filteredProjects.length > 0 && filteredProjects.every(p => checkedProjectIds.has(p.id));
 
   const handleToggleAll = () => {
@@ -995,10 +1009,25 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
     onSelectMultiple(ids, !isAllSelected);
   };
 
+  // Drag handlers for ungrouped drop zone
+  const handleDragOverUngrouped = (e) => { e.preventDefault(); setIsDragOverUngrouped(true); };
+  const handleDragLeaveUngrouped = () => setIsDragOverUngrouped(false);
+  const handleDropUngrouped = (e) => {
+    e.preventDefault();
+    setIsDragOverUngrouped(false);
+    const projectId = e.dataTransfer.getData('projectId');
+    if (projectId && onMoveProjectToGroup) {
+      onMoveProjectToGroup(projectId, null); // null = remove from group
+    }
+  };
+
   return (
     <aside className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-sm shrink-0 transition-all relative" style={{ width: width }}>
-      <div className="p-4 pb-2">
-        <button onClick={onOpenUpload} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg flex items-center justify-center gap-2 font-bold shadow-md transition-all active:scale-95"><UploadCloud size={20} /><span>새 프로젝트 업로드</span></button>
+      <div className="p-4 pb-2 flex gap-2">
+        <button onClick={onOpenUpload} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg flex items-center justify-center gap-2 font-bold shadow-md transition-all active:scale-95"><UploadCloud size={20} /><span>새 프로젝트</span></button>
+        {onCreateGroup && (
+          <button onClick={onCreateGroup} className="px-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg flex items-center justify-center transition-all" title="새 폴더"><FolderPlus size={20} /></button>
+        )}
       </div>
       <div className="p-4 pt-2 border-b border-slate-200 space-y-3">
         <div className="relative"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input type="text" placeholder="검색..." className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-sm" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
@@ -1012,9 +1041,59 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
       </div>
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="p-2 space-y-1">
-          {filteredProjects.map(project => (
-            <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} onSelect={() => onSelectProject(project.id)} onOpenInspector={() => onOpenInspector(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} />
+          {/* Render Groups (Folders) */}
+          {groups.map(group => (
+            <GroupItem
+              key={group.id}
+              group={group}
+              projects={filteredProjects}
+              isExpanded={expandedGroupIds.has(group.id)}
+              onToggle={() => onToggleGroupExpand && onToggleGroupExpand(group.id)}
+              onDrop={onMoveProjectToGroup}
+              onEdit={onEditGroup}
+              onDelete={() => onDeleteGroup && onDeleteGroup(group.id)}
+              selectedProjectId={selectedProjectId}
+              onSelectProject={onSelectProject}
+              onOpenInspector={onOpenInspector}
+              checkedProjectIds={checkedProjectIds}
+              onToggleCheck={onToggleCheck}
+              sizeMode={sizeMode}
+              onOpenProcessing={onOpenProcessing}
+              onOpenExport={onOpenExport}
+              onDeleteProject={onDeleteProject}
+            />
           ))}
+          {/* Ungrouped Projects Section */}
+          {ungroupedProjects.length > 0 && (
+            <div
+              className={`mt-2 pt-2 border-t border-dashed border-slate-200 ${isDragOverUngrouped ? 'bg-blue-50 ring-2 ring-blue-300 rounded' : ''}`}
+              onDragOver={handleDragOverUngrouped}
+              onDragLeave={handleDragLeaveUngrouped}
+              onDrop={handleDropUngrouped}
+            >
+              {groups.length > 0 && <div className="text-xs text-slate-400 px-2 py-1 font-medium">미분류 프로젝트</div>}
+              {ungroupedProjects.map(project => (
+                <ProjectItem
+                  key={project.id}
+                  project={project}
+                  isSelected={project.id === selectedProjectId}
+                  isChecked={checkedProjectIds.has(project.id)}
+                  sizeMode={sizeMode}
+                  draggable={true}
+                  onSelect={() => onSelectProject(project.id)}
+                  onOpenInspector={() => onOpenInspector(project.id)}
+                  onToggle={() => onToggleCheck(project.id)}
+                  onDelete={() => onDeleteProject(project.id)}
+                  onOpenProcessing={() => onOpenProcessing(project.id)}
+                  onOpenExport={() => onOpenExport(project.id)}
+                />
+              ))}
+            </div>
+          )}
+          {/* No projects message */}
+          {filteredProjects.length === 0 && (
+            <div className="text-center text-slate-400 py-8 text-sm">프로젝트가 없습니다</div>
+          )}
         </div>
       </div>
       {checkedProjectIds.size > 0 && (
@@ -1365,6 +1444,70 @@ function Dashboard() {
     }));
   }, [apiProjects]);
 
+  // Groups state for folder organization
+  const [groups, setGroups] = useState([]);
+  const [expandedGroupIds, setExpandedGroupIds] = useState(new Set());
+  const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState(null);
+
+  // Fetch groups on mount
+  useEffect(() => {
+    api.getGroups().then(data => {
+      setGroups(Array.isArray(data) ? data : (data.items || []));
+    }).catch(err => console.error('Failed to fetch groups:', err));
+  }, []);
+
+  // Group handlers
+  const handleCreateGroup = async (name, color) => {
+    try {
+      const created = await api.createGroup({ name, color: color || '#94a3b8' });
+      setGroups(prev => [...prev, created]);
+      setExpandedGroupIds(prev => new Set([...prev, created.id]));
+      return created;
+    } catch (err) {
+      console.error('Failed to create group:', err);
+      throw err;
+    }
+  };
+
+  const handleUpdateGroup = async (groupId, data) => {
+    try {
+      const updated = await api.updateGroup(groupId, data);
+      setGroups(prev => prev.map(g => g.id === groupId ? { ...g, ...updated } : g));
+    } catch (err) {
+      console.error('Failed to update group:', err);
+    }
+  };
+
+  const handleDeleteGroup = async (groupId) => {
+    if (!window.confirm('이 그룹을 삭제하시겠습니까? 그룹 내 프로젝트는 유지됩니다.')) return;
+    try {
+      await api.deleteGroup(groupId);
+      setGroups(prev => prev.filter(g => g.id !== groupId));
+      refreshProjects(); // 프로젝트 목록 갱신하여 미분류로 표시
+    } catch (err) {
+      console.error('Failed to delete group:', err);
+    }
+  };
+
+  const handleMoveProjectToGroup = async (projectId, groupId) => {
+    try {
+      await api.moveProjectToGroup(projectId, groupId);
+      refreshProjects();
+    } catch (err) {
+      console.error('Failed to move project:', err);
+    }
+  };
+
+  const toggleGroupExpand = (groupId) => {
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
   // Read project ID from URL query parameter on initial load
   const initialProjectId = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1710,6 +1853,13 @@ function Dashboard() {
             onOpenExport={(projectId) => {
               openExportDialog([projectId]);
             }}
+            groups={groups}
+            expandedGroupIds={expandedGroupIds}
+            onToggleGroupExpand={toggleGroupExpand}
+            onMoveProjectToGroup={handleMoveProjectToGroup}
+            onCreateGroup={() => setIsGroupModalOpen(true)}
+            onEditGroup={setEditingGroup}
+            onDeleteGroup={handleDeleteGroup}
           />
         )}
         <div className="w-1.5 bg-slate-200 hover:bg-blue-400 cursor-col-resize z-20 flex items-center justify-center group" onMouseDown={startResizing}><div className="h-8 w-1 bg-slate-300 rounded-full group-hover:bg-white/50" /></div>
@@ -1768,6 +1918,58 @@ function Dashboard() {
         targetProjectIds={exportModalState.projectIds}
         allProjects={projects}
       />
+
+      {/* Group Create/Edit Modal */}
+      {(isGroupModalOpen || editingGroup) && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => { setIsGroupModalOpen(false); setEditingGroup(null); }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[400px] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="h-14 border-b border-slate-200 bg-slate-50 flex items-center justify-between px-6">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <Folder size={20} className="text-blue-600" />
+                {editingGroup ? '폴더 수정' : '새 폴더 만들기'}
+              </h3>
+              <button onClick={() => { setIsGroupModalOpen(false); setEditingGroup(null); }}><X size={20} className="text-slate-400 hover:text-slate-600" /></button>
+            </div>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const formData = new FormData(e.target);
+              const name = formData.get('name');
+              const color = formData.get('color');
+              try {
+                if (editingGroup) {
+                  await handleUpdateGroup(editingGroup.id, { name, color });
+                } else {
+                  await handleCreateGroup(name, color);
+                }
+                setIsGroupModalOpen(false);
+                setEditingGroup(null);
+              } catch (err) {
+                alert('실패: ' + err.message);
+              }
+            }} className="p-6 space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">폴더 이름</label>
+                <input type="text" name="name" defaultValue={editingGroup?.name || ''} className="w-full border border-slate-200 p-3 rounded-lg text-sm" placeholder="예: 경기권역 2026" required autoFocus />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">색상</label>
+                <div className="flex gap-2">
+                  {['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#94a3b8'].map(c => (
+                    <label key={c} className="cursor-pointer">
+                      <input type="radio" name="color" value={c} defaultChecked={editingGroup?.color === c || (!editingGroup && c === '#3b82f6')} className="sr-only peer" />
+                      <div className="w-8 h-8 rounded-full peer-checked:ring-2 peer-checked:ring-offset-2 peer-checked:ring-blue-500" style={{ backgroundColor: c }} />
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="flex gap-3 pt-4">
+                <button type="button" onClick={() => { setIsGroupModalOpen(false); setEditingGroup(null); }} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50">취소</button>
+                <button type="submit" className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold">{editingGroup ? '수정' : '만들기'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

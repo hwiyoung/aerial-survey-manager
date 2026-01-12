@@ -217,8 +217,8 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Click/Double-click behavior separation
 
 ### 🔄 Phase 5: Advanced Features (In Progress)
-- [x] **Project Grouping (Backend & Scaffolding)**:
-  - Folders, drag-and-drop support, hierarchical management
+- [x] **Project Grouping (Completed)**:
+  - Folder-based project organization, drag-and-drop, create/edit/delete modals
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)
