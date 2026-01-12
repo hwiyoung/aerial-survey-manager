@@ -317,6 +317,16 @@ class ApiClient {
     async moveProjectToGroup(projectId, groupId) {
         return this.updateProject(projectId, { group_id: groupId });
     }
+
+    // --- Statistics ---
+    async getMonthlyStats(year = null) {
+        const query = year ? `?year=${year}` : '';
+        return this.request(`/projects/stats/monthly${query}`);
+    }
+
+    async getRegionalStats() {
+        return this.request('/projects/stats/regional');
+    }
 }
 
 export const api = new ApiClient();

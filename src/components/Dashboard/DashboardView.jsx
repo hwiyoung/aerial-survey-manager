@@ -3,23 +3,11 @@ import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutLi
 import { StatsCard } from './StatsCard';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
+import { api } from '../../api/client';
 
-// Mock data for demonstration (will be replaced with API data)
-const MOCK_MONTHLY_DATA = [
-    { name: 'Jan', value: 40, completed: 35, processing: 15 },
-    { name: 'Feb', value: 55, completed: 45, processing: 20 },
-    { name: 'Mar', value: 75, completed: 60, processing: 25 },
-    { name: 'Apr', value: 90, completed: 70, processing: 30 },
-    { name: 'May', value: 85, completed: 65, processing: 28 },
-    { name: 'Jun', value: 100, completed: 80, processing: 35 },
-];
+// Month names for chart display
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const MOCK_REGION_DATA = [
-    { name: '경기', value: 52.1 },
-    { name: '강원', value: 22.8 },
-    { name: '충남', value: 13.9 },
-    { name: '경북', value: 11.2 },
-];
 
 /**
  * Enhanced Stats Card for dashboard - larger with more details
@@ -236,6 +224,49 @@ export default function DashboardView({
     const [containerWidth, setContainerWidth] = useState(800);
     const [layoutMode, setLayoutMode] = useState('auto'); // 'wide', 'narrow', or 'auto'
 
+    // Statistics data from API
+    const [monthlyData, setMonthlyData] = useState([]);
+    const [regionalData, setRegionalData] = useState([]);
+    const [statsLoading, setStatsLoading] = useState(true);
+
+    // Fetch statistics data from API
+    useEffect(() => {
+        const fetchStats = async () => {
+            setStatsLoading(true);
+            try {
+                const [monthlyRes, regionalRes] = await Promise.all([
+                    api.getMonthlyStats(),
+                    api.getRegionalStats()
+                ]);
+
+                // Transform monthly data for charts
+                const transformedMonthly = monthlyRes.data.map(item => ({
+                    name: MONTH_NAMES[item.month - 1],
+                    value: item.count,
+                    completed: item.completed,
+                    processing: item.processing
+                }));
+                setMonthlyData(transformedMonthly);
+
+                // Transform regional data for charts
+                const transformedRegional = regionalRes.data.map(item => ({
+                    name: item.region,
+                    value: item.percentage
+                }));
+                setRegionalData(transformedRegional);
+            } catch (error) {
+                console.error('Failed to fetch statistics:', error);
+                // Use empty data on error
+                setMonthlyData([]);
+                setRegionalData([]);
+            } finally {
+                setStatsLoading(false);
+            }
+        };
+
+        fetchStats();
+    }, [projects.length]); // Refetch when projects change
+
     // Observe container width changes
     useEffect(() => {
         if (!containerRef.current) return;
@@ -323,9 +354,9 @@ export default function DashboardView({
                                 <StatsSummary stats={stats} isCompact={true} />
 
                                 {/* Additional Charts */}
-                                <TrendLineChart data={MOCK_MONTHLY_DATA} height={180} />
+                                <TrendLineChart data={monthlyData} height={180} />
                                 <div className="grid grid-cols-2 gap-4">
-                                    <DistributionPieChart data={MOCK_REGION_DATA} height={160} />
+                                    <DistributionPieChart data={regionalData} height={160} />
                                     <ProgressDonutChart
                                         completed={stats.completed}
                                         total={stats.completed + stats.processing}
@@ -356,16 +387,16 @@ export default function DashboardView({
                             <StatsSummary stats={stats} isCompact={false} />
 
                             {/* Additional Charts */}
-                            <TrendLineChart data={MOCK_MONTHLY_DATA} height={200} />
+                            <TrendLineChart data={monthlyData} height={200} />
 
                             <div className={`grid gap-4 ${containerWidth > 600 ? 'grid-cols-3' : containerWidth > 400 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                                <DistributionPieChart data={MOCK_REGION_DATA} height={180} />
+                                <DistributionPieChart data={regionalData} height={180} />
                                 <ProgressDonutChart
                                     completed={stats.completed}
                                     total={stats.completed + stats.processing}
                                     height={180}
                                 />
-                                <MonthlyBarChart data={MOCK_MONTHLY_DATA} height={180} />
+                                <MonthlyBarChart data={monthlyData} height={180} />
                             </div>
                         </>
                     )}

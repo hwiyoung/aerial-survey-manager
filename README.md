@@ -219,11 +219,14 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 ### 🔄 Phase 5: Advanced Features (In Progress)
 - [x] **Project Grouping (Completed)**:
   - Folder-based project organization, drag-and-drop, create/edit/delete modals
+- [x] **Dashboard Statistics API (Completed)**:
+  - Monthly/Regional statistics endpoints (`/stats/monthly`, `/stats/regional`)
+  - Chart components connected to real API data
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)
 - [x] Dashboard statistics cards
-- [ ] Orthoimage overlay on map
+- [ ] Orthoimage overlay on map (COG streaming)
 - [x] Batch export functionality (Completed)
 
 ## 🧪 Testing with Real Data

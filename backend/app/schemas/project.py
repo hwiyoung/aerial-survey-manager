@@ -199,3 +199,33 @@ class QCResultResponse(QCResultBase):
     
     class Config:
         from_attributes = True
+
+
+# --- Statistics Schemas ---
+class MonthlyStats(BaseModel):
+    """Monthly statistics item."""
+    month: int  # 1-12
+    year: int
+    count: int  # Number of projects
+    completed: int  # Completed projects
+    processing: int  # Processing projects
+
+
+class MonthlyStatsResponse(BaseModel):
+    """Monthly statistics response."""
+    year: int
+    data: List[MonthlyStats]
+
+
+class RegionalStats(BaseModel):
+    """Regional statistics item."""
+    region: str
+    count: int
+    percentage: float
+
+
+class RegionalStatsResponse(BaseModel):
+    """Regional statistics response."""
+    total: int
+    data: List[RegionalStats]
+

@@ -3,7 +3,7 @@ from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, extract
 
 from app.database import get_db
 from app.models.user import User
@@ -15,6 +15,10 @@ from app.schemas.project import (
     ProjectListResponse,
     EOConfig,
     EOUploadResponse,
+    MonthlyStats,
+    MonthlyStatsResponse,
+    RegionalStats,
+    RegionalStatsResponse,
 )
 import re
 from app.auth.jwt import get_current_user, PermissionChecker
@@ -384,3 +388,101 @@ async def upload_eo_data(
         matched_count=matched_count,
         errors=errors[:10]  # Return first 10 errors
     )
+
+
+# --- Statistics Endpoints ---
+
+@router.get("/stats/monthly", response_model=MonthlyStatsResponse)
+async def get_monthly_stats(
+    year: int = Query(None, description="Year to get stats for. Defaults to current year."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get monthly project statistics for a given year."""
+    from datetime import datetime as dt
+    
+    if year is None:
+        year = dt.now().year
+    
+    # Build base query with user access filter
+    base_query = select(Project)
+    if current_user.role != "admin":
+        base_query = base_query.where(
+            (Project.owner_id == current_user.id) |
+            (Project.organization_id == current_user.organization_id)
+        )
+    
+    # Filter by year
+    base_query = base_query.where(
+        extract('year', Project.created_at) == year
+    )
+    
+    # Get all projects for the year to calculate stats
+    result = await db.execute(base_query)
+    projects = result.scalars().all()
+    
+    # Aggregate by month
+    monthly_data = {}
+    for month in range(1, 13):
+        monthly_data[month] = {"count": 0, "completed": 0, "processing": 0}
+    
+    for project in projects:
+        month = project.created_at.month
+        monthly_data[month]["count"] += 1
+        if project.status == "completed":
+            monthly_data[month]["completed"] += 1
+        elif project.status == "processing":
+            monthly_data[month]["processing"] += 1
+    
+    # Build response
+    stats_list = [
+        MonthlyStats(
+            month=month,
+            year=year,
+            count=data["count"],
+            completed=data["completed"],
+            processing=data["processing"]
+        )
+        for month, data in monthly_data.items()
+    ]
+    
+    return MonthlyStatsResponse(year=year, data=stats_list)
+
+
+@router.get("/stats/regional", response_model=RegionalStatsResponse)
+async def get_regional_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get regional project distribution statistics."""
+    # Build base query with user access filter
+    base_query = select(Project)
+    if current_user.role != "admin":
+        base_query = base_query.where(
+            (Project.owner_id == current_user.id) |
+            (Project.organization_id == current_user.organization_id)
+        )
+    
+    result = await db.execute(base_query)
+    projects = result.scalars().all()
+    
+    # Aggregate by region
+    region_counts = {}
+    total = len(projects)
+    
+    for project in projects:
+        region = project.region or "미지정"
+        region_counts[region] = region_counts.get(region, 0) + 1
+    
+    # Build response with percentages
+    stats_list = [
+        RegionalStats(
+            region=region,
+            count=count,
+            percentage=round((count / total * 100) if total > 0 else 0, 1)
+        )
+        for region, count in sorted(region_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    
+    return RegionalStatsResponse(total=total, data=stats_list)
+
