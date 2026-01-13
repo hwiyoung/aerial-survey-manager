@@ -2,6 +2,7 @@
 import os
 import re
 import hashlib
+from urllib.parse import quote
 from uuid import UUID
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -102,7 +103,11 @@ async def download_orthophoto(
     # Get project title for filename
     project_result = await db.execute(select(Project).where(Project.id == project_id))
     project = project_result.scalar_one()
-    filename = f"{project.title}_ortho.tif".replace(" ", "_")
+    # Use URL encoding for non-ASCII filenames (RFC 5987)
+    base_filename = f"{project.title}_ortho.tif".replace(" ", "_")
+    # Create ASCII-safe fallback and UTF-8 encoded version
+    ascii_filename = f"{project_id}_ortho.tif"  # Fallback
+    encoded_filename = quote(base_filename, safe='')
     
     if range_header:
         # Partial content (resumable download)
@@ -147,7 +152,7 @@ async def download_orthophoto(
                 "ETag": etag,
                 "X-File-Checksum": file_checksum,
                 "X-File-Size": str(file_size),
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}",
             },
             media_type="image/tiff",
         )
@@ -168,7 +173,7 @@ async def download_orthophoto(
                 "ETag": etag,
                 "X-File-Checksum": file_checksum,
                 "X-File-Size": str(file_size),
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}",
             },
             media_type="image/tiff",
         )

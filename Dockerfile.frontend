@@ -12,6 +12,12 @@ RUN npm install
 # Copy project files
 COPY . .
 
+# Build args for environment variables
+ARG VITE_API_URL
+ARG VITE_TUS_URL
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_TUS_URL=$VITE_TUS_URL
+
 # Build the app
 RUN npm run build
 

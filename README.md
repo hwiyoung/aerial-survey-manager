@@ -227,7 +227,7 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)
 - [x] Dashboard statistics cards
-- [/] Orthoimage overlay on map (COG streaming, Verification in progress)
+- [x] Orthoimage overlay on map (COG streaming with georaster-layer-for-leaflet)
 - [x] Batch export functionality (Completed)
 
 ## 🧪 Testing with Real Data

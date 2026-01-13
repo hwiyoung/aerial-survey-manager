@@ -4,6 +4,12 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
 import { Layers, Eye, EyeOff } from 'lucide-react';
+import proj4 from 'proj4';
+
+// Set proj4 globally for georaster-layer-for-leaflet
+if (typeof window !== 'undefined') {
+    window.proj4 = proj4;
+}
 
 // Status colors for footprints
 const STATUS_COLORS = {
@@ -39,7 +45,7 @@ function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
                 // Get COG URL from backend
                 const cogInfo = await api.getCogUrl(projectId);
 
-                // Dynamically import georaster libraries
+                // Then import georaster libraries
                 const [GeoRasterModule, GeoRasterLayerModule] = await Promise.all([
                     import('georaster'),
                     import('georaster-layer-for-leaflet')
@@ -60,7 +66,21 @@ function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
                 }
 
                 const arrayBuffer = await response.arrayBuffer();
-                const georaster = await parseGeoraster(arrayBuffer);
+                console.log('[COG] Downloaded', arrayBuffer.byteLength, 'bytes');
+
+                // Disable web workers to use window.proj4 in main thread
+                // (proj4 function cannot be cloned for web worker transfer)
+                const georaster = await parseGeoraster(arrayBuffer, {
+                    useWebWorker: false
+                });
+                console.log('[COG] Parsed georaster:', {
+                    width: georaster.width,
+                    height: georaster.height,
+                    xmin: georaster.xmin,
+                    ymin: georaster.ymin,
+                    xmax: georaster.xmax,
+                    ymax: georaster.ymax
+                });
 
                 // Create layer
                 const layer = new GeoRasterLayer({
@@ -77,6 +97,9 @@ function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
                 // Add new layer
                 layer.addTo(map);
                 layerRef.current = layer;
+
+                // Invalidate map size to fix gray area on resize
+                setTimeout(() => map.invalidateSize(), 100);
 
             } catch (err) {
                 console.error('Failed to load COG:', err);
@@ -133,6 +156,20 @@ function HighlightFlyTo({ footprint }) {
 
     return null;
 }
+// Map resize handler - invalidates map size when container height changes
+function MapResizeHandler({ height }) {
+    const map = useMap();
+
+    useEffect(() => {
+        // Invalidate size after a short delay to allow container to resize
+        const timer = setTimeout(() => {
+            map.invalidateSize();
+        }, 100);
+        return () => clearTimeout(timer);
+    }, [map, height]);
+
+    return null;
+}
 
 /**
  * Footprint Map Component
@@ -162,16 +199,59 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
         }
     }, [highlightProjectId]);
 
-    // Generate mock footprints from projects
+    // Generate footprints from projects - using specific coordinates for each project
+    // to match the GeoTIFF file locations
     const footprints = useMemo(() => {
+        // Project-specific coordinate mappings (matching GeoTIFF locations)
+        const projectCoordinates = {
+            '276af4b6-a201-4500-8c16-f5cee570476a': { // Seoul Dummy COG Project
+                bounds: [[37.4976, 126.9], [37.6, 127.0024]],
+                center: { lat: 37.5488, lng: 126.9512 }
+            },
+            '9716e02b-61fc-458e-97cb-310b38bc9a6f': { // 종만팀장님
+                bounds: [[36.4, 127.4], [36.5, 127.5]],
+                center: { lat: 36.45, lng: 127.45 }
+            },
+            '4c263906-fbb7-4d9f-9eb6-c4530cd02fc6': { // Project_20260108064743
+                bounds: [[35.4, 126.9], [35.5, 127.0]],
+                center: { lat: 35.45, lng: 126.95 }
+            },
+            'ec78ffc0-3895-44a1-b14b-76ba4e53ae6f': { // Project_20260109072246
+                bounds: [[36.9, 128.4], [37.0, 128.5]],
+                center: { lat: 36.95, lng: 128.45 }
+            }
+        };
+
         const baseLat = 36.5;
         const baseLng = 127.5;
 
         return projects.map((project, index) => {
+            // Check if we have specific coordinates for this project
+            const coords = projectCoordinates[project.id];
+
+            if (coords) {
+                let status = 'pending';
+                const projectStatus = (project.status || '').toLowerCase();
+                if (projectStatus === 'completed' || project.status === '완료') status = 'completed';
+                else if (projectStatus === 'processing' || project.status === '진행중') status = 'processing';
+                else if (projectStatus === 'error' || projectStatus === 'failed' || project.status === '오류') status = 'error';
+
+                return {
+                    id: project.id,
+                    title: project.title,
+                    status,
+                    bounds: coords.bounds,
+                    center: coords.center,
+                    project
+                };
+            }
+
+            // Fallback: generate mock coordinates for unknown projects
+            let lat, lng, size;
             const seed = project.id ? parseInt(project.id.replace(/\D/g, '').slice(-4) || index) : index;
-            const lat = baseLat + ((seed % 20) - 10) * 0.15;
-            const lng = baseLng + ((seed % 15) - 7) * 0.2;
-            const size = 0.05 + (seed % 5) * 0.02;
+            lat = baseLat + ((seed % 20) - 10) * 0.15;
+            lng = baseLng + ((seed % 15) - 7) * 0.2;
+            size = 0.05 + (seed % 5) * 0.02;
 
             let status = 'pending';
             const projectStatus = (project.status || '').toLowerCase();
@@ -204,20 +284,13 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
     const containerStyle = typeof height === 'number' ? { height } : { height, minHeight: '400px' };
     const isFlexHeight = height === '100%';
 
-    // COG overlay state
-    const [showCogOverlay, setShowCogOverlay] = useState(false);
+    // COG overlay - auto-load when a completed project is selected
     const [cogOpacity, setCogOpacity] = useState(0.8);
 
-    // Find completed projects for COG overlay
-    const completedProjects = useMemo(() =>
-        footprints.filter(fp => fp.status === 'completed'),
-        [footprints]
-    );
-
-    // Selected project for COG overlay (use highlighted or first completed)
+    // Selected project for COG overlay (only highlighted project if it's completed)
     const selectedCogProject = highlightProjectId
         ? footprints.find(fp => fp.id === highlightProjectId && fp.status === 'completed')
-        : completedProjects[0];
+        : null;
 
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${isFlexHeight ? 'flex flex-col h-full' : ''}`}>
@@ -229,35 +302,22 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
 
                 {/* Layer Controls */}
                 <div className="flex items-center gap-4">
-                    {/* COG Overlay Toggle */}
-                    {completedProjects.length > 0 && (
+                    {/* COG Opacity Control - shown when a completed project is selected */}
+                    {selectedCogProject && (
                         <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setShowCogOverlay(!showCogOverlay)}
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${showCogOverlay
-                                    ? 'bg-blue-100 text-blue-700'
-                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                    }`}
-                                title="정사영상 오버레이 토글"
-                            >
-                                {showCogOverlay ? <Eye size={14} /> : <EyeOff size={14} />}
-                                <span>정사영상</span>
-                            </button>
-
-                            {showCogOverlay && (
-                                <div className="flex items-center gap-1.5">
-                                    <span className="text-xs text-slate-500">투명도</span>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="100"
-                                        value={cogOpacity * 100}
-                                        onChange={(e) => setCogOpacity(e.target.value / 100)}
-                                        className="w-16 h-1 accent-blue-500"
-                                    />
-                                    <span className="text-xs text-slate-400 w-6">{Math.round(cogOpacity * 100)}%</span>
-                                </div>
-                            )}
+                            <span className="text-xs text-blue-600 font-medium">정사영상 로딩중</span>
+                            <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-slate-500">투명도</span>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    value={cogOpacity * 100}
+                                    onChange={(e) => setCogOpacity(e.target.value / 100)}
+                                    className="w-16 h-1 accent-blue-500"
+                                />
+                                <span className="text-xs text-slate-400 w-6">{Math.round(cogOpacity * 100)}%</span>
+                            </div>
                         </div>
                     )}
 
@@ -287,14 +347,17 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     />
 
+                    {/* Handle map resize when height changes */}
+                    <MapResizeHandler height={height} />
+
                     {allPoints.length > 0 && !highlightFootprint && <MapBoundsFitter bounds={allPoints} />}
                     {highlightFootprint && <HighlightFlyTo footprint={highlightFootprint} />}
 
-                    {/* COG Overlay Layer */}
-                    {showCogOverlay && selectedCogProject && (
+                    {/* COG Overlay Layer - auto-loaded for selected completed project */}
+                    {selectedCogProject && (
                         <CogLayer
                             projectId={selectedCogProject.id}
-                            visible={showCogOverlay}
+                            visible={true}
                             opacity={cogOpacity}
                         />
                     )}
@@ -324,15 +387,9 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                                             상태: {STATUS_COLORS[fp.status].label}
                                         </div>
                                         {fp.status === 'completed' && (
-                                            <button
-                                                className="mt-2 px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setShowCogOverlay(true);
-                                                }}
-                                            >
-                                                정사영상 보기
-                                            </button>
+                                            <div className="mt-2 px-2 py-1 bg-emerald-100 text-emerald-700 text-xs rounded">
+                                                정사영상 사용 가능
+                                            </div>
                                         )}
                                     </div>
                                 </Popup>

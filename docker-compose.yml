@@ -9,6 +9,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_URL=http://localhost:8081
+        - VITE_TUS_URL=http://localhost:8081/files/
     ports:
       - "3000:80"
     environment:

@@ -7,6 +7,11 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // Make proj4-fully-loaded resolve to proj4 for better compatibility
+      "proj4-fully-loaded": "proj4"
     },
   },
+  optimizeDeps: {
+    include: ['proj4', 'georaster', 'georaster-layer-for-leaflet']
+  }
 })

@@ -1893,6 +1893,7 @@ function Dashboard() {
                   onProjectClick={(project) => {
                     setSelectedProjectId(project.id);
                   }}
+                  onDeselectProject={() => setSelectedProjectId(null)}
                   highlightProjectId={selectedProjectId || highlightProjectId}
                   onHighlightEnd={() => setHighlightProjectId(null)}
                 />

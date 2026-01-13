@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate } from 'lucide-react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal } from 'lucide-react';
 import { StatsCard } from './StatsCard';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
@@ -56,9 +56,9 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
  * Stats summary section with 4 key metrics
  */
 function StatsSummary({ stats, isCompact = false }) {
-    const completedCount = stats.completed || 15;
-    const totalCount = (stats.completed || 15) + (stats.processing || 10);
-    const progressPercent = Math.round((completedCount / totalCount) * 100);
+    const completedCount = stats.completed;
+    const totalCount = stats.completed + stats.processing;
+    const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -148,7 +148,7 @@ function LayoutToggle({ layout, onToggle }) {
  * Project Detail View - shows when a project is selected via single click
  * Replaces the statistics section with project-specific information
  */
-function ProjectDetailView({ project }) {
+function ProjectDetailView({ project, onBack }) {
     if (!project) return null;
 
     const statusColor = {
@@ -161,9 +161,20 @@ function ProjectDetailView({ project }) {
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
             <div className="flex items-center justify-between mb-4">
-                <div>
-                    <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
-                    <p className="text-sm text-slate-500">{project.region} · {project.company}</p>
+                <div className="flex items-center gap-3">
+                    {onBack && (
+                        <button
+                            onClick={onBack}
+                            className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors text-slate-500 hover:text-slate-700"
+                            title="통계 화면으로 돌아가기"
+                        >
+                            <ArrowLeft size={20} />
+                        </button>
+                    )}
+                    <div>
+                        <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
+                        <p className="text-sm text-slate-500">{project.region} · {project.company}</p>
+                    </div>
                 </div>
                 <span className={`px-3 py-1 text-sm font-medium rounded-full ${statusColor}`}>
                     {project.status}
@@ -217,12 +228,19 @@ export default function DashboardView({
     selectedProject = null,
     sidebarWidth = 320,
     onProjectClick,
+    onDeselectProject,
     highlightProjectId = null,
     onHighlightEnd = null
 }) {
     const containerRef = useRef(null);
     const [containerWidth, setContainerWidth] = useState(800);
     const [layoutMode, setLayoutMode] = useState('auto'); // 'wide', 'narrow', or 'auto'
+
+    // Map height for narrow layout (draggable)
+    const [mapHeight, setMapHeight] = useState(350);
+    const isDragging = useRef(false);
+    const startY = useRef(0);
+    const startHeight = useRef(350);
 
     // Statistics data from API
     const [monthlyData, setMonthlyData] = useState([]);
@@ -302,23 +320,24 @@ export default function DashboardView({
         return containerWidth > 700; // Lowered threshold for better responsiveness
     }, [layoutMode, containerWidth, sidebarWidth]);
 
-    // Calculate stats from projects
+    // Calculate stats from projects (use real values, no fallbacks)
     const stats = useMemo(() => {
         const processing = projects.filter(p => p.status === '진행중').length;
         const completed = projects.filter(p => p.status === '완료').length;
         const totalImages = projects.reduce((sum, p) => sum + (p.imageCount || 0), 0);
+        const totalSize = projects.reduce((sum, p) => sum + (parseFloat(p.size) || 0), 0);
 
-        // Mock area calculation (in production: sum of actual footprint areas)
-        const area = (completed * 15.5 + processing * 8.3).toFixed(1);
-        const dataSize = (completed * 3.2 + processing * 1.1).toFixed(1);
+        // Area calculation based on actual projects (estimate if no real data)
+        const area = projects.reduce((sum, p) => sum + (p.area || 0), 0).toFixed(1);
+        const dataSize = totalSize > 0 ? totalSize.toFixed(1) : '0';
 
         return {
-            processing: processing || 10,
-            completed: completed || 15,
-            area: area || '232.5',
-            dataSize: dataSize || '51.7',
-            photoCount: totalImages || 7305,
-            avgPhotos: Math.round(totalImages / Math.max(1, completed + processing)) || 292,
+            processing,
+            completed,
+            area: area || '0',
+            dataSize,
+            photoCount: totalImages,
+            avgPhotos: totalImages > 0 ? Math.round(totalImages / Math.max(1, completed + processing)) : 0,
         };
     }, [projects]);
 
@@ -347,7 +366,7 @@ export default function DashboardView({
                     {/* Right Column - Stats or Project Details */}
                     <div className="flex flex-col gap-6">
                         {selectedProject ? (
-                            <ProjectDetailView project={selectedProject} />
+                            <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
                         ) : (
                             <>
                                 {/* Stats Summary (4 cards in 2x2 grid) */}
@@ -369,18 +388,50 @@ export default function DashboardView({
                 </div>
             ) : (
                 /* NARROW LAYOUT: Map on top, Stats below (stacked) */
-                <div className="flex flex-col gap-6">
-                    {/* Top - Footprint Map (full width) */}
+                <div className="flex flex-col gap-0">
+                    {/* Top - Footprint Map (full width, draggable height) */}
                     <FootprintMap
                         projects={projects}
-                        height={350}
+                        height={mapHeight}
                         onProjectClick={onProjectClick}
                         highlightProjectId={highlightProjectId}
                     />
 
+                    {/* Drag Handle */}
+                    <div
+                        className="flex items-center justify-center h-4 cursor-ns-resize hover:bg-slate-200 bg-slate-100 rounded-b-lg -mt-2 mx-2 mb-4 transition-colors"
+                        onMouseDown={(e) => {
+                            isDragging.current = true;
+                            startY.current = e.clientY;
+                            startHeight.current = mapHeight;
+                            document.body.style.cursor = 'ns-resize';
+                            document.body.style.userSelect = 'none';
+
+                            const handleMouseMove = (moveEvent) => {
+                                if (!isDragging.current) return;
+                                const deltaY = moveEvent.clientY - startY.current;
+                                const newHeight = Math.max(200, Math.min(600, startHeight.current + deltaY));
+                                setMapHeight(newHeight);
+                            };
+
+                            const handleMouseUp = () => {
+                                isDragging.current = false;
+                                document.body.style.cursor = '';
+                                document.body.style.userSelect = '';
+                                document.removeEventListener('mousemove', handleMouseMove);
+                                document.removeEventListener('mouseup', handleMouseUp);
+                            };
+
+                            document.addEventListener('mousemove', handleMouseMove);
+                            document.addEventListener('mouseup', handleMouseUp);
+                        }}
+                    >
+                        <GripHorizontal size={16} className="text-slate-400" />
+                    </div>
+
                     {/* Stats or Project Details */}
                     {selectedProject ? (
-                        <ProjectDetailView project={selectedProject} />
+                        <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
                     ) : (
                         <>
                             {/* Stats Summary (4 cards in a row) */}
