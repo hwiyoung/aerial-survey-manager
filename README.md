@@ -212,10 +212,14 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Processing start pulse animation & highlight
 - [x] Compact mode hover action icons
 - [x] Sidebar resizing performance (RAF based)
-- [x] Upload Wizard improvements (Project name, image filter)
+- [x] Upload Wizard improvements (Project name, image filter, ESC close)
 - [x] Project deletion (single/multi)
 - [x] Processing options presets (CRUD)
-- [x] Click/Double-click behavior separation
+- [x] Processing sidebar back button
+- [x] Click/Double-click behavior separation (Single: detail, Double: inspector)
+- [x] Chart labels/legend improvements (pie chart overflow fix)
+- [x] Map zoom persistence on project selection
+- [x] Orthoimage (COG) overlay for completed projects
 
 ### 🔄 Phase 5: Advanced Features (In Progress)
 - [x] **Project Grouping (Completed)**:

@@ -10,13 +10,13 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        - VITE_API_URL=http://localhost:8081
-        - VITE_TUS_URL=http://localhost:8081/files/
+        - VITE_API_URL=
+        - VITE_TUS_URL=/files/
     ports:
       - "3000:80"
     environment:
-      - VITE_API_URL=http://localhost:8081
-      - VITE_TUS_URL=http://localhost:8081/files/
+      - VITE_API_URL=
+      - VITE_TUS_URL=/files/
     depends_on:
       - api
     networks:

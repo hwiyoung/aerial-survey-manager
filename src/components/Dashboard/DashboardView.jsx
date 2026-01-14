@@ -71,11 +71,11 @@ function StatsSummary({ stats, isCompact = false }) {
                 {/* 처리 완료 면적 */}
                 <DashboardStatsCard
                     icon={<MapPin size={18} />}
-                    value={stats.area || '232.5'}
+                    value={stats.area || '0'}
                     unit="km²"
                     label="처리 완료 면적"
-                    progress={35}
-                    progressLabel="전체 국토 면적 대비 35%"
+                    progress={parseFloat(stats.area) > 0 ? Math.min(100, (parseFloat(stats.area) / 1003.2 * 100)) : 0}
+                    progressLabel={`전체 국토 면적 대비 ${parseFloat(stats.area) > 0 ? (parseFloat(stats.area) / 1003.2 * 100).toFixed(2) : 0}%`}
                 />
 
                 {/* 프로젝트 진행 */}
@@ -87,7 +87,7 @@ function StatsSummary({ stats, isCompact = false }) {
                 >
                     <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
                         <span className="px-2 py-0.5 text-xs font-medium bg-emerald-100 text-emerald-700 rounded">완료 {completedCount}</span>
-                        <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">진행 {stats.processing || 10}</span>
+                        <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">진행 {stats.processing}</span>
                     </div>
                 </DashboardStatsCard>
 
@@ -230,7 +230,9 @@ export default function DashboardView({
     onProjectClick,
     onDeselectProject,
     highlightProjectId = null,
-    onHighlightEnd = null
+    onHighlightEnd = null,
+    showInspector = false,
+    renderInspector = null
 }) {
     const containerRef = useRef(null);
     const [containerWidth, setContainerWidth] = useState(800);
@@ -360,13 +362,18 @@ export default function DashboardView({
                             style={{ flex: 1, minHeight: '500px' }}
                             onProjectClick={onProjectClick}
                             highlightProjectId={highlightProjectId}
+                            selectedProjectId={selectedProject?.id}
                         />
                     </div>
 
-                    {/* Right Column - Stats or Project Details */}
+                    {/* Right Column - Stats or Project Details or Inspector */}
                     <div className="flex flex-col gap-6">
                         {selectedProject ? (
-                            <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
+                            showInspector && renderInspector ? (
+                                renderInspector(selectedProject)
+                            ) : (
+                                <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
+                            )
                         ) : (
                             <>
                                 {/* Stats Summary (4 cards in 2x2 grid) */}
@@ -395,6 +402,7 @@ export default function DashboardView({
                         height={mapHeight}
                         onProjectClick={onProjectClick}
                         highlightProjectId={highlightProjectId}
+                        selectedProjectId={selectedProject?.id}
                     />
 
                     {/* Drag Handle */}
@@ -429,9 +437,13 @@ export default function DashboardView({
                         <GripHorizontal size={16} className="text-slate-400" />
                     </div>
 
-                    {/* Stats or Project Details */}
+                    {/* Stats or Project Details or Inspector */}
                     {selectedProject ? (
-                        <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
+                        showInspector && renderInspector ? (
+                            renderInspector(selectedProject)
+                        ) : (
+                            <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
+                        )
                     ) : (
                         <>
                             {/* Stats Summary (4 cards in a row) */}

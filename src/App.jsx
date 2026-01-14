@@ -4,7 +4,7 @@ import {
   Layers, FileImage, AlertTriangle, Loader2, X,
   Download, Box, Maximize2,
   Sparkles, CheckCircle2, MapPin, UploadCloud,
-  FolderOpen, FilePlus, FileText, Camera, ArrowRight, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2, Bookmark,
+  FolderOpen, FilePlus, FileText, Camera, ArrowRight, ArrowLeft, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2, Bookmark,
   Folder, FolderPlus, ChevronRight, ChevronDown, GripVertical, MoreHorizontal, Edit2, Plus
 } from 'lucide-react';
 
@@ -21,6 +21,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import ResumableDownloader from './services/download';
 import DashboardView from './components/Dashboard/DashboardView';
+import { CogLayer } from './components/Dashboard/FootprintMap';
 
 // --- 1. CONSTANTS ---
 const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
@@ -300,8 +301,19 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
   return (
     <aside className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-xl shrink-0 transition-all relative animate-in slide-in-from-left duration-300" style={{ width: width }}>
       <div className="p-5 border-b border-slate-200 bg-slate-50">
-        <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><Settings className="text-blue-600" size={20} />처리 옵션 설정</h3>
-        <p className="text-xs text-slate-500 mt-1">프로젝트: {project?.title}</p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onCancel}
+            className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 transition-colors"
+            title="뒤로가기"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div>
+            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><Settings className="text-blue-600" size={20} />처리 옵션 설정</h3>
+            <p className="text-xs text-slate-500 mt-1">프로젝트: {project?.title}</p>
+          </div>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6">
         {/* Preset Selection */}
@@ -544,6 +556,25 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
       setSelectedEoFile(null);
     }
   }, [isOpen]);
+
+  // ESC key handler to close modal
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && !showMismatchWarning) {
+        if (imageCount > 0 || eoFileName) {
+          if (window.confirm('업로드를 취소하시겠습니까? 모든 선택이 초기화됩니다.')) {
+            onClose();
+          }
+        } else {
+          onClose();
+        }
+      }
+    };
+    if (isOpen) {
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, imageCount, eoFileName, showMismatchWarning, onClose]);
 
   // Image file extensions to filter
   const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.dng', '.raw', '.arw', '.cr2', '.nef'];
@@ -1331,6 +1362,12 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+
+        {/* COG Overlay for completed projects */}
+        {project?.status === '완료' && (
+          <CogLayer projectId={project.id} visible={true} opacity={0.8} />
+        )}
+
         {images.length > 0 && <FitBounds images={images} />}
 
         {images.map(img => (
@@ -1805,7 +1842,7 @@ function Dashboard() {
             projects={projects}
             selectedProjectId={selectedProjectId}
             checkedProjectIds={checkedProjectIds}
-            onSelectProject={(id) => { setSelectedProjectId(id); setSelectedImageId(null); setShowInspector(false); }}
+            onSelectProject={(id) => { setSelectedProjectId(id); setHighlightProjectId(id); setSelectedImageId(null); setShowInspector(false); }}
             onOpenInspector={(id) => { setSelectedProjectId(id); setShowInspector(true); }}
             onToggleCheck={handleToggleCheck}
             onSelectMultiple={handleSelectMultiple}
@@ -1867,37 +1904,30 @@ function Dashboard() {
           {/* Dashboard mode view logic */}
           {viewMode === 'dashboard' ? (
             <>
-              {/* When double-clicked (showInspector=true): show Map + Inspector */}
-              {showInspector && selectedProjectId ? (
-                <>
-                  <main className="flex-1 relative overflow-hidden">
-                    <MapPlaceholder project={selectedProject} isProcessingMode={false} selectedImageId={selectedImageId} onSelectImage={(id) => setSelectedImageId(id)} />
-                  </main>
-                  <div className="h-[350px] border-t border-slate-300 bg-white shadow-sm z-20 relative flex items-center justify-center text-slate-400">
-                    <InspectorPanel
-                      project={selectedProject}
-                      image={selectedImage}
-                      qcData={qcData[selectedImageId] || {}}
-                      onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
-                      onCloseImage={() => setSelectedImageId(null)}
-                      onExport={() => openExportDialog([selectedProject.id])}
-                    />
-                  </div>
-                </>
-              ) : (
-                /* Single click or no selection: show DashboardView with project details */
-                <DashboardView
-                  projects={projects}
-                  selectedProject={selectedProject}
-                  sidebarWidth={sidebarWidth}
-                  onProjectClick={(project) => {
-                    setSelectedProjectId(project.id);
-                  }}
-                  onDeselectProject={() => setSelectedProjectId(null)}
-                  highlightProjectId={selectedProjectId || highlightProjectId}
-                  onHighlightEnd={() => setHighlightProjectId(null)}
-                />
-              )}
+              {/* Always use DashboardView for both single and double click */}
+              <DashboardView
+                projects={projects}
+                selectedProject={selectedProject}
+                sidebarWidth={sidebarWidth}
+                onProjectClick={(project) => {
+                  setSelectedProjectId(project.id);
+                  setHighlightProjectId(project.id);
+                }}
+                onDeselectProject={() => { setSelectedProjectId(null); setShowInspector(false); }}
+                highlightProjectId={highlightProjectId}
+                onHighlightEnd={() => setHighlightProjectId(null)}
+                showInspector={showInspector}
+                renderInspector={(project) => (
+                  <InspectorPanel
+                    project={project}
+                    image={selectedImage}
+                    qcData={qcData[selectedImageId] || {}}
+                    onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
+                    onCloseImage={() => setSelectedImageId(null)}
+                    onExport={() => openExportDialog([project.id])}
+                  />
+                )}
+              />
             </>
           ) : (
             /* Processing mode: show Map + Inspector */

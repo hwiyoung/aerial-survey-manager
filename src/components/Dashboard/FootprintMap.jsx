@@ -21,7 +21,7 @@ const STATUS_COLORS = {
 };
 
 // COG Layer component - loads orthoimages using georaster-layer-for-leaflet
-function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
+export function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
     const map = useMap();
     const layerRef = useRef(null);
     const [loading, setLoading] = useState(false);
@@ -175,7 +175,7 @@ function MapResizeHandler({ height }) {
  * Footprint Map Component
  * Shows real map with project footprints as colored rectangles
  */
-export function FootprintMap({ projects = [], height = 400, onProjectClick, highlightProjectId = null }) {
+export function FootprintMap({ projects = [], height = 400, onProjectClick, highlightProjectId = null, selectedProjectId = null }) {
     const [highlightPulse, setHighlightPulse] = useState(false);
     const blinkCountRef = useRef(0);
 
@@ -273,7 +273,15 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
         });
     }, [projects]);
 
-    const highlightFootprint = highlightProjectId ? footprints.find(fp => fp.id === highlightProjectId) : null;
+    // For flyTo: use highlightProjectId first (for animation), then selectedProjectId (for persistence)
+    const highlightFootprint = highlightProjectId
+        ? footprints.find(fp => fp.id === highlightProjectId)
+        : null;
+
+    // For persistent zoom: use selected project when no highlight animation
+    const selectedFootprint = selectedProjectId
+        ? footprints.find(fp => fp.id === selectedProjectId)
+        : null;
 
     // Get all bounds for auto-fit
     const allPoints = footprints.flatMap(f => [
@@ -284,12 +292,13 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
     const containerStyle = typeof height === 'number' ? { height } : { height, minHeight: '400px' };
     const isFlexHeight = height === '100%';
 
-    // COG overlay - auto-load when a completed project is selected
+    // COG overlay - show for highlighted OR selected completed project
     const [cogOpacity, setCogOpacity] = useState(0.8);
 
-    // Selected project for COG overlay (only highlighted project if it's completed)
-    const selectedCogProject = highlightProjectId
-        ? footprints.find(fp => fp.id === highlightProjectId && fp.status === 'completed')
+    // Selected project for COG overlay (highlighted or selected, if completed)
+    const activeProjectId = highlightProjectId || selectedProjectId;
+    const selectedCogProject = activeProjectId
+        ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
 
     return (
@@ -350,7 +359,7 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                     {/* Handle map resize when height changes */}
                     <MapResizeHandler height={height} />
 
-                    {allPoints.length > 0 && !highlightFootprint && <MapBoundsFitter bounds={allPoints} />}
+                    {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && <MapBoundsFitter bounds={allPoints} />}
                     {highlightFootprint && <HighlightFlyTo footprint={highlightFootprint} />}
 
                     {/* COG Overlay Layer - auto-loaded for selected completed project */}

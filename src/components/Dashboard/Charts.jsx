@@ -62,20 +62,25 @@ export function DistributionPieChart({ data, title = '지역별 분포', height 
                 <PieChart>
                     <Pie
                         data={data}
-                        cx="50%"
+                        cx="35%"
                         cy="50%"
                         innerRadius={0}
-                        outerRadius={60}
+                        outerRadius={50}
                         paddingAngle={2}
                         dataKey="value"
-                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                        labelLine={{ stroke: '#94a3b8', strokeWidth: 1 }}
                     >
                         {data.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={COLORS.multi[index % COLORS.multi.length]} />
                         ))}
                     </Pie>
-                    <Tooltip />
+                    <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
+                    <Legend
+                        layout="vertical"
+                        align="right"
+                        verticalAlign="middle"
+                        wrapperStyle={{ fontSize: '11px', fontFamily: 'inherit', paddingLeft: '10px' }}
+                        formatter={(value, entry) => `${value} (${entry.payload.value?.toFixed(1) || 0}%)`}
+                    />
                 </PieChart>
             </ResponsiveContainer>
         </div>
