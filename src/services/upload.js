@@ -5,7 +5,17 @@
 
 import * as tus from 'tus-js-client';
 
-const TUS_URL = import.meta.env.VITE_TUS_URL || '/files/';
+// Use configured TUS URL or dynamically build from current origin
+// This ensures the request goes to the correct port (e.g., :8081 in nginx proxy)
+const getBaseUrl = () => {
+    const configured = import.meta.env.VITE_TUS_URL;
+    if (configured && configured.startsWith('http')) {
+        return configured;
+    }
+    // Use relative path from current origin (preserves port like :8081)
+    return `${window.location.origin}${configured || '/files/'}`;
+};
+const TUS_URL = getBaseUrl();
 
 export class ResumableUploader {
     constructor(authToken) {
@@ -25,13 +35,13 @@ export class ResumableUploader {
 
         const upload = new tus.Upload(file, {
             endpoint: TUS_URL,
-            retryDelays: [0, 1000, 3000, 5000, 10000, 30000, 60000], // Aggressive retry
-            chunkSize: 50 * 1024 * 1024, // 50MB chunks
-            parallelUploads: 3, // 3 parallel chunk uploads
+            retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
+            chunkSize: 50 * 1024 * 1024, // 50MB for better throughput on large files
+            parallelUploads: 1, // Single stream per file for maximum stability over proxy
 
             metadata: {
                 filename: file.name,
-                filetype: file.type || 'application/octet-stream',
+                filetype: file.type,
                 projectId: projectId,
             },
 
@@ -139,34 +149,61 @@ export class ResumableUploader {
     /**
      * Upload multiple files
      */
-    uploadFiles(files, projectId, { onFileProgress, onFileComplete, onAllComplete, onError }) {
+    /**
+     * Upload multiple files with concurrency control
+     */
+    uploadFiles(files, projectId, { onFileProgress, onFileComplete, onAllComplete, onError, concurrency = 3 }) {
         const controllers = [];
         let completedCount = 0;
+        let activeCount = 0;
+        let currentIndex = 0;
 
-        files.forEach((file, index) => {
-            const controller = this.uploadFile(file, projectId, {
-                onProgress: (progress) => {
-                    onFileProgress?.(index, file.name, progress);
-                },
-                onError: (error) => {
-                    onError?.(index, file.name, error);
-                },
-                onSuccess: (result) => {
-                    completedCount++;
-                    onFileComplete?.(index, file.name, result);
+        const results = new Array(files.length);
+        let isAborted = false;
 
-                    if (completedCount === files.length) {
-                        onAllComplete?.();
-                    }
-                },
-            });
-            controllers.push(controller);
-        });
+        const processNext = () => {
+            if (isAborted || currentIndex >= files.length) {
+                if (completedCount === files.length && !isAborted) {
+                    onAllComplete?.();
+                }
+                return;
+            }
+
+            while (activeCount < concurrency && currentIndex < files.length) {
+                const index = currentIndex++;
+                const file = files[index];
+                activeCount++;
+
+                const controller = this.uploadFile(file, projectId, {
+                    onProgress: (progress) => {
+                        onFileProgress?.(index, file.name, progress);
+                    },
+                    onError: (error) => {
+                        activeCount--;
+                        onError?.(index, file.name, error);
+                        processNext();
+                    },
+                    onSuccess: (result) => {
+                        activeCount--;
+                        completedCount++;
+                        results[index] = result;
+                        onFileComplete?.(index, file.name, result);
+                        processNext();
+                    },
+                });
+                controllers.push(controller);
+            }
+        };
+
+        processNext();
 
         return {
-            pauseAll: () => controllers.forEach(c => c.pause()),
-            resumeAll: () => controllers.forEach(c => c.resume()),
-            abortAll: () => controllers.forEach(c => c.abort()),
+            pauseAll: () => controllers.forEach(c => c.pause?.()),
+            resumeAll: () => controllers.forEach(c => c.resume?.()),
+            abortAll: () => {
+                isAborted = true;
+                controllers.forEach(c => c.abort?.());
+            },
         };
     }
 

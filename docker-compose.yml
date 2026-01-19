@@ -70,7 +70,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - AWS_REGION=us-east-1
     ports:
-      - "1080:1080"
+      - "1081:8080"
     depends_on:
       - minio
     networks:

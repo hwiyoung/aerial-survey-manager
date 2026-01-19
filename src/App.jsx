@@ -44,6 +44,9 @@ const generatePlaceholderImages = (projectId, count) => {
     name: `DJI_${20250000 + i}.JPG`,
     x: Math.random() * 80 + 10,
     y: Math.random() * 80 + 10,
+    wx: 127.5, // Default center point in Korea to avoid confusing random scatter
+    wy: 36.5,
+    hasEo: true, // Mark as having EO for visualization
     thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
   }));
 };
@@ -97,21 +100,41 @@ function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     }
   }, [isOpen, targets]);
 
-  const handleExportStart = () => {
+  const handleExportStart = async () => {
     setIsExporting(true);
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => {
-            alert("내보내기가 완료되었습니다.");
-            onClose();
-          }, 200);
-          return 100;
-        }
-        return prev + 10;
+    setProgress(10);
+
+    try {
+      // Call the real batch export API
+      setProgress(30);
+      const blob = await api.batchExport(targetProjectIds, {
+        format: format,
+        crs: crs.includes('5186') ? 'EPSG:5186' : crs.includes('4326') ? 'EPSG:4326' : 'EPSG:32652',
       });
-    }, 200);
+
+      setProgress(80);
+
+      // Generate filename
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const downloadFilename = targets.length === 1
+        ? `${targets[0].title}_ortho.${format.toLowerCase() === 'geotiff' ? 'tif' : format.toLowerCase()}`
+        : `batch_export_${timestamp}.zip`;
+
+      // Download the file
+      api.downloadBlob(blob, downloadFilename);
+
+      setProgress(100);
+      setTimeout(() => {
+        alert(`${targets.length}개 프로젝트 내보내기가 완료되었습니다.`);
+        onClose();
+      }, 300);
+
+    } catch (err) {
+      console.error('Batch export failed:', err);
+      alert('내보내기 실패: ' + err.message);
+      setIsExporting(false);
+      setProgress(0);
+    }
   };
 
   if (!isOpen) return null;
@@ -199,6 +222,89 @@ function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     </div>
   );
 }
+
+// [Upload Progress Component]
+function UploadProgressPanel({ uploads, onAbortAll, onRestore }) {
+  if (!uploads || uploads.length === 0) return null;
+
+  const completedCount = uploads.filter(u => u.status === 'completed').length;
+  const errorCount = uploads.filter(u => u.status === 'error').length;
+  const isAllDone = completedCount + errorCount === uploads.length;
+  const totalProgress = uploads.reduce((acc, u) => acc + (u.progress || 0), 0) / uploads.length;
+
+  return (
+    <div className="fixed bottom-6 right-6 z-[2000] w-96 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden animate-in slide-in-from-bottom-5">
+      <div className="bg-slate-900 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-white">
+          <UploadCloud size={18} className={isAllDone ? "text-green-400" : "animate-pulse text-blue-400"} />
+          <span className="font-bold text-sm">
+            {isAllDone ? '업로드 완료' : `이미지 업로드 중 (${completedCount}/${uploads.length})`}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {!isAllDone && (
+            <button
+              onClick={onAbortAll}
+              className="text-xs text-slate-400 hover:text-white transition-colors"
+            >
+              전체취소
+            </button>
+          )}
+          <button onClick={onRestore} className="text-white hover:bg-white/10 p-1 rounded">
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+
+      <div className="max-h-64 overflow-y-auto p-2 bg-slate-50">
+        {uploads.map((upload, idx) => (
+          <div key={idx} className="bg-white p-3 rounded-lg border border-slate-200 mb-2 last:mb-0">
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold text-slate-700 truncate">{upload.name}</div>
+                {upload.status === 'uploading' && (
+                  <div className="text-[10px] text-slate-500 flex gap-2">
+                    <span>{upload.speed || '0 KB/s'}</span>
+                    <span>•</span>
+                    <span>ETA {upload.eta || '--:--'}</span>
+                  </div>
+                )}
+              </div>
+              {upload.status === 'completed' && <CheckCircle2 size={14} className="text-green-500 shrink-0" />}
+              {upload.status === 'error' && <AlertTriangle size={14} className="text-red-500 shrink-0" />}
+              {upload.status === 'waiting' && <Loader2 size={14} className="text-slate-300 animate-spin shrink-0" />}
+            </div>
+
+            <div className="relative h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className={`absolute top-0 left-0 h-full transition-all duration-300 ${upload.status === 'error' ? 'bg-red-500' :
+                  upload.status === 'completed' ? 'bg-green-500' : 'bg-blue-500'
+                  }`}
+                style={{ width: `${upload.progress || 0}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {!isAllDone && (
+        <div className="bg-white px-4 py-2 border-t border-slate-100">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Overall Progress</span>
+            <span className="text-xs font-bold text-blue-600">{Math.round(totalProgress)}%</span>
+          </div>
+          <div className="h-1 w-full bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all duration-500"
+              style={{ width: `${totalProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // [Processing Options Sidebar]
 function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
@@ -923,7 +1029,7 @@ function Header() {
 }
 
 // [Group Item with Drag-Drop]
-function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDelete, selectedProjectId, onSelectProject, onOpenInspector, checkedProjectIds, onToggleCheck, sizeMode, onOpenProcessing, onOpenExport, onDeleteProject }) {
+function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDelete, selectedProjectId, onSelectProject, onOpenInspector, checkedProjectIds, onToggleCheck, sizeMode, onOpenProcessing, onOpenExport, onDeleteProject, onFilter, isActive }) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
 
@@ -950,7 +1056,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
   return (
     <div className="mb-1">
       <div
-        className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${isDragOver ? 'bg-blue-100 ring-2 ring-blue-400' : 'hover:bg-slate-100'}`}
+        className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${isDragOver ? 'bg-blue-100 ring-2 ring-blue-400' : isActive ? 'bg-blue-50 ring-1 ring-blue-300' : 'hover:bg-slate-100'}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -959,7 +1065,13 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
           {isExpanded ? <ChevronDown size={14} className="text-slate-500" /> : <ChevronRight size={14} className="text-slate-500" />}
         </button>
         <div className="w-4 h-4 rounded flex-shrink-0" style={{ backgroundColor: group.color || '#94a3b8' }} />
-        <span className="text-sm font-medium text-slate-700 flex-1 truncate">{group.name}</span>
+        <span
+          className={`text-sm font-medium flex-1 truncate cursor-pointer hover:text-blue-600 ${isActive ? 'text-blue-600' : 'text-slate-700'}`}
+          onClick={(e) => { e.stopPropagation(); onFilter && onFilter(group.id); }}
+          title="클릭하여 이 그룹만 보기"
+        >
+          {group.name}
+        </span>
         <span className="text-xs text-slate-400">{groupProjects.length}</span>
         <div className="relative">
           <button onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className="p-1 hover:bg-slate-200 rounded opacity-0 group-hover:opacity-100">
@@ -1002,7 +1114,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
 }
 
 // [Sidebar]
-function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup }) {
+function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
   const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
@@ -1092,6 +1204,8 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
               onOpenProcessing={onOpenProcessing}
               onOpenExport={onOpenExport}
               onDeleteProject={onDeleteProject}
+              onFilter={onFilterGroup}
+              isActive={activeGroupId === group.id}
             />
           ))}
           {/* Ungrouped Projects Section */}
@@ -1348,6 +1462,12 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
     return project.images.filter(img => img.hasEo);
   }, [project]);
 
+  // Get selected image for detail panel
+  const selectedImage = useMemo(() => {
+    if (!selectedImageId || !project?.images) return null;
+    return project.images.find(img => img.id === selectedImageId);
+  }, [selectedImageId, project]);
+
   if (!project) return <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 map-grid text-slate-400"><div className="bg-white p-6 rounded-xl shadow-sm text-center"><Layers size={48} className="mx-auto mb-4 text-slate-300" /><p className="text-lg font-medium text-slate-600">프로젝트를 선택하세요</p></div></div>;
 
   return (
@@ -1374,12 +1494,12 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
           <CircleMarker
             key={img.id}
             center={[img.wy, img.wx]}
-            radius={isProcessingMode ? 2 : (img.id === selectedImageId ? 8 : 5)}
+            radius={isProcessingMode ? 8 : (img.id === selectedImageId ? 16 : 12)}
             pathOptions={{
-              color: img.id === selectedImageId ? '#2563eb' : (isProcessingMode ? '#eab308' : '#ffffff'),
-              fillColor: img.id === selectedImageId ? '#3b82f6' : (isProcessingMode ? '#facc15' : '#64748b'),
-              fillOpacity: 0.8,
-              weight: 2
+              color: img.id === selectedImageId ? '#7c3aed' : (isProcessingMode ? '#ea580c' : '#dc2626'),
+              fillColor: img.id === selectedImageId ? '#a78bfa' : (isProcessingMode ? '#fb923c' : '#ef4444'),
+              fillOpacity: 0.9,
+              weight: 4
             }}
             eventHandlers={{
               click: (e) => {
@@ -1388,16 +1508,53 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
               }
             }}
           >
-            <Popup>
-              <div className="text-xs">
-                <strong className="block mb-1 text-slate-700">{img.name}</strong>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-slate-500">
-                  <span>Lat: {img.wy.toFixed(6)}</span>
-                  <span>Lon: {img.wx.toFixed(6)}</span>
-                  <span>Alt: {img.z || '-'}</span>
-                  <span>Omega: {img.omega || '0'}</span>
-                  <span>Phi: {img.phi || '0'}</span>
-                  <span>Kappa: {img.kappa || '0'}</span>
+            <Popup minWidth={260} maxWidth={320}>
+              <div className="p-1">
+                {/* 썸네일 영역 */}
+                <div className="w-full h-28 bg-slate-100 rounded-lg mb-2 flex items-center justify-center overflow-hidden border border-slate-200">
+                  {img.thumbnail_url ? (
+                    <img src={img.thumbnail_url} alt={img.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="text-slate-400 text-xs flex flex-col items-center gap-1">
+                      <Camera size={24} className="text-slate-300" />
+                      <span>미리보기 없음</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 파일명 */}
+                <strong className="block text-sm text-slate-800 mb-2 truncate" title={img.name}>{img.name}</strong>
+
+                {/* 좌표 정보 - omega/phi/kappa 스타일로 통일 */}
+                <div className="grid grid-cols-3 gap-1.5 text-xs border-t border-slate-200 pt-2 mb-2">
+                  <div className="text-center bg-slate-50 rounded p-1.5">
+                    <span className="text-slate-400 block text-[10px]">Lat</span>
+                    <span className="font-mono font-medium text-slate-700">{img.wy?.toFixed(6) || '-'}</span>
+                  </div>
+                  <div className="text-center bg-slate-50 rounded p-1.5">
+                    <span className="text-slate-400 block text-[10px]">Lon</span>
+                    <span className="font-mono font-medium text-slate-700">{img.wx?.toFixed(6) || '-'}</span>
+                  </div>
+                  <div className="text-center bg-slate-50 rounded p-1.5">
+                    <span className="text-slate-400 block text-[10px]">Alt</span>
+                    <span className="font-mono font-medium text-slate-700">{img.z != null ? `${parseFloat(img.z).toFixed(1)}m` : '-'}</span>
+                  </div>
+                </div>
+
+                {/* 회전값 - 별도 섹션 */}
+                <div className="grid grid-cols-3 gap-1.5 text-xs border-t border-slate-200 pt-2">
+                  <div className="text-center bg-slate-50 rounded p-1.5">
+                    <span className="text-slate-400 block text-[10px]">Omega (ω)</span>
+                    <span className="font-mono font-medium text-slate-700">{img.omega != null ? parseFloat(img.omega).toFixed(4) : '0.0000'}</span>
+                  </div>
+                  <div className="text-center bg-slate-50 rounded p-1.5">
+                    <span className="text-slate-400 block text-[10px]">Phi (φ)</span>
+                    <span className="font-mono font-medium text-slate-700">{img.phi != null ? parseFloat(img.phi).toFixed(4) : '0.0000'}</span>
+                  </div>
+                  <div className="text-center bg-slate-50 rounded p-1.5">
+                    <span className="text-slate-400 block text-[10px]">Kappa (κ)</span>
+                    <span className="font-mono font-medium text-slate-700">{img.kappa != null ? parseFloat(img.kappa).toFixed(4) : '0.0000'}</span>
+                  </div>
                 </div>
               </div>
             </Popup>
@@ -1410,6 +1567,72 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-[1000] pointer-events-none">
           <div className="bg-white p-4 rounded shadow text-slate-700 font-bold">
             EO 데이터가 없어 지도에 표시할 수 없습니다.
+          </div>
+        </div>
+      )}
+
+      {/* Selected Image Detail Panel - Bottom of Map */}
+      {selectedImageId && selectedImage && (
+        <div className="absolute bottom-4 left-4 right-4 bg-white border-2 border-slate-300 shadow-xl rounded-xl z-[1000]">
+          <div className="flex items-stretch gap-4 p-3 max-h-40">
+            {/* Thumbnail */}
+            <div className="w-32 h-32 flex-shrink-0 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 flex items-center justify-center">
+              {selectedImage.thumbnail_url ? (
+                <img src={selectedImage.thumbnail_url} alt={selectedImage.name} className="w-full h-full object-cover" />
+              ) : (
+                <div className="text-center text-slate-400 p-2">
+                  <Camera size={32} className="mx-auto mb-1 text-slate-300" />
+                  <span className="text-xs">미리보기 없음</span>
+                </div>
+              )}
+            </div>
+
+            {/* File Info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-bold text-slate-800 truncate" title={selectedImage.name}>{selectedImage.name}</h4>
+                <button
+                  onClick={() => onSelectImage(null)}
+                  className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-4 lg:grid-cols-7 gap-2 text-xs">
+                {/* Coordinates */}
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">위도 (Lat)</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.wy?.toFixed(6) || '-'}</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">경도 (Lon)</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.wx?.toFixed(6) || '-'}</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">고도 (Alt)</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.z != null ? `${parseFloat(selectedImage.z).toFixed(1)}m` : '-'}</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">파일 크기</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.file_size ? `${(selectedImage.file_size / 1024 / 1024).toFixed(1)}MB` : '-'}</span>
+                </div>
+
+                {/* Rotation values */}
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">Omega (ω)</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.omega != null ? parseFloat(selectedImage.omega).toFixed(4) : '0.0000'}</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">Phi (φ)</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.phi != null ? parseFloat(selectedImage.phi).toFixed(4) : '0.0000'}</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-slate-400 truncate">Kappa (κ)</span>
+                  <span className="font-mono text-slate-700 truncate text-[11px]">{selectedImage.kappa != null ? parseFloat(selectedImage.kappa).toFixed(4) : '0.0000'}</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1486,6 +1709,13 @@ function Dashboard() {
   const [expandedGroupIds, setExpandedGroupIds] = useState(new Set());
   const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState(null);
+  const [activeGroupId, setActiveGroupId] = useState(null); // For group filtering
+
+  // Filter projects by active group
+  const filteredProjects = useMemo(() => {
+    if (!activeGroupId) return projects;
+    return projects.filter(p => p.group_id === activeGroupId);
+  }, [projects, activeGroupId]);
 
   // Fetch groups on mount
   useEffect(() => {
@@ -1559,6 +1789,8 @@ function Dashboard() {
 
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
   const [projectImages, setProjectImages] = useState([]); // Store fetched images
+  const [activeUploads, setActiveUploads] = useState([]); // Tracking upload progress
+  const [uploaderController, setUploaderController] = useState(null);
   const [loadingImages, setLoadingImages] = useState(false);
   const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
 
@@ -1585,11 +1817,17 @@ function Dashboard() {
           return {
             id: img.id,
             name: img.filename,
-            // If EO exists, use it. Otherwise random fallback or 0
+            // If EO exists, use it. Otherwise 0
             wx: eo ? eo.x : 0,
             wy: eo ? eo.y : 0,
+            z: eo ? eo.z : null,
+            omega: eo ? eo.omega : null,
+            phi: eo ? eo.phi : null,
+            kappa: eo ? eo.kappa : null,
             hasEo: !!eo,
-            thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)` // Still random color for now
+            thumbnail_url: img.thumbnail_url || null,
+            file_size: img.file_size || null,
+            thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
           };
         });
 
@@ -1730,10 +1968,35 @@ function Dashboard() {
       }
 
       // 3. Upload EO Data if exists (Now that images exist)
+      let imagesToUse = generatePlaceholderImages(created.id, files?.length || 0);
       if (eoFile) {
         console.log('Uploading EO data...');
         try {
           await api.uploadEoData(created.id, eoFile, eoConfig);
+          // Wait briefly (500ms) for DB commit and fetch real images
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const fetchedImages = await api.getProjectImages(created.id);
+          if (fetchedImages && fetchedImages.length > 0) {
+            const points = fetchedImages.map(img => {
+              const eo = img.exterior_orientation;
+              return {
+                id: img.id,
+                name: img.filename,
+                wx: eo ? eo.x : 0,
+                wy: eo ? eo.y : 0,
+                z: eo ? eo.z : null,
+                omega: eo ? eo.omega : null,
+                phi: eo ? eo.phi : null,
+                kappa: eo ? eo.kappa : null,
+                hasEo: !!eo,
+                thumbnail_url: img.thumbnail_url || null,
+                file_size: img.file_size || null,
+                thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
+              };
+            });
+            imagesToUse = points.filter(p => p.hasEo);
+            setProjectImages(imagesToUse); // Update global state for map
+          }
           alert("EO data uploaded successfully.");
         } catch (e) {
           console.error(e);
@@ -1744,35 +2007,78 @@ function Dashboard() {
       // 4. Initiate TUS Image Uploads
       if (files && files.length > 0) {
         console.log(`Starting upload for ${files.length} images...`);
-        alert(`${files.length}개의 이미지 업로드를 시작합니다.\n(백그라운드에서 진행됩니다)`);
+
+        // Initialize progress state
+        setActiveUploads(files.map(f => ({
+          name: f.name,
+          progress: 0,
+          status: 'waiting',
+          speed: null,
+          eta: null
+        })));
 
         const uploader = new ResumableUploader(api.token);
-        uploader.uploadFiles(files, created.id, {
-          onFileComplete: (idx, name) => console.log(`Uploaded ${name}`),
+        const controller = uploader.uploadFiles(files, created.id, {
+          concurrency: 5, // Process 5 files at a time now that connection is stable
+          onFileProgress: (idx, name, progress) => {
+            setActiveUploads(prev => {
+              const next = [...prev];
+              if (next[idx]) {
+                next[idx] = {
+                  ...next[idx],
+                  progress: progress.percentage,
+                  status: 'uploading',
+                  speed: ResumableUploader.formatSpeed(progress.speed),
+                  eta: ResumableUploader.formatETA(progress.eta)
+                };
+              }
+              return next;
+            });
+          },
+          onFileComplete: (idx, name) => {
+            console.log(`Uploaded ${name}`);
+            setActiveUploads(prev => {
+              const next = [...prev];
+              if (next[idx]) {
+                next[idx] = { ...next[idx], status: 'completed', progress: 100 };
+              }
+              return next;
+            });
+          },
           onAllComplete: async () => {
             console.log('All uploads finished');
-            alert("모든 이미지 업로드가 완료되었습니다. 처리 화면으로 이동합니다.");
-            // Reload the page with project ID and viewMode in URL to maintain context
-            window.location.href = `${window.location.origin}${window.location.pathname}?projectId=${created.id}&viewMode=processing`;
+            // We don't alert here anymore to avoid disruption, 
+            // the UI will show "completed" state.
           },
-          onError: (idx, name, err) => console.error(`Failed ${name}`, err)
+          onError: (idx, name, err) => {
+            console.error(`Failed ${name}`, err);
+            setActiveUploads(prev => {
+              const next = [...prev];
+              if (next[idx]) {
+                next[idx] = { ...next[idx], status: 'error' };
+              }
+              return next;
+            });
+          }
         });
+        setUploaderController(controller);
       }
 
-      // 4. Update UI State (Switch to Processing View immediately or show new project)
-      // Transform for processing view
+      // 5. Update UI State (Switch to Processing View immediately)
       const projectForProcessing = {
         ...created,
-        status: '대기', // Initial status
+        status: '대기',
         imageCount: files?.length || 0,
-        images: generatePlaceholderImages(created.id, files?.length || 0), // Placeholders until real images load
+        images: imagesToUse, // Use real images if fetched, else placeholders
         bounds: { x: 30, y: 30, w: 40, h: 40 },
         cameraModel: cameraModel
       };
 
       setProcessingProject(projectForProcessing);
       setViewMode('processing');
-      refreshProjects();
+
+      // Ensure project list is refreshed with new data including EO
+      await refreshProjects();
 
     } catch (err) {
       console.error('Failed to create project:', err);
@@ -1876,12 +2182,44 @@ function Dashboard() {
               setCheckedProjectIds(new Set());
               alert(`${successCount}개 삭제 완료${failCount > 0 ? `, ${failCount}개 실패` : ''}`);
             }}
-            onOpenProcessing={(projectId) => {
+            onOpenProcessing={async (projectId) => {
               const proj = projects.find(p => p.id === projectId);
               if (proj) {
+                // If projectId differs from current selectedProjectId, we need to fetch images first
+                let imagesToUse = projectImages;
+                if (projectId !== selectedProjectId) {
+                  // Fetch images for this project
+                  try {
+                    const images = await api.getProjectImages(projectId);
+                    // Normalize like we do in the useEffect
+                    const points = images.map(img => {
+                      const eo = img.exterior_orientation;
+                      return {
+                        id: img.id,
+                        name: img.filename,
+                        wx: eo ? eo.x : 0,
+                        wy: eo ? eo.y : 0,
+                        z: eo ? eo.z : null,
+                        omega: eo ? eo.omega : null,
+                        phi: eo ? eo.phi : null,
+                        kappa: eo ? eo.kappa : null,
+                        hasEo: !!eo,
+                        thumbnail_url: img.thumbnail_url || null,
+                        file_size: img.file_size || null,
+                        thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
+                      };
+                    });
+                    imagesToUse = points.filter(p => p.hasEo);
+                    // Also update state so map can show them
+                    setProjectImages(imagesToUse);
+                  } catch (err) {
+                    console.error('Failed to fetch project images:', err);
+                    imagesToUse = [];
+                  }
+                }
                 setProcessingProject({
                   ...proj,
-                  images: projectImages
+                  images: imagesToUse
                 });
                 setSelectedProjectId(projectId);
                 setViewMode('processing');
@@ -1897,6 +2235,8 @@ function Dashboard() {
             onCreateGroup={() => setIsGroupModalOpen(true)}
             onEditGroup={setEditingGroup}
             onDeleteGroup={handleDeleteGroup}
+            activeGroupId={activeGroupId}
+            onFilterGroup={(groupId) => setActiveGroupId(prev => prev === groupId ? null : groupId)}
           />
         )}
         <div className="w-1.5 bg-slate-200 hover:bg-blue-400 cursor-col-resize z-20 flex items-center justify-center group" onMouseDown={startResizing}><div className="h-8 w-1 bg-slate-300 rounded-full group-hover:bg-white/50" /></div>
@@ -1906,7 +2246,7 @@ function Dashboard() {
             <>
               {/* Always use DashboardView for both single and double click */}
               <DashboardView
-                projects={projects}
+                projects={filteredProjects}
                 selectedProject={selectedProject}
                 sidebarWidth={sidebarWidth}
                 onProjectClick={(project) => {
@@ -2001,6 +2341,17 @@ function Dashboard() {
           </div>
         </div>
       )}
+      {/* Upload Progress Overlay */}
+      <UploadProgressPanel
+        uploads={activeUploads}
+        onAbortAll={() => {
+          if (window.confirm('모든 업로드를 취소하시겠습니까?')) {
+            uploaderController?.abortAll();
+            setActiveUploads([]);
+          }
+        }}
+        onRestore={() => setActiveUploads([])}
+      />
     </div>
   );
 }

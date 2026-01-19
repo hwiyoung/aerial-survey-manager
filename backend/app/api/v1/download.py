@@ -313,3 +313,141 @@ async def get_cog_url(
         "project_id": str(project_id),
     }
 
+
+from pydantic import BaseModel
+from typing import List
+import zipfile
+import io
+import tempfile
+
+
+class BatchExportRequest(BaseModel):
+    """Request model for batch export."""
+    project_ids: List[UUID]
+    format: str = "GeoTiff"
+    crs: str = "EPSG:5186"
+
+
+@router.post("/batch")
+async def batch_download(
+    request: BatchExportRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Download multiple project orthoimages as a ZIP archive.
+    
+    This endpoint creates a ZIP file containing all completed orthoimages
+    from the requested projects.
+    """
+    if not request.project_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No project IDs provided",
+        )
+    
+    if len(request.project_ids) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 20 projects allowed per batch export",
+        )
+    
+    # Get all eligible projects
+    projects_with_files = []
+    
+    for project_id in request.project_ids:
+        # Check permission
+        permission_checker = PermissionChecker("view")
+        if not await permission_checker.check(str(project_id), current_user, db):
+            continue  # Skip projects without permission
+        
+        # Get the latest completed processing job
+        result = await db.execute(
+            select(ProcessingJob)
+            .where(
+                ProcessingJob.project_id == project_id,
+                ProcessingJob.status == "completed",
+            )
+            .order_by(ProcessingJob.completed_at.desc())
+        )
+        job = result.scalar_one_or_none()
+        
+        if not job or not job.result_path:
+            continue  # Skip projects without completed orthoimages
+        
+        file_path = job.result_path
+        if not os.path.exists(file_path):
+            continue  # Skip if file doesn't exist
+        
+        # Get project info for filename
+        project_result = await db.execute(select(Project).where(Project.id == project_id))
+        project = project_result.scalar_one_or_none()
+        if project:
+            projects_with_files.append({
+                "project": project,
+                "file_path": file_path,
+            })
+    
+    if not projects_with_files:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No completed orthoimages found for the selected projects",
+        )
+    
+    # Create ZIP file in memory (for small batches) or temp file (for large)
+    # Using tempfile for reliability
+    temp_zip_path = tempfile.NamedTemporaryFile(delete=False, suffix='.zip').name
+    
+    try:
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for item in projects_with_files:
+                project = item["project"]
+                file_path = item["file_path"]
+                
+                # Create safe filename
+                safe_title = project.title.replace(" ", "_").replace("/", "_")
+                arcname = f"{safe_title}_ortho.tif"
+                
+                # Add file to zip
+                zipf.write(file_path, arcname)
+        
+        # Stream the ZIP file
+        zip_size = os.path.getsize(temp_zip_path)
+        
+        async def iter_zip_file():
+            """Stream the ZIP file content."""
+            try:
+                async with aiofiles.open(temp_zip_path, 'rb') as f:
+                    while chunk := await f.read(8 * 1024 * 1024):  # 8MB chunks
+                        yield chunk
+            finally:
+                # Clean up temp file after streaming
+                try:
+                    os.unlink(temp_zip_path)
+                except:
+                    pass
+        
+        # Generate filename with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_filename = f"batch_export_{timestamp}.zip"
+        
+        return StreamingResponse(
+            iter_zip_file(),
+            headers={
+                "Content-Length": str(zip_size),
+                "Content-Disposition": f'attachment; filename="{zip_filename}"',
+            },
+            media_type="application/zip",
+        )
+        
+    except Exception as e:
+        # Clean up on error
+        try:
+            os.unlink(temp_zip_path)
+        except:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create ZIP archive: {str(e)}",
+        )

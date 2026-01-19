@@ -4,7 +4,18 @@
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
-const TUS_URL = import.meta.env.VITE_TUS_URL || '/files/';
+
+// Use configured TUS URL or dynamically build from current origin
+// This ensures the request goes to the correct port (e.g., :8081 in nginx proxy)
+const getTusUrl = () => {
+    const configured = import.meta.env.VITE_TUS_URL;
+    if (configured && configured.startsWith('http')) {
+        return configured;
+    }
+    // Use relative path from current origin (preserves port like :8081)
+    return `${window.location.origin}${configured || '/files/'}`;
+};
+const TUS_URL = getTusUrl();
 
 class ApiClient {
     constructor() {
@@ -331,6 +342,56 @@ class ApiClient {
     // --- COG/Orthoimage ---
     async getCogUrl(projectId) {
         return this.request(`/download/projects/${projectId}/cog-url`);
+    }
+
+    /**
+     * Batch export multiple project orthoimages as a ZIP file
+     * @param {string[]} projectIds - Array of project IDs to export
+     * @param {object} options - Export options (format, crs)
+     * @returns {Promise<Blob>} - ZIP file blob for download
+     */
+    async batchExport(projectIds, options = {}) {
+        const url = `${API_BASE}/api/v1/download/batch`;
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+
+        if (this.token) {
+            headers['Authorization'] = `Bearer ${this.token}`;
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                project_ids: projectIds,
+                format: options.format || 'GeoTiff',
+                crs: options.crs || 'EPSG:5186',
+            }),
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || `Batch export failed: ${response.status}`);
+        }
+
+        return response.blob();
+    }
+
+    /**
+     * Download a blob as a file
+     * @param {Blob} blob - The blob to download
+     * @param {string} filename - Suggested filename
+     */
+    downloadBlob(blob, filename) {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
     }
 }
 

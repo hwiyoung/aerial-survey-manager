@@ -57,7 +57,7 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
  */
 function StatsSummary({ stats, isCompact = false }) {
     const completedCount = stats.completed;
-    const totalCount = stats.completed + stats.processing;
+    const totalCount = stats.total || (stats.completed + stats.processing);
     const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
     return (
@@ -285,7 +285,7 @@ export default function DashboardView({
         };
 
         fetchStats();
-    }, [projects.length]); // Refetch when projects change
+    }, [projects.length, projects.map(p => p.status).join(',')]); // Refetch when projects count or status changes
 
     // Observe container width changes
     useEffect(() => {
@@ -324,9 +324,24 @@ export default function DashboardView({
 
     // Calculate stats from projects (use real values, no fallbacks)
     const stats = useMemo(() => {
-        const processing = projects.filter(p => p.status === '진행중').length;
-        const completed = projects.filter(p => p.status === '완료').length;
-        const totalImages = projects.reduce((sum, p) => sum + (p.imageCount || 0), 0);
+        // Count by status - handle various status names
+        const processing = projects.filter(p =>
+            p.status === '진행중' || p.status === 'processing' || p.status === 'running'
+        ).length;
+        const completed = projects.filter(p =>
+            p.status === '완료' || p.status === 'completed'
+        ).length;
+        const pending = projects.filter(p =>
+            p.status === '대기' || p.status === 'pending' || p.status === '준비'
+        ).length;
+        const failed = projects.filter(p =>
+            p.status === '오류' || p.status === 'error' || p.status === 'failed'
+        ).length;
+
+        // Total is ALL projects, not just processing + completed
+        const total = projects.length;
+
+        const totalImages = projects.reduce((sum, p) => sum + (p.imageCount || p.image_count || 0), 0);
         const totalSize = projects.reduce((sum, p) => sum + (parseFloat(p.size) || 0), 0);
 
         // Area calculation based on actual projects (estimate if no real data)
@@ -336,10 +351,13 @@ export default function DashboardView({
         return {
             processing,
             completed,
+            pending,
+            failed,
+            total,
             area: area || '0',
             dataSize,
             photoCount: totalImages,
-            avgPhotos: totalImages > 0 ? Math.round(totalImages / Math.max(1, completed + processing)) : 0,
+            avgPhotos: total > 0 ? Math.round(totalImages / total) : 0,
         };
     }, [projects]);
 
