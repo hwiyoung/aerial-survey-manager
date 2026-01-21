@@ -42,6 +42,7 @@ class Project(Base):
     
     # Spatial data (PostGIS)
     bounds = mapped_column(Geometry("POLYGON", srid=4326), nullable=True)
+    ortho_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     
     # Relationships
     owner: Mapped["User"] = relationship("User", back_populates="owned_projects")

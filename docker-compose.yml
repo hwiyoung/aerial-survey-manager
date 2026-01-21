@@ -40,6 +40,7 @@ services:
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
       - TUS_ENDPOINT=http://tusd:1080/files/
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
     volumes:
       - ./backend:/app
       - ./data/processing:/data/processing
@@ -80,7 +81,7 @@ services:
   worker-odm:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.worker-odm
     command: celery -A app.workers.tasks worker -Q odm --loglevel=info --concurrency=2
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
@@ -89,6 +90,8 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - HOST_DATA_PATH=${PWD}/data/processing  # Host path for Docker-in-Docker volume mounts
     volumes:
       - ./backend:/app
       - ./data/processing:/data/processing
@@ -113,6 +116,7 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
     volumes:
@@ -133,6 +137,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
     volumes:
       - ./backend:/app
     depends_on:

@@ -227,12 +227,21 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] **Dashboard Statistics API (Completed)**:
   - Monthly/Regional statistics endpoints (`/stats/monthly`, `/stats/regional`)
   - Chart components connected to real API data
+- [x] **Batch Export (Completed)**:
+  - Multi-project orthophoto ZIP download from MinIO storage
+- [x] **Project Delete Improvements (2026-01-21)**:
+  - Fixed missing `Path` import, proper local/MinIO cleanup
+- [x] **API Serialization Fixes (2026-01-21)**:
+  - Fixed Pydantic validation for PostGIS geometry bounds
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
 - [x] Map visualization (Leaflet + Footprints)
 - [x] Dashboard statistics cards
 - [x] Orthoimage overlay on map (COG streaming with georaster-layer-for-leaflet)
-- [x] Batch export functionality (Completed)
+
+### ⚠️ Known Issues
+- **COG Loading**: MinIO presigned URL translation may require `MINIO_PUBLIC_ENDPOINT` configuration
+- **Bounding Boxes**: Requires orthophoto processing to extract geographic bounds from result file
 
 ## 🧪 Testing with Real Data
 

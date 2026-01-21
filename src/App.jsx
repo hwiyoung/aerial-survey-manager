@@ -14,9 +14,10 @@ import { useProjects, useProcessingStatus } from './hooks/useApi';
 import LoginPage from './components/LoginPage';
 import api from './api/client';
 import ResumableUploader from './services/upload';
+import { useProcessingProgress } from './hooks/useProcessingProgress';
 
 // Leaflet
-import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import ResumableDownloader from './services/download';
@@ -307,7 +308,7 @@ function UploadProgressPanel({ uploads, onAbortAll, onRestore }) {
 
 
 // [Processing Options Sidebar]
-function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
+function ProcessingSidebar({ width, project, onCancel, onStartProcessing, activeUploads = [] }) {
   const [presets, setPresets] = useState([]);
   const [defaultPresets, setDefaultPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState(null);
@@ -323,6 +324,11 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
     output_crs: 'EPSG:5186',
     output_format: 'GeoTiff'
   });
+
+  // Real-time processing progress via WebSocket
+  const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected } = useProcessingProgress(
+    project?.id || null  // Use project.id for WebSocket connection
+  );
 
   // Load presets on mount
   useEffect(() => {
@@ -405,7 +411,13 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
   };
 
   return (
-    <aside className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-xl shrink-0 transition-all relative animate-in slide-in-from-left duration-300" style={{ width: width }}>
+    <aside
+      className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-xl shrink-0 relative overflow-hidden"
+      style={{
+        width: width,
+        animation: 'slideInFromLeft 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards'
+      }}
+    >
       <div className="p-5 border-b border-slate-200 bg-slate-50">
         <div className="flex items-center gap-3">
           <button
@@ -421,6 +433,44 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
           </div>
         </div>
       </div>
+
+      {/* Processing Progress Bar (shown when job is running) */}
+      {(wsStatus === 'processing' || wsStatus === 'connecting') && (
+        <div className="px-5 py-3 bg-blue-50 border-b border-blue-100">
+          <div className="flex justify-between items-center text-sm mb-2">
+            <span className="font-medium text-blue-800 flex items-center gap-2">
+              <Loader2 size={14} className="animate-spin" />
+              {wsStatus === 'connecting' ? '연결 중...' : '처리 진행 중'}
+            </span>
+            <span className="font-bold text-blue-600">{wsProgress}%</span>
+          </div>
+          <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-600 transition-all duration-500 ease-out"
+              style={{ width: `${wsProgress}%` }}
+            />
+          </div>
+          {wsMessage && (
+            <p className="text-xs text-blue-600 mt-1 truncate">{wsMessage}</p>
+          )}
+        </div>
+      )}
+
+      {/* Complete Status */}
+      {wsStatus === 'complete' && (
+        <div className="px-5 py-3 bg-emerald-50 border-b border-emerald-100 flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-emerald-600" />
+          <span className="text-sm font-medium text-emerald-800">처리가 완료되었습니다!</span>
+        </div>
+      )}
+
+      {/* Error Status */}
+      {wsStatus === 'error' && (
+        <div className="px-5 py-3 bg-red-50 border-b border-red-100 flex items-center gap-2">
+          <AlertTriangle size={16} className="text-red-600" />
+          <span className="text-sm font-medium text-red-800">처리 중 오류가 발생했습니다</span>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6">
         {/* Preset Selection */}
         <div className="space-y-3">
@@ -530,7 +580,32 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing }) {
       </div>
       <div className="p-5 border-t border-slate-200 bg-slate-50 flex gap-3">
         <button onClick={onCancel} className="flex-1 py-3 text-slate-600 font-bold text-sm hover:bg-slate-200 rounded-lg">취소</button>
-        <button onClick={handleStart} className="flex-[2] py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-lg flex items-center justify-center gap-2 shadow-md"><Play size={16} fill="currentColor" /> 처리 시작</button>
+        {(() => {
+          const uploadsInProgress = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+          const hasImages = (project?.imageCount || 0) > 0;
+          const isProcessing = project?.status === 'processing' || project?.status === '진행중';
+          const isDisabled = !hasImages || uploadsInProgress || isProcessing;
+
+          let buttonText = '처리 시작';
+          if (!hasImages) buttonText = '업로드된 이미지 없음';
+          else if (uploadsInProgress) buttonText = `업로드 중... (${activeUploads.filter(u => u.status === 'completed').length}/${activeUploads.length})`;
+          else if (isProcessing) buttonText = '처리 중...';
+          else buttonText = `처리 시작 (${project?.imageCount || 0}장)`;
+
+          return (
+            <button
+              onClick={handleStart}
+              disabled={isDisabled}
+              className={`flex-[2] py-3 font-bold text-sm rounded-lg flex items-center justify-center gap-2 shadow-md transition-all
+                ${isDisabled
+                  ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
+            >
+              <Play size={16} fill="currentColor" />
+              {buttonText}
+            </button>
+          );
+        })()}
       </div>
 
       {/* Save Preset Modal */}
@@ -613,11 +688,12 @@ function UploadWizard({ isOpen, onClose, onComplete }) {
   };
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [selectedEoFile, setSelectedEoFile] = useState(null);
-  const [eoConfig, setEoConfig] = useState({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } });
+  const [eoConfig, setEoConfig] = useState({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
 
   const folderInputRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const eoInputRef = React.useRef(null);
+  const [selectionMode, setSelectionMode] = useState(null); // 'folder' or 'files'
 
   const [rawEoData, setRawEoData] = useState(`ImageID,Lat,Lon,Alt,Omega,Phi,Kappa
 IMG_001,37.1234,127.5543,150.2,0.1,-0.2,1.5
@@ -655,7 +731,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
       setStep(1);
       setImageCount(0);
       setEoFileName(null);
-      setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } });
+      setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
       setProjectName('');
       setShowMismatchWarning(false);
       setSelectedFiles([]);
@@ -692,6 +768,9 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
     );
     setSelectedFiles(imageFiles);
     setImageCount(imageFiles.length);
+    setSelectionMode('folder');
+    // Clear the other input
+    if (fileInputRef.current) fileInputRef.current.value = '';
     // Auto-set project name from folder name if not set
     if (!projectName && allFiles.length > 0) {
       const path = allFiles[0].webkitRelativePath || '';
@@ -703,6 +782,9 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
     const files = Array.from(e.target.files);
     setSelectedFiles(files);
     setImageCount(files.length);
+    setSelectionMode('files');
+    // Clear the other input
+    if (folderInputRef.current) folderInputRef.current.value = '';
   };
 
   const handleEoFileSelect = (e) => {
@@ -802,7 +884,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 />
                 <button
                   onClick={() => folderInputRef.current.click()}
-                  className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectedFiles.length > 0 && folderInputRef.current?.files.length > 0 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
+                  className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectionMode === 'folder' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
                 >
                   <FolderOpen size={48} className="text-blue-600" />
                   <div>
@@ -812,7 +894,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 </button>
                 <button
                   onClick={() => fileInputRef.current.click()}
-                  className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectedFiles.length > 0 && fileInputRef.current?.files.length > 0 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
+                  className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectionMode === 'files' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
                 >
                   <FilePlus size={48} className="text-emerald-600" />
                   <div>
@@ -826,7 +908,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
           )}
           {step === 2 && (
             <div className="flex flex-col h-full gap-6">
-              <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { id: 0, x: 2, y: 1, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
+              <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); if (eoInputRef.current) eoInputRef.current.value = ''; }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
               <div className="flex gap-6 shrink-0 h-[220px]">
                 <input
                   type="file"
@@ -857,7 +939,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center shrink-0"><span className="text-sm font-bold text-slate-700 flex items-center gap-2"><TableIcon size={16} className="text-slate-400" /> 데이터 파싱 미리보기</span>{eoFileName && <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded font-bold">실시간 업데이트 중</span>}</div>
                 <div className="flex-1 overflow-auto custom-scrollbar relative">
                   {!eoFileName ? (<div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300"><FileText size={48} className="mb-3 opacity-30" /><p className="text-sm font-medium">상단에서 EO 파일을 로드하면<br />이곳에 미리보기가 표시됩니다.</p></div>) : (
-                    <table className="w-full text-sm text-left"><thead className="bg-slate-50 sticky top-0 z-10 text-slate-500 text-xs uppercase"><tr><th className="p-3 border-b font-semibold w-[15%]">Image ID ({eoConfig.columns.image_name})</th><th className="p-3 border-b font-semibold">Lat/X ({eoConfig.columns.x})</th><th className="p-3 border-b font-semibold">Lon/Y ({eoConfig.columns.y})</th><th className="p-3 border-b font-semibold">Alt/Z ({eoConfig.columns.z})</th><th className="p-3 border-b font-semibold">Ω ({eoConfig.columns.omega})</th><th className="p-3 border-b font-semibold">Φ ({eoConfig.columns.phi})</th><th className="p-3 border-b font-semibold">K ({eoConfig.columns.kappa})</th></tr></thead><tbody className="divide-y divide-slate-100">{parsedPreview.map((row) => (<tr key={row.key} className="hover:bg-blue-50 transition-colors group"><td className="p-3 font-mono text-slate-700 font-medium group-hover:text-blue-700">{row.image_name}</td><td className="p-3 font-mono text-slate-500">{row.x}</td><td className="p-3 font-mono text-slate-500">{row.y}</td><td className="p-3 font-mono text-slate-500">{row.z}</td><td className="p-3 font-mono text-slate-400">{row.omega}</td><td className="p-3 font-mono text-slate-400">{row.phi}</td><td className="p-3 font-mono text-slate-400">{row.kappa}</td></tr>))}</tbody></table>
+                    <table className="w-full text-sm text-left"><thead className="bg-slate-50 sticky top-0 z-10 text-slate-500 text-xs uppercase"><tr><th className="p-3 border-b font-semibold w-[15%]">Image ID ({eoConfig.columns.image_name})</th><th className="p-3 border-b font-semibold">Lon/X ({eoConfig.columns.x})</th><th className="p-3 border-b font-semibold">Lat/Y ({eoConfig.columns.y})</th><th className="p-3 border-b font-semibold">Alt/Z ({eoConfig.columns.z})</th><th className="p-3 border-b font-semibold">Ω ({eoConfig.columns.omega})</th><th className="p-3 border-b font-semibold">Φ ({eoConfig.columns.phi})</th><th className="p-3 border-b font-semibold">K ({eoConfig.columns.kappa})</th></tr></thead><tbody className="divide-y divide-slate-100">{parsedPreview.map((row) => (<tr key={row.key} className="hover:bg-blue-50 transition-colors group"><td className="p-3 font-mono text-slate-700 font-medium group-hover:text-blue-700">{row.image_name}</td><td className="p-3 font-mono text-slate-500">{row.x}</td><td className="p-3 font-mono text-slate-500">{row.y}</td><td className="p-3 font-mono text-slate-500">{row.z}</td><td className="p-3 font-mono text-slate-400">{row.omega}</td><td className="p-3 font-mono text-slate-400">{row.phi}</td><td className="p-3 font-mono text-slate-400">{row.kappa}</td></tr>))}</tbody></table>
                   )}
                 </div>
               </div>
@@ -1114,7 +1196,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
 }
 
 // [Sidebar]
-function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup }) {
+function Sidebar({ width, isResizing = false, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
   const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
@@ -1165,7 +1247,14 @@ function Sidebar({ width, projects, selectedProjectId, checkedProjectIds, onSele
   };
 
   return (
-    <aside className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-sm shrink-0 transition-all relative" style={{ width: width }}>
+    <aside
+      className={`bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-sm shrink-0 relative
+        ${isResizing ? '' : 'transition-[width] duration-150 ease-out'}`}
+      style={{
+        width: width,
+        willChange: isResizing ? 'width' : 'auto'
+      }}
+    >
       <div className="p-4 pb-2 flex gap-2">
         <button onClick={onOpenUpload} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg flex items-center justify-center gap-2 font-bold shadow-md transition-all active:scale-95"><UploadCloud size={20} /><span>새 프로젝트</span></button>
         {onCreateGroup && (
@@ -1368,10 +1457,27 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
         </div>
 
         {/* Progress bar for processing status */}
-        {project.status === '진행중' && (
+        {(project.status === '진행중' || project.status === 'processing') && (
           <div className="mt-2 ml-8">
+            <div className="flex justify-between text-[10px] text-slate-500 mb-0.5">
+              <span>처리 중...</span>
+              <span>{project.progress || 0}%</span>
+            </div>
             <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-              <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+              <div
+                className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                style={{ width: `${project.progress || 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Error message display */}
+        {(project.status === '오류' || project.status === 'error') && project.error_message && (
+          <div className="mt-2 ml-8 p-2 bg-red-50 border border-red-200 rounded-lg">
+            <div className="flex items-start gap-2">
+              <span className="text-red-500 text-xs">⚠</span>
+              <p className="text-[11px] text-red-700 leading-relaxed">{project.error_message}</p>
             </div>
           </div>
         )}
@@ -1407,7 +1513,21 @@ function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSe
           <div className="flex justify-between items-start">
             <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
             <div className="flex items-center gap-1">
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+              {/* Status Badge */}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${(project.status === '완료' || project.status === 'completed') ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                (project.status === '진행중' || project.status === 'processing' || project.status === 'queued') ? "bg-blue-50 text-blue-600 border-blue-100" :
+                  (project.status === '오류' || project.status === 'error') ? "bg-red-50 text-red-600 border-red-100" :
+                    "bg-slate-50 text-slate-500 border-slate-100"
+                }`}>
+                {project.status === 'completed' ? '완료' : project.status === 'processing' ? '진행중' : project.status === 'pending' ? '대기' : project.status === 'error' ? '오류' : project.status}
+              </span>
+
+              {/* Result Available Badge */}
+              {(project.status === '완료' || project.status === 'completed') && (
+                <span className="flex items-center gap-1 text-[9px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded shadow-sm animate-pulse whitespace-nowrap">
+                  <Eye size={10} /> 결과
+                </span>
+              )}
               <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제">
                 <Trash2 size={14} />
               </button>
@@ -1508,6 +1628,17 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
               }
             }}
           >
+            {/* Hover Tooltip - 빠른 정보 보기 */}
+            <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
+              <div className="text-xs">
+                <strong className="block mb-1">{img.name}</strong>
+                <div className="text-slate-500">
+                  {img.wy?.toFixed(4)}, {img.wx?.toFixed(4)}
+                  {img.z != null && ` · ${parseFloat(img.z).toFixed(0)}m`}
+                </div>
+              </div>
+            </Tooltip>
+            {/* Click Popup - 상세 정보 */}
             <Popup minWidth={260} maxWidth={320}>
               <div className="p-1">
                 {/* 썸네일 영역 */}
@@ -1664,7 +1795,33 @@ function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onEx
           </div>
         </div>
         <div className="flex-1 p-6 bg-slate-50 overflow-y-auto">
-          {project.orthoResult ? (<div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex items-center justify-between"><div className="flex items-center gap-4"><FileImage size={24} className="text-slate-400" /><div><div className="font-bold">Result_Ortho.tif</div><div className="text-xs text-slate-500">{project.orthoResult.fileSize}</div></div></div><button onClick={onExport} disabled={project.status !== '완료'} className="bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white px-4 py-2 rounded text-sm flex gap-2 transition-colors font-bold shadow-sm"><Download size={16} />정사영상 내보내기</button></div>) : (<div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-slate-300 rounded-xl text-slate-400 gap-2"><Loader2 size={24} className={project.status === '진행중' ? "animate-spin" : ""} /><span className="text-sm font-medium">{project.status === '진행중' ? '정사영상 생성 처리 중...' : '결과물이 없습니다.'}</span></div>)}
+          {project.orthoResult ? (
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="p-3 bg-blue-50 text-blue-600 rounded-lg shrink-0">
+                  <FileImage size={24} />
+                </div>
+                <div className="min-w-0">
+                  <div className="font-bold text-slate-800 truncate">Result_Ortho.tif</div>
+                  <div className="text-xs text-slate-500">{project.orthoResult.fileSize}</div>
+                </div>
+              </div>
+              <button
+                onClick={onExport}
+                disabled={project.status !== '완료' && project.status !== 'completed'}
+                className="bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white px-4 py-2 rounded text-sm flex items-center gap-2 transition-colors font-bold shadow-sm whitespace-nowrap ml-auto sm:ml-0"
+              >
+                <Download size={16} /> 정사영상 내보내기
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-slate-300 rounded-xl text-slate-400 gap-2">
+              <Loader2 size={24} className={(project.status === '진행중' || project.status === 'processing') ? "animate-spin" : ""} />
+              <span className="text-sm font-medium">
+                {(project.status === '진행중' || project.status === 'processing') ? '정사영상 생성 처리 중...' : '결과물이 없습니다.'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1699,8 +1856,13 @@ function Dashboard() {
       status: STATUS_MAP[p.status] || p.status,
       imageCount: p.image_count || 0,
       startDate: p.created_at?.slice(0, 10) || '',
-      bounds: { x: 15 + Math.random() * 60, y: 15 + Math.random() * 60, w: 30, h: 30 },
-      orthoResult: p.status === 'completed' ? { resolution: '5cm GSD', fileSize: '4.2GB', generatedAt: p.updated_at?.slice(0, 10) } : null,
+      // Use real bounds from backend, don't mock it!
+      bounds: p.bounds,
+      orthoResult: (p.status === 'completed' || p.status === '완료') ? {
+        resolution: '5cm GSD',
+        fileSize: p.ortho_path ? 'Loading...' : 'Check storage',
+        generatedAt: p.updated_at?.slice(0, 10)
+      } : null,
     }));
   }, [apiProjects]);
 
@@ -1911,35 +2073,76 @@ function Dashboard() {
   const selectedImage = selectedProject?.images?.find(img => img.id === selectedImageId) || null;
   const [qcData, setQcData] = useState(() => JSON.parse(localStorage.getItem('innopam_qc_data') || '{}'));
 
-  // RAF-based smooth resize handling
+  // RAF-based smooth resize handling with overlay
   const rafRef = useRef(null);
-  const startResizing = useCallback(() => setIsResizing(true), []);
+  const overlayRef = useRef(null);
+
+  const startResizing = useCallback((e) => {
+    e.preventDefault();
+    setIsResizing(true);
+
+    // Create full-screen overlay to capture all mouse events
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 99999;
+      cursor: col-resize;
+      user-select: none;
+      -webkit-user-select: none;
+    `;
+    document.body.appendChild(overlay);
+    overlayRef.current = overlay;
+    document.body.style.cursor = 'col-resize';
+  }, []);
+
   useEffect(() => {
+    if (!isResizing) return;
+
     const handleMove = (e) => {
-      if (!isResizing) return;
-      if (rafRef.current) return; // Skip if RAF is pending
+      e.preventDefault();
+      e.stopPropagation();
+      if (rafRef.current) return;
       rafRef.current = requestAnimationFrame(() => {
         setSidebarWidth(Math.max(240, Math.min(800, e.clientX)));
         rafRef.current = null;
       });
     };
-    const handleUp = () => {
+
+    const handleUp = (e) => {
+      e.preventDefault();
       setIsResizing(false);
+      document.body.style.cursor = '';
+
+      // Remove overlay
+      if (overlayRef.current) {
+        overlayRef.current.remove();
+        overlayRef.current = null;
+      }
+
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
     };
-    if (isResizing) {
-      window.addEventListener('mousemove', handleMove);
-      window.addEventListener('mouseup', handleUp);
-    }
+
+    // Use capture phase for better event handling
+    document.addEventListener('mousemove', handleMove, { capture: true, passive: false });
+    document.addEventListener('mouseup', handleUp, { capture: true });
+
     return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
+      document.removeEventListener('mousemove', handleMove, { capture: true });
+      document.removeEventListener('mouseup', handleUp, { capture: true });
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
+      }
+      if (overlayRef.current) {
+        overlayRef.current.remove();
+        overlayRef.current = null;
       }
     };
   }, [isResizing]);
@@ -2101,18 +2304,20 @@ function Dashboard() {
 
     try {
       // Start processing via API
-      await api.startProcessing(projectId, processingOptions);
+      const result = await api.startProcessing(projectId, processingOptions);
+      console.log('Processing started:', result);
+
+      // Stay on processing page to show progress
+      // The ProcessingSidebar will show progress via WebSocket connection
+      alert('처리가 시작되었습니다. 진행률은 이 화면에서 확인할 수 있습니다.\n\nODM 처리는 이미지 수에 따라 몇 시간이 걸릴 수 있습니다.');
+
     } catch (err) {
       console.error('Failed to start processing:', err);
       alert('처리 시작 실패: ' + err.message);
       return;
     }
 
-    // Go to dashboard with highlight (not select the project directly)
-    setSelectedProjectId(null);
-    setViewMode('dashboard');
-    setProcessingProject(null);
-    setHighlightProjectId(projectId); // Highlight the project on map for 3.5 seconds
+    // Refresh project list to update status
     refreshProjects();
   };
 
@@ -2137,14 +2342,38 @@ function Dashboard() {
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden font-sans">
-      <style>{`.custom-scrollbar::-webkit-scrollbar{width:6px}.custom-scrollbar::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}.map-grid{background-image:linear-gradient(to right,rgba(0,0,0,0.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(0,0,0,0.05) 1px,transparent 1px);background-size:40px 40px}`}</style>
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar{width:6px}
+        .custom-scrollbar::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+        .map-grid{background-image:linear-gradient(to right,rgba(0,0,0,0.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(0,0,0,0.05) 1px,transparent 1px);background-size:40px 40px}
+        @keyframes slideInFromLeft {
+          from { transform: translateX(-100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideInFromRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideOutToRight {
+          from { transform: translateX(0); opacity: 1; }
+          to { transform: translateX(100%); opacity: 0; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        .panel-slide-in-right {
+          animation: slideInFromRight 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+      `}</style>
       <Header />
       <div className="flex flex-1 overflow-hidden relative">
         {viewMode === 'processing' ? (
-          <ProcessingSidebar width={sidebarWidth} project={processingProject} onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); }} onStartProcessing={handleStartProcessing} />
+          <ProcessingSidebar width={sidebarWidth} project={processingProject} activeUploads={activeUploads} onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); }} onStartProcessing={handleStartProcessing} />
         ) : (
           <Sidebar
             width={sidebarWidth}
+            isResizing={isResizing}
             projects={projects}
             selectedProjectId={selectedProjectId}
             checkedProjectIds={checkedProjectIds}

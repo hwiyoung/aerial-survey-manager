@@ -1,5 +1,6 @@
 """Application configuration using pydantic-settings."""
 from functools import lru_cache
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 
@@ -29,15 +30,18 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET: str = "aerial-survey"
     MINIO_SECURE: bool = False
+    # Browser-accessible endpoint for presigned URLs (e.g., localhost:9002 for host machine)
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = "localhost:9002"
     
     # Processing Engines
     EXTERNAL_ENGINE_URL: str = ""
     EXTERNAL_ENGINE_API_KEY: str = ""
     ODM_DOCKER_IMAGE: str = "opendronemap/odm:latest"
     
-    # Upload
+    # Upload / Data
     TUS_ENDPOINT: str = "http://localhost:1080/files/"
     MAX_UPLOAD_SIZE_GB: int = 500
+    LOCAL_DATA_PATH: str = "/data"
     
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8081"]

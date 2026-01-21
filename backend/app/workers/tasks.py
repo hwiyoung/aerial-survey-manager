@@ -3,6 +3,7 @@ import os
 import hashlib
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, List
 
 from celery import Celery
 
@@ -39,6 +40,31 @@ def calculate_file_checksum(file_path: str) -> str:
         while chunk := f.read(1024 * 1024):
             hash_sha256.update(chunk)
     return hash_sha256.hexdigest()
+
+
+def get_orthophoto_bounds(file_path: str) -> Optional[str]:
+    """Extract WGS84 bounding box from orthophoto using gdalinfo."""
+    import subprocess
+    import json
+    try:
+        cmd = ["gdalinfo", "-json", file_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        
+        # Look for wgs84Extent (Polygon)
+        extent = data.get("wgs84Extent")
+        if extent and extent.get("type") == "Polygon":
+            coords = extent.get("coordinates", [[]])[0]
+            if len(coords) >= 4:
+                # Convert to WKT Polygon: POLYGON((lon1 lat1, lon2 lat2, ...))
+                wkt_points = [f"{pt[0]} {pt[1]}" for pt in coords]
+                # Ensure it's closed
+                if wkt_points[0] != wkt_points[-1]:
+                    wkt_points.append(wkt_points[0])
+                return f"SRID=4326;POLYGON(({', '.join(wkt_points)}))"
+    except Exception as e:
+        print(f"Failed to extract bounds from {file_path}: {e}")
+    return None
 
 
 @celery_app.task(bind=True, name="app.workers.tasks.process_orthophoto")
@@ -89,7 +115,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             ).all()
             
             def update_progress(progress, message=""):
-                """Update progress in database and Celery state."""
+                """Update progress in database, Celery state, and broadcast via WebSocket."""
                 job.progress = progress
                 project.progress = progress
                 db.commit()
@@ -97,6 +123,21 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     state="PROGRESS",
                     meta={"progress": progress, "message": message}
                 )
+                # Broadcast to WebSocket clients
+                try:
+                    import httpx
+                    httpx.post(
+                        "http://api:8000/api/v1/processing/broadcast",
+                        json={
+                            "project_id": project_id,
+                            "status": "processing",
+                            "progress": progress,
+                            "message": message
+                        },
+                        timeout=2.0
+                    )
+                except Exception:
+                    pass  # Don't fail the task if broadcast fails
             
             update_progress(5, "Downloading images from storage...")
             
@@ -144,37 +185,119 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             result_object_name = f"projects/{project_id}/ortho/result.tif"
             storage.upload_file(str(result_path), result_object_name, "image/tiff")
             
+            # Convert to COG (Cloud Optimized GeoTIFF) for efficient streaming
+            update_progress(92, "Converting to Cloud Optimized GeoTIFF (COG)...")
+            cog_path = output_dir / "result_cog.tif"
+            
+            try:
+                import subprocess
+                # Use GDAL to create COG with proper tiling and overviews
+                gdal_cmd = [
+                    "gdal_translate",
+                    "-of", "COG",
+                    "-co", "COMPRESS=LZW",
+                    "-co", "TILING_SCHEME=GoogleMapsCompatible",
+                    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+                    str(result_path),
+                    str(cog_path)
+                ]
+                subprocess.run(gdal_cmd, check=True, capture_output=True)
+                
+                # Upload COG version
+                cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
+                storage.upload_file(str(cog_path), cog_object_name, "image/tiff")
+                
+                # Use COG as primary result
+                result_path = cog_path
+                result_object_name = cog_object_name
+            except Exception as cog_error:
+                # COG conversion failed, continue with regular TIF
+                print(f"COG conversion failed: {cog_error}")
+            
             # Calculate checksum
             update_progress(95, "Calculating checksum...")
             checksum = calculate_file_checksum(str(result_path))
             file_size = os.path.getsize(result_path)
             
+            # Broadcast completion via WebSocket
+            try:
+                import httpx
+                # Call internal API to broadcast WebSocket update
+                httpx.post(
+                    f"http://api:8000/api/v1/processing/broadcast",
+                    json={
+                        "project_id": project_id,
+                        "status": "completed",
+                        "progress": 100,
+                        "message": "Processing completed successfully"
+                    },
+                    timeout=5.0
+                )
+            except Exception as ws_error:
+                print(f"WebSocket broadcast failed: {ws_error}")
+            
             # Update job with result
             job.status = "completed"
             job.progress = 100
             job.completed_at = datetime.utcnow()
-            job.result_path = str(result_path)  # Local path for direct download
+            job.result_path = result_object_name  # Use storage path for presigned URL access
             job.result_checksum = checksum
             job.result_size = file_size
             
+            # Update project bounds from orthophoto
+            update_progress(98, "Updating project footprint...")
+            bounds_wkt = get_orthophoto_bounds(str(result_path))
+            if bounds_wkt:
+                project.bounds = bounds_wkt
+            
             project.status = "completed"
             project.progress = 100
+            project.ortho_path = result_object_name  # Store ortho path in project
             
             db.commit()
             
             return {
                 "status": "completed",
-                "result_path": str(result_path),
+                "result_path": result_object_name,
                 "checksum": checksum,
                 "size": file_size,
             }
             
         except Exception as e:
-            # Handle error
+            # Handle error - extract user-friendly message from ODM output
+            error_str = str(e)
+            
+            # Try to find [ERROR] message in ODM output
+            user_friendly_error = "처리 중 오류가 발생했습니다."
+            if "[ERROR]" in error_str:
+                # Extract the ERROR line
+                import re
+                error_match = re.search(r'\[ERROR\]\s*(.+?)(?:\n|$)', error_str)
+                if error_match:
+                    user_friendly_error = error_match.group(1).strip()
+            elif "Exit code:" in error_str:
+                user_friendly_error = "ODM 처리 실패 (데이터 품질 문제일 수 있음)"
+            
             job.status = "error"
-            job.error_message = str(e)
+            job.error_message = user_friendly_error
             project.status = "error"
+            project.error_message = user_friendly_error  # Also save to project for UI display
             db.commit()
+            
+            # Broadcast error via WebSocket
+            try:
+                httpx.post(
+                    f"http://api:8000/api/v1/processing/broadcast",
+                    json={
+                        "project_id": project_id,
+                        "status": "error",
+                        "progress": 0,
+                        "message": user_friendly_error
+                    },
+                    timeout=5.0
+                )
+            except Exception:
+                pass
             
             raise
 

@@ -106,12 +106,31 @@ class StorageService:
         Returns:
             Presigned URL
         """
-        return self.client.presigned_get_object(
+        url = self.client.presigned_get_object(
             self.bucket,
             object_name,
             expires=timedelta(seconds=expires),
             response_headers=response_headers,
         )
+        
+        if settings.MINIO_PUBLIC_ENDPOINT:
+            # Robustly replace internal endpoint with public one
+            internal = settings.MINIO_ENDPOINT
+            public = settings.MINIO_PUBLIC_ENDPOINT
+            
+            # Cases:
+            # 1. minio:9000 -> localhost:9002
+            # 2. http://minio:9000 -> http://localhost:9002
+            
+            new_url = url.replace(internal, public)
+            
+            # Log for debugging (will show up in container logs)
+            if new_url != url:
+                print(f"[STORAGE] Presigned URL translated: {internal} -> {public}")
+            
+            return new_url
+                
+        return url
     
     def get_presigned_upload_url(
         self,
@@ -159,6 +178,18 @@ class StorageService:
             recursive=recursive,
         )
         return [obj.object_name for obj in objects]
+    
+    def delete_recursive(self, prefix: str) -> None:
+        """Delete all objects with a given prefix."""
+        from minio.deleteobjects import DeleteObject
+        objects = self.list_objects(prefix=prefix, recursive=True)
+        if not objects:
+            return
+        
+        delete_list = [DeleteObject(obj) for obj in objects]
+        for errors in self.client.remove_objects(self.bucket, delete_list):
+            for error in errors:
+                print(f"Error deleting object {error.object_name}: {error}")
 
 
 # Global storage service instance

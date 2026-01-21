@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal } from 'lucide-react';
+import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye } from 'lucide-react';
 import { StatsCard } from './StatsCard';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
@@ -172,13 +172,23 @@ function ProjectDetailView({ project, onBack }) {
                         </button>
                     )}
                     <div>
-                        <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
+                        <div className="flex items-center gap-2 mb-0.5">
+                            <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
+                            <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded font-mono uppercase tracking-tighter">ID: {project.id?.slice(0, 8)}...</span>
+                        </div>
                         <p className="text-sm text-slate-500">{project.region} · {project.company}</p>
                     </div>
                 </div>
-                <span className={`px-3 py-1 text-sm font-medium rounded-full ${statusColor}`}>
-                    {project.status}
-                </span>
+                <div className="flex flex-col items-end gap-2">
+                    <span className={`px-3 py-1 text-sm font-medium rounded-full ${statusColor}`}>
+                        {project.status}
+                    </span>
+                    {(project.status === '완료' || project.status === 'completed') && (
+                        <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-500 text-white rounded shadow-sm flex items-center gap-1 animate-pulse">
+                            <Eye size={10} /> 정사영상 사용 가능
+                        </span>
+                    )}
+                </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -388,7 +398,9 @@ export default function DashboardView({
                     <div className="flex flex-col gap-6">
                         {selectedProject ? (
                             showInspector && renderInspector ? (
-                                renderInspector(selectedProject)
+                                <div className="panel-slide-in-right">
+                                    {renderInspector(selectedProject)}
+                                </div>
                             ) : (
                                 <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
                             )
@@ -458,7 +470,9 @@ export default function DashboardView({
                     {/* Stats or Project Details or Inspector */}
                     {selectedProject ? (
                         showInspector && renderInspector ? (
-                            renderInspector(selectedProject)
+                            <div className="panel-slide-in-right">
+                                {renderInspector(selectedProject)}
+                            </div>
                         ) : (
                             <ProjectDetailView project={selectedProject} onBack={onDeselectProject} />
                         )

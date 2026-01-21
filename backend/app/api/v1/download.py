@@ -260,7 +260,23 @@ async def get_cog_url(
             detail="Access denied",
         )
     
-    # Get the latest completed processing job
+    # First, check if Project has an explicit ortho_path (MinIO)
+    project_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = project_result.scalar_one()
+    
+    if project.ortho_path:
+        storage = StorageService()
+        if storage.object_exists(project.ortho_path):
+            file_size = storage.get_object_size(project.ortho_path)
+            presigned_url = storage.get_presigned_url(project.ortho_path, expires=3600)
+            return {
+                "url": presigned_url,
+                "local": False,
+                "file_size": file_size,
+                "project_id": str(project_id),
+            }
+
+    # Fallback to ProcessingJob
     result = await db.execute(
         select(ProcessingJob)
         .where(
@@ -361,32 +377,50 @@ async def batch_download(
         if not await permission_checker.check(str(project_id), current_user, db):
             continue  # Skip projects without permission
         
-        # Get the latest completed processing job
-        result = await db.execute(
-            select(ProcessingJob)
-            .where(
-                ProcessingJob.project_id == project_id,
-                ProcessingJob.status == "completed",
-            )
-            .order_by(ProcessingJob.completed_at.desc())
-        )
-        job = result.scalar_one_or_none()
-        
-        if not job or not job.result_path:
-            continue  # Skip projects without completed orthoimages
-        
-        file_path = job.result_path
-        if not os.path.exists(file_path):
-            continue  # Skip if file doesn't exist
-        
-        # Get project info for filename
+        # First check Project.ortho_path (preferred)
         project_result = await db.execute(select(Project).where(Project.id == project_id))
         project = project_result.scalar_one_or_none()
-        if project:
-            projects_with_files.append({
-                "project": project,
-                "file_path": file_path,
-            })
+        
+        if not project:
+            continue
+        
+        ortho_path = project.ortho_path
+        
+        # Fallback to ProcessingJob.result_path if ortho_path is not set
+        if not ortho_path:
+            result = await db.execute(
+                select(ProcessingJob)
+                .where(
+                    ProcessingJob.project_id == project_id,
+                    ProcessingJob.status == "completed",
+                )
+                .order_by(ProcessingJob.completed_at.desc())
+            )
+            job = result.scalar_one_or_none()
+            if job and job.result_path:
+                ortho_path = job.result_path
+        
+        if not ortho_path:
+            continue  # Skip projects without orthoimage
+        
+        # Check if it's a MinIO path or local path
+        storage = StorageService()
+        if storage.object_exists(ortho_path):
+            # Download from MinIO to temp file
+            import tempfile as tf
+            temp_file = tf.NamedTemporaryFile(delete=False, suffix='.tif')
+            storage.download_file(ortho_path, temp_file.name)
+            file_path = temp_file.name
+        elif os.path.exists(ortho_path):
+            file_path = ortho_path
+        else:
+            continue  # Skip if file doesn't exist anywhere
+        
+        projects_with_files.append({
+            "project": project,
+            "file_path": file_path,
+        })
+
     
     if not projects_with_files:
         raise HTTPException(

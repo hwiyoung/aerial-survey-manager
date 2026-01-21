@@ -74,10 +74,19 @@ class ODMEngine(ProcessingEngine):
         # input_dir should contain the images
         # output_dir is where results will be written
         
+        # For Docker-in-Docker, we need to use HOST paths, not container paths
+        # The HOST_DATA_PATH env var contains the host's data folder path
+        import os
+        host_data_path = os.environ.get('HOST_DATA_PATH', '/data/processing')
+        
+        # Convert container paths to host paths
+        project_id_str = str(input_dir).split('/')[-2]  # Extract project ID from path
+        host_project_dir = f"{host_data_path}/{project_id_str}"
+        
         cmd = [
             "docker", "run", "--rm",
-            "-v", f"{input_dir}:/datasets/project/images",
-            "-v", f"{output_dir}:/datasets/project/output",
+            # Mount entire project folder - ODM creates all output subdirectories here
+            "-v", f"{host_project_dir}:/datasets/project",
             self.docker_image,
             "--project-path", "/datasets",
             "project",
@@ -85,49 +94,66 @@ class ODMEngine(ProcessingEngine):
             "--dsm",
             "--dtm",
             "--skip-3dmodel",  # Skip 3D model to speed up
+            "--skip-report",  # Skip report generation to avoid GDAL gdal_array error
             "--force-gps",
             "--auto-boundary",
         ]
+        
+        # Log the command for debugging
+        import logging
+        logging.info(f"[ODM] Running command: {' '.join(cmd)}")
         
         # Run ODM process
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,  # Merge stderr into stdout
         )
         
-        # Monitor progress (parse ODM output)
+        # Collect all output and monitor progress
+        all_output = []
         current_progress = 0
+        
         async for line in process.stdout:
             line_str = line.decode().strip()
+            all_output.append(line_str)
+            logging.info(f"[ODM] {line_str}")
             
             # Parse ODM progress from output
-            if "running" in line_str.lower():
+            line_lower = line_str.lower()
+            if "running" in line_lower:
                 if progress_callback:
                     # Estimate progress based on ODM stages
-                    if "opensfm" in line_str.lower():
+                    if "dataset" in line_lower:
+                        current_progress = 5
+                    elif "opensfm" in line_lower:
                         current_progress = 20
-                    elif "mvs" in line_str.lower():
+                    elif "openmvs" in line_lower or "mvs" in line_lower:
                         current_progress = 40
-                    elif "odm_filterpoints" in line_str.lower():
+                    elif "filterpoints" in line_lower:
                         current_progress = 50
-                    elif "odm_meshing" in line_str.lower():
+                    elif "meshing" in line_lower:
                         current_progress = 60
-                    elif "odm_dem" in line_str.lower():
+                    elif "dem" in line_lower:
                         current_progress = 70
-                    elif "odm_orthophoto" in line_str.lower():
+                    elif "orthophoto" in line_lower:
                         current_progress = 80
+                    elif "postprocess" in line_lower:
+                        current_progress = 95
                     
                     await progress_callback(current_progress, line_str)
         
         await process.wait()
         
         if process.returncode != 0:
-            stderr = await process.stderr.read()
-            raise RuntimeError(f"ODM processing failed: {stderr.decode()}")
+            # Get last 50 lines of output for error message
+            error_output = "\n".join(all_output[-50:]) if all_output else f"Exit code: {process.returncode}"
+            raise RuntimeError(f"ODM processing failed: {error_output}")
         
-        # Find the output orthophoto
-        ortho_path = output_dir / "odm_orthophoto" / "odm_orthophoto.tif"
+        # Find the output orthophoto - ODM saves it in project root, not output folder
+        # input_dir is /data/processing/{project_id}/images, so parent is project folder
+        project_folder = input_dir.parent
+        ortho_path = project_folder / "odm_orthophoto" / "odm_orthophoto.tif"
         if not ortho_path.exists():
             raise FileNotFoundError("ODM did not produce an orthophoto")
         

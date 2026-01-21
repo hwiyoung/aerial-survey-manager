@@ -199,78 +199,40 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
         }
     }, [highlightProjectId]);
 
-    // Generate footprints from projects - using specific coordinates for each project
-    // to match the GeoTIFF file locations
+    // Generate footprints from projects - using real data from backend
     const footprints = useMemo(() => {
-        // Project-specific coordinate mappings (matching GeoTIFF locations)
-        const projectCoordinates = {
-            '276af4b6-a201-4500-8c16-f5cee570476a': { // Seoul Dummy COG Project
-                bounds: [[37.4976, 126.9], [37.6, 127.0024]],
-                center: { lat: 37.5488, lng: 126.9512 }
-            },
-            '9716e02b-61fc-458e-97cb-310b38bc9a6f': { // 종만팀장님
-                bounds: [[36.4, 127.4], [36.5, 127.5]],
-                center: { lat: 36.45, lng: 127.45 }
-            },
-            '4c263906-fbb7-4d9f-9eb6-c4530cd02fc6': { // Project_20260108064743
-                bounds: [[35.4, 126.9], [35.5, 127.0]],
-                center: { lat: 35.45, lng: 126.95 }
-            },
-            'ec78ffc0-3895-44a1-b14b-76ba4e53ae6f': { // Project_20260109072246
-                bounds: [[36.9, 128.4], [37.0, 128.5]],
-                center: { lat: 36.95, lng: 128.45 }
-            }
-        };
-
-        const baseLat = 36.5;
-        const baseLng = 127.5;
-
         return projects.map((project, index) => {
-            // Check if we have specific coordinates for this project
-            const coords = projectCoordinates[project.id];
-
-            if (coords) {
-                let status = 'pending';
-                const projectStatus = (project.status || '').toLowerCase();
-                if (projectStatus === 'completed' || project.status === '완료') status = 'completed';
-                else if (projectStatus === 'processing' || project.status === '진행중') status = 'processing';
-                else if (projectStatus === 'error' || projectStatus === 'failed' || project.status === '오류') status = 'error';
-
-                return {
-                    id: project.id,
-                    title: project.title,
-                    status,
-                    bounds: coords.bounds,
-                    center: coords.center,
-                    project
-                };
-            }
-
-            // Fallback: generate mock coordinates for unknown projects
-            let lat, lng, size;
-            const seed = project.id ? parseInt(project.id.replace(/\D/g, '').slice(-4) || index) : index;
-            lat = baseLat + ((seed % 20) - 10) * 0.15;
-            lng = baseLng + ((seed % 15) - 7) * 0.2;
-            size = 0.05 + (seed % 5) * 0.02;
-
             let status = 'pending';
             const projectStatus = (project.status || '').toLowerCase();
             if (projectStatus === 'completed' || project.status === '완료') status = 'completed';
             else if (projectStatus === 'processing' || project.status === '진행중') status = 'processing';
             else if (projectStatus === 'error' || projectStatus === 'failed' || project.status === '오류') status = 'error';
 
-            return {
-                id: project.id,
-                title: project.title,
-                status,
-                bounds: [
-                    [lat - size, lng - size],
-                    [lat + size, lng + size]
-                ],
-                center: { lat, lng },
-                project
-            };
-        });
+            // Use real bounds from project if available
+            // project.bounds is expected to be a list of [lat, lng] points
+            if (project.bounds && project.bounds.length >= 2) {
+                // Leaflet Rectangle needs [[lat, lng], [lat, lng]]
+                // We'll calculate the envelope from the points
+                const lats = project.bounds.map(p => p[0]);
+                const lngs = project.bounds.map(p => p[1]);
+                const bounds = [
+                    [Math.min(...lats), Math.min(...lngs)],
+                    [Math.max(...lats), Math.max(...lngs)]
+                ];
+
+                return {
+                    id: project.id,
+                    title: project.title,
+                    status,
+                    bounds: bounds,
+                    center: { lat: (bounds[0][0] + bounds[1][0]) / 2, lng: (bounds[0][1] + bounds[1][1]) / 2 },
+                    project
+                };
+            }
+
+            // If no bounds, don't show on map
+            return null;
+        }).filter(Boolean);
     }, [projects]);
 
     // For flyTo: use highlightProjectId first (for animation), then selectedProjectId (for persistence)
@@ -390,13 +352,16 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                                 }}
                             >
                                 <Popup>
-                                    <div className="text-sm">
-                                        <strong>{fp.title}</strong>
-                                        <div className="text-xs text-slate-500 mt-1">
+                                    <div className="text-sm min-w-[200px]">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <strong className="text-slate-800">{fp.title}</strong>
+                                            <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded font-mono uppercase tracking-tighter">ID: {fp.id?.slice(0, 8)}</span>
+                                        </div>
+                                        <div className="text-xs text-slate-500">
                                             상태: {STATUS_COLORS[fp.status].label}
                                         </div>
                                         {fp.status === 'completed' && (
-                                            <div className="mt-2 px-2 py-1 bg-emerald-100 text-emerald-700 text-xs rounded">
+                                            <div className="mt-2 px-2 py-1 bg-emerald-100 text-emerald-700 text-xs rounded text-center">
                                                 정사영상 사용 가능
                                             </div>
                                         )}

@@ -77,10 +77,24 @@ async def start_processing(
     )
     existing_job = result.scalar_one_or_none()
     if existing_job:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A processing job is already running for this project",
+        # Check if job is stale (started more than 24 hours ago or never started)
+        from datetime import timedelta
+        is_stale = (
+            existing_job.started_at is None or
+            (datetime.utcnow() - existing_job.started_at) > timedelta(hours=24)
         )
+        
+        if is_stale:
+            # Auto-reset stale job
+            existing_job.status = "failed"
+            existing_job.error_message = "Job was stale and auto-reset"
+            await db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A processing job is already running for this project",
+            )
+    
     
     # Create processing job
     job = ProcessingJob(
@@ -239,6 +253,33 @@ async def websocket_status(
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
         manager.disconnect(project_id, websocket)
+
+
+# REST endpoint for Celery workers to trigger WebSocket broadcasts
+from pydantic import BaseModel
+
+class BroadcastRequest(BaseModel):
+    project_id: str
+    status: str
+    progress: int
+    message: str = None
+
+@router.post("/broadcast")
+async def broadcast_update(request: BroadcastRequest):
+    """
+    Internal endpoint for Celery workers to broadcast WebSocket updates.
+    
+    Celery runs in a separate process, so it can't directly access the
+    WebSocket connection manager. This endpoint bridges that gap.
+    """
+    await manager.broadcast(request.project_id, {
+        "project_id": request.project_id,
+        "status": request.status,
+        "progress": request.progress,
+        "message": request.message,
+        "type": "progress" if request.status == "processing" else request.status,
+    })
+    return {"status": "broadcast_sent"}
 
 
 # Function to be called by Celery worker to broadcast updates

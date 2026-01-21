@@ -39,6 +39,8 @@ class ProjectResponse(ProjectBase):
     created_at: datetime
     updated_at: datetime
     image_count: int = 0
+    ortho_path: Optional[str] = None
+    bounds: Optional[List[List[float]]] = None  # List of [lat, lng] or [[lat, lng], ...]
     
     class Config:
         from_attributes = True

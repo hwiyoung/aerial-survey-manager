@@ -35,9 +35,9 @@ export class ResumableUploader {
 
         const upload = new tus.Upload(file, {
             endpoint: TUS_URL,
-            retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
-            chunkSize: 50 * 1024 * 1024, // 50MB for better throughput on large files
-            parallelUploads: 1, // Single stream per file for maximum stability over proxy
+            retryDelays: [0, 1000, 3000, 5000],
+            chunkSize: 5 * 1024 * 1024, // 5MB chunks for good balance of progress and speed
+            // parallelUploads disabled to ensure proper post-finish events with metadata
 
             metadata: {
                 filename: file.name,
@@ -102,29 +102,10 @@ export class ResumableUploader {
             },
         });
 
-        // Check for previous upload to resume
-        const saved = localStorage.getItem(`upload_${uploadKey}`);
-        if (saved) {
-            try {
-                const { url, timestamp } = JSON.parse(saved);
-                // Only resume if less than 24 hours old
-                if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
-                    upload.url = url;
-                } else {
-                    localStorage.removeItem(`upload_${uploadKey}`);
-                }
-            } catch (e) {
-                localStorage.removeItem(`upload_${uploadKey}`);
-            }
-        }
-
-        // Find previous uploads on server
-        upload.findPreviousUploads().then((previousUploads) => {
-            if (previousUploads.length > 0) {
-                upload.resumeFromPreviousUpload(previousUploads[0]);
-            }
-            upload.start();
-        });
+        // Start upload directly without checking for previous uploads
+        // This ensures fresh uploads and avoids issues where stale/incomplete
+        // uploads cause the client to skip actual data transfer
+        upload.start();
 
         // Track this upload
         this.uploads.set(uploadKey, {
@@ -152,7 +133,7 @@ export class ResumableUploader {
     /**
      * Upload multiple files with concurrency control
      */
-    uploadFiles(files, projectId, { onFileProgress, onFileComplete, onAllComplete, onError, concurrency = 3 }) {
+    uploadFiles(files, projectId, { onFileProgress, onFileComplete, onAllComplete, onError, concurrency = 10 }) {
         const controllers = [];
         let completedCount = 0;
         let activeCount = 0;

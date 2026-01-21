@@ -1,6 +1,8 @@
 """Project API endpoints."""
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, extract
@@ -24,6 +26,23 @@ import re
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.services.eo_parser import EOParserService
 from pyproj import Transformer
+from geoalchemy2.shape import to_shape
+import json
+
+def serialize_geometry(geom):
+    """Convert PostGIS geometry to GeoJSON-like list of coordinates."""
+    if geom is None:
+        return None
+    try:
+        shape = to_shape(geom)
+        if shape.geom_type == 'Polygon':
+            # Return as list of [lat, lng] for Leaflet
+            return [[p[1], p[0]] for p in shape.exterior.coords]
+        elif shape.geom_type == 'Point':
+            return [shape.y, shape.x]
+    except Exception as e:
+        print(f"Geometry serialization error: {e}")
+    return None
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -77,8 +96,24 @@ async def list_projects(
         )
         image_count = count_result.scalar()
         
-        response = ProjectResponse.model_validate(project)
-        response.image_count = image_count
+        # Convert ORM model to dict and serialize bounds BEFORE Pydantic validation
+        project_dict = {
+            "id": project.id,
+            "title": project.title,
+            "region": project.region,
+            "company": project.company,
+            "status": project.status,
+            "progress": project.progress,
+            "owner_id": project.owner_id,
+            "organization_id": project.organization_id,
+            "group_id": project.group_id,
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+            "image_count": image_count,
+            "ortho_path": project.ortho_path,
+            "bounds": serialize_geometry(project.bounds),  # Serialize BEFORE validation
+        }
+        response = ProjectResponse.model_validate(project_dict)
         project_responses.append(response)
     
     return ProjectListResponse(
@@ -107,9 +142,23 @@ async def create_project(
     await db.flush()
     await db.refresh(project)
     
-    response = ProjectResponse.model_validate(project)
-    response.image_count = 0
-    return response
+    response_dict = {
+        "id": project.id,
+        "title": project.title,
+        "region": project.region,
+        "company": project.company,
+        "status": project.status,
+        "progress": project.progress,
+        "owner_id": project.owner_id,
+        "organization_id": project.organization_id,
+        "group_id": project.group_id,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+        "image_count": 0,
+        "ortho_path": project.ortho_path,
+        "bounds": serialize_geometry(project.bounds),
+    }
+    return ProjectResponse.model_validate(response_dict)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -142,9 +191,24 @@ async def get_project(
     )
     image_count = count_result.scalar()
     
-    response = ProjectResponse.model_validate(project)
-    response.image_count = image_count
-    return response
+    response_dict = {
+        "id": project.id,
+        "title": project.title,
+        "region": project.region,
+        "company": project.company,
+        "status": project.status,
+        "progress": project.progress,
+        "owner_id": project.owner_id,
+        "organization_id": project.organization_id,
+        "group_id": project.group_id,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+        "image_count": image_count,
+        "ortho_path": project.ortho_path,
+        "bounds": serialize_geometry(project.bounds),
+    }
+    return ProjectResponse.model_validate(response_dict)
+
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
@@ -186,9 +250,24 @@ async def update_project(
     )
     image_count = count_result.scalar()
     
-    response = ProjectResponse.model_validate(project)
-    response.image_count = image_count
-    return response
+    response_dict = {
+        "id": project.id,
+        "title": project.title,
+        "region": project.region,
+        "company": project.company,
+        "status": project.status,
+        "progress": project.progress,
+        "owner_id": project.owner_id,
+        "organization_id": project.organization_id,
+        "group_id": project.group_id,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+        "image_count": image_count,
+        "ortho_path": project.ortho_path,
+        "bounds": serialize_geometry(project.bounds),
+    }
+    return ProjectResponse.model_validate(response_dict)
+
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -216,6 +295,26 @@ async def delete_project(
         )
     
     await db.delete(project)
+    
+    # Clean up local processing data
+    import shutil
+    from app.config import get_settings
+    settings = get_settings()
+    local_path = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id)
+    if local_path.exists():
+        try:
+            shutil.rmtree(local_path)
+        except Exception as e:
+            print(f"Failed to delete local project data {local_path}: {e}")
+            
+    # Clean up MinIO storage
+    try:
+        from app.services.storage import StorageService
+        storage = StorageService()
+        storage.delete_recursive(f"projects/{project_id}/")
+    except Exception as e:
+        print(f"Failed to delete MinIO project data for {project_id}: {e}")
+    
     # Note: Related images, jobs, etc. will be deleted via CASCADE
 
 
@@ -379,6 +478,11 @@ async def upload_eo_data(
             crs=crs_val
         )
         db.add(eo)
+        
+        # Update image location (Point geometry)
+        # Use WGS84 coordinates (x_val=lon, y_val=lat)
+        image.location = f"SRID=4326;POINT({x_val} {y_val})"
+        
         matched_count += 1
         
     await db.commit()

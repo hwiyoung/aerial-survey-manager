@@ -6,6 +6,7 @@ python-multipart==0.0.9
 # Database
 sqlalchemy==2.0.25
 asyncpg==0.29.0
+psycopg2-binary==2.9.9
 alembic==1.13.1
 geoalchemy2==0.14.3
 
@@ -21,6 +22,7 @@ email-validator==2.1.0.post1
 
 # Async
 celery==5.3.6
+flower==2.0.1
 redis==5.0.1
 aiofiles==23.2.1
 httpx==0.26.0
