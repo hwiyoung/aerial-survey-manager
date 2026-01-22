@@ -2,10 +2,12 @@
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, extract
+from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
 from app.models.user import User
@@ -22,24 +24,51 @@ from app.schemas.project import (
     RegionalStats,
     RegionalStatsResponse,
 )
-import re
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.services.eo_parser import EOParserService
 from pyproj import Transformer
-from geoalchemy2.shape import to_shape
 import json
 
 def serialize_geometry(geom):
-    """Convert PostGIS geometry to GeoJSON-like list of coordinates."""
+    """Convert PostGIS geometry to GeoJSON-like list of coordinates.
+    
+    Uses WKT parsing to avoid shapely/numpy compatibility issues.
+    """
     if geom is None:
         return None
     try:
-        shape = to_shape(geom)
-        if shape.geom_type == 'Polygon':
-            # Return as list of [lat, lng] for Leaflet
-            return [[p[1], p[0]] for p in shape.exterior.coords]
-        elif shape.geom_type == 'Point':
-            return [shape.y, shape.x]
+        # Get WKT string from the geometry
+        # For WKBElement, we need to convert it during query
+        # This function expects WKT string as input now
+        if hasattr(geom, 'desc'):
+            # This is a WKBElement, we can't parse it here directly
+            # Return None - the caller should use ST_AsText in the query
+            return None
+        
+        wkt_str = str(geom)
+        
+        # Parse POLYGON WKT: POLYGON((lon1 lat1, lon2 lat2, ...))
+        polygon_match = re.search(r'POLYGON\s*\(\(([^)]+)\)\)', wkt_str, re.IGNORECASE)
+        if polygon_match:
+            coords_str = polygon_match.group(1)
+            coords = []
+            for point in coords_str.split(','):
+                parts = point.strip().split()
+                if len(parts) >= 2:
+                    lon = float(parts[0])
+                    lat = float(parts[1])
+                    coords.append([lat, lon])  # [lat, lng] for Leaflet
+            return coords if coords else None
+            
+        # Parse POINT WKT: POINT(lon lat)
+        point_match = re.search(r'POINT\s*\(([^)]+)\)', wkt_str, re.IGNORECASE)
+        if point_match:
+            parts = point_match.group(1).strip().split()
+            if len(parts) >= 2:
+                lon = float(parts[0])
+                lat = float(parts[1])
+                return [lat, lon]  # [lat, lng] for Leaflet
+                
     except Exception as e:
         print(f"Geometry serialization error: {e}")
     return None
@@ -58,8 +87,11 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
 ):
     """List projects accessible by the current user."""
-    # Build query based on user's access
-    query = select(Project)
+    # Build query based on user's access - include ST_AsText for bounds
+    query = select(
+        Project,
+        ST_AsText(Project.bounds).label('bounds_wkt')
+    )
     
     # Filter by ownership or organization
     if current_user.role != "admin":
@@ -76,8 +108,21 @@ async def list_projects(
     if search:
         query = query.where(Project.title.ilike(f"%{search}%"))
     
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
+    # Count total (need separate count query)
+    count_subquery = select(Project.id)
+    if current_user.role != "admin":
+        count_subquery = count_subquery.where(
+            (Project.owner_id == current_user.id) |
+            (Project.organization_id == current_user.organization_id)
+        )
+    if status_filter:
+        count_subquery = count_subquery.where(Project.status == status_filter)
+    if region:
+        count_subquery = count_subquery.where(Project.region == region)
+    if search:
+        count_subquery = count_subquery.where(Project.title.ilike(f"%{search}%"))
+    
+    count_query = select(func.count()).select_from(count_subquery.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar()
     
@@ -86,11 +131,14 @@ async def list_projects(
     query = query.offset((page - 1) * page_size).limit(page_size)
     
     result = await db.execute(query)
-    projects = result.scalars().all()
+    rows = result.all()
     
     # Add image count to each project
     project_responses = []
-    for project in projects:
+    for row in rows:
+        project = row[0]
+        bounds_wkt = row[1]
+        
         count_result = await db.execute(
             select(func.count()).where(Image.project_id == project.id)
         )
@@ -111,7 +159,7 @@ async def list_projects(
             "updated_at": project.updated_at,
             "image_count": image_count,
             "ortho_path": project.ortho_path,
-            "bounds": serialize_geometry(project.bounds),  # Serialize BEFORE validation
+            "bounds": serialize_geometry(bounds_wkt),  # Now using WKT string
         }
         response = ProjectResponse.model_validate(project_dict)
         project_responses.append(response)
@@ -176,14 +224,21 @@ async def get_project(
             detail="Access denied",
         )
     
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
+    # Fetch with ST_AsText for bounds
+    result = await db.execute(
+        select(Project, ST_AsText(Project.bounds).label('bounds_wkt'))
+        .where(Project.id == project_id)
+    )
+    row = result.first()
     
-    if not project:
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
+    
+    project = row[0]
+    bounds_wkt = row[1]
     
     # Get image count
     count_result = await db.execute(
@@ -205,7 +260,7 @@ async def get_project(
         "updated_at": project.updated_at,
         "image_count": image_count,
         "ortho_path": project.ortho_path,
-        "bounds": serialize_geometry(project.bounds),
+        "bounds": serialize_geometry(bounds_wkt),
     }
     return ProjectResponse.model_validate(response_dict)
 
@@ -242,7 +297,15 @@ async def update_project(
         setattr(project, field, value)
     
     await db.flush()
-    await db.refresh(project)
+    
+    # Re-fetch with ST_AsText for bounds
+    result = await db.execute(
+        select(Project, ST_AsText(Project.bounds).label('bounds_wkt'))
+        .where(Project.id == project_id)
+    )
+    row = result.first()
+    project = row[0]
+    bounds_wkt = row[1]
     
     # Get image count
     count_result = await db.execute(
@@ -264,7 +327,7 @@ async def update_project(
         "updated_at": project.updated_at,
         "image_count": image_count,
         "ortho_path": project.ortho_path,
-        "bounds": serialize_geometry(project.bounds),
+        "bounds": serialize_geometry(bounds_wkt),
     }
     return ProjectResponse.model_validate(response_dict)
 

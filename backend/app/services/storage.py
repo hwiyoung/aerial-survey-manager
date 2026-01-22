@@ -17,12 +17,25 @@ class StorageService:
     """Service for interacting with MinIO/S3 storage."""
     
     def __init__(self):
+        # Internal client for actual S3 operations (upload, download, delete)
         self.client = Minio(
             settings.MINIO_ENDPOINT,
             access_key=settings.MINIO_ACCESS_KEY,
             secret_key=settings.MINIO_SECRET_KEY,
             secure=settings.MINIO_SECURE,
         )
+        
+        # Separate client for presigned URL generation using PUBLIC endpoint
+        # AWS S3 V4 signature includes the Host header, so we must generate
+        # presigned URLs with the correct public endpoint from the start
+        public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
+        self.presigned_client = Minio(
+            public_endpoint,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY,
+            secure=settings.MINIO_SECURE,
+        )
+        
         self.bucket = settings.MINIO_BUCKET
         self._ensure_bucket()
     
@@ -98,38 +111,27 @@ class StorageService:
         """
         Generate a presigned URL for downloading.
         
+        Uses the presigned_client which is configured with the PUBLIC endpoint.
+        This ensures the AWS S3 V4 signature is generated with the correct Host header.
+        
         Args:
             object_name: Object name/key in storage
             expires: Expiration time in seconds
             response_headers: Optional response headers to include
         
         Returns:
-            Presigned URL
+            Presigned URL accessible from browser
         """
-        url = self.client.presigned_get_object(
+        # Use presigned_client which is configured with MINIO_PUBLIC_ENDPOINT
+        url = self.presigned_client.presigned_get_object(
             self.bucket,
             object_name,
             expires=timedelta(seconds=expires),
             response_headers=response_headers,
         )
         
-        if settings.MINIO_PUBLIC_ENDPOINT:
-            # Robustly replace internal endpoint with public one
-            internal = settings.MINIO_ENDPOINT
-            public = settings.MINIO_PUBLIC_ENDPOINT
-            
-            # Cases:
-            # 1. minio:9000 -> localhost:9002
-            # 2. http://minio:9000 -> http://localhost:9002
-            
-            new_url = url.replace(internal, public)
-            
-            # Log for debugging (will show up in container logs)
-            if new_url != url:
-                print(f"[STORAGE] Presigned URL translated: {internal} -> {public}")
-            
-            return new_url
-                
+        print(f"[STORAGE] Presigned URL generated with endpoint: {settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT}")
+        
         return url
     
     def get_presigned_upload_url(

@@ -20,12 +20,117 @@ const STATUS_COLORS = {
     highlight: { fill: '#f59e0b', stroke: '#d97706', label: '하이라이트' },
 };
 
+/**
+ * TiTiler-based Orthophoto Tile Layer
+ * Streams COG files efficiently using XYZ tiles
+ */
+export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, onLoadComplete, onLoadError }) {
+    const map = useMap();
+    const layerRef = useRef(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [tileUrl, setTileUrl] = useState(null);
+    const [bounds, setBounds] = useState(null);
+
+    useEffect(() => {
+        if (!projectId || !visible) {
+            if (layerRef.current) {
+                map.removeLayer(layerRef.current);
+                layerRef.current = null;
+            }
+            setTileUrl(null);
+            return;
+        }
+
+        const initTiTiler = async () => {
+            setLoading(true);
+            setError(null);
+
+            try {
+                // Get COG info from backend
+                const cogInfo = await api.getCogUrl(projectId);
+                console.log('[TiTiler] COG info:', cogInfo);
+
+                // Build TiTiler tile URL
+                // For MinIO: use internal S3 URL via TiTiler
+                let cogUrl = cogInfo.url;
+
+                // If it's a local file, we need to use the full URL
+                if (cogInfo.local) {
+                    cogUrl = `${window.location.origin}${cogInfo.url}`;
+                }
+
+                // TiTiler XYZ tile endpoint
+                const tiTilerUrl = `/titiler/cog/tiles/WebMercatorQuad/{z}/{x}/{y}@2x.png?url=${encodeURIComponent(cogUrl)}`;
+                console.log('[TiTiler] Tile URL template:', tiTilerUrl);
+
+                setTileUrl(tiTilerUrl);
+
+                // Get bounds info from TiTiler
+                try {
+                    const boundsResponse = await fetch(`/titiler/cog/bounds?url=${encodeURIComponent(cogUrl)}`);
+                    if (boundsResponse.ok) {
+                        const boundsData = await boundsResponse.json();
+                        console.log('[TiTiler] Bounds:', boundsData);
+                        if (boundsData.bounds) {
+                            const [west, south, east, north] = boundsData.bounds;
+                            setBounds([[south, west], [north, east]]);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[TiTiler] Could not get bounds:', e);
+                }
+
+                setLoading(false);
+                onLoadComplete?.();
+
+            } catch (err) {
+                console.error('[TiTiler] Failed to initialize:', err);
+                setError(err.message);
+                setLoading(false);
+                onLoadError?.(err.message);
+            }
+        };
+
+        initTiTiler();
+
+        return () => {
+            if (layerRef.current) {
+                map.removeLayer(layerRef.current);
+                layerRef.current = null;
+            }
+        };
+    }, [map, projectId, visible]);
+
+    // Fit to bounds when available
+    useEffect(() => {
+        if (bounds && map) {
+            map.fitBounds(bounds, { padding: [50, 50] });
+        }
+    }, [bounds, map]);
+
+    if (!tileUrl || !visible) return null;
+
+    return (
+        <TileLayer
+            ref={layerRef}
+            url={tileUrl}
+            opacity={opacity}
+            tileSize={512}
+            zoomOffset={-1}
+            maxZoom={22}
+            attribution="&copy; TiTiler"
+        />
+    );
+}
+
 // COG Layer component - loads orthoimages using georaster-layer-for-leaflet
-export function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
+export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadComplete, onLoadError }) {
     const map = useMap();
     const layerRef = useRef(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [loadProgress, setLoadProgress] = useState(null);
 
     useEffect(() => {
         if (!projectId || !visible) {
@@ -40,12 +145,16 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
         const loadCog = async () => {
             setLoading(true);
             setError(null);
+            setLoadProgress('COG URL 가져오는 중...');
 
             try {
                 // Get COG URL from backend
                 const cogInfo = await api.getCogUrl(projectId);
+                console.log('[COG] Got URL info:', cogInfo);
 
-                // Then import georaster libraries
+                setLoadProgress('GeoRaster 라이브러리 로딩...');
+
+                // Import georaster libraries
                 const [GeoRasterModule, GeoRasterLayerModule] = await Promise.all([
                     import('georaster'),
                     import('georaster-layer-for-leaflet')
@@ -54,39 +163,40 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
                 const parseGeoraster = GeoRasterModule.default;
                 const GeoRasterLayer = GeoRasterLayerModule.default;
 
-                // Fetch the GeoTIFF and parse it
-                const response = await fetch(cogInfo.url, {
-                    headers: cogInfo.local ? {
-                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-                    } : {}
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch COG: ${response.status}`);
+                // Build full URL for georaster
+                let cogUrl = cogInfo.url;
+                if (cogInfo.local) {
+                    // For local files, build absolute URL with auth header support
+                    cogUrl = `${window.location.origin}${cogInfo.url}`;
                 }
+                console.log('[COG] Loading from URL:', cogUrl);
 
-                const arrayBuffer = await response.arrayBuffer();
-                console.log('[COG] Downloaded', arrayBuffer.byteLength, 'bytes');
+                setLoadProgress('정사영상 스트리밍 중... (Range Requests)');
 
-                // Disable web workers to use window.proj4 in main thread
-                // (proj4 function cannot be cloned for web worker transfer)
-                const georaster = await parseGeoraster(arrayBuffer, {
-                    useWebWorker: false
+                // Use URL-based parsing with Range Requests (streaming)
+                // This only downloads the tiles needed for current view
+                const georaster = await parseGeoraster(cogUrl, {
+                    useWebWorker: false,  // Use main thread with window.proj4
                 });
+
                 console.log('[COG] Parsed georaster:', {
                     width: georaster.width,
                     height: georaster.height,
                     xmin: georaster.xmin,
                     ymin: georaster.ymin,
                     xmax: georaster.xmax,
-                    ymax: georaster.ymax
+                    ymax: georaster.ymax,
+                    projection: georaster.projection
                 });
 
-                // Create layer
+                setLoadProgress('레이어 생성 중...');
+
+                // Create layer with optimized settings
                 const layer = new GeoRasterLayer({
                     georaster,
                     opacity,
-                    resolution: 256,
+                    resolution: 512,  // Higher resolution for better quality
+                    debugLevel: 0,
                 });
 
                 // Remove old layer if exists
@@ -98,12 +208,25 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8 }) {
                 layer.addTo(map);
                 layerRef.current = layer;
 
+                console.log('[COG] Layer added to map');
+
+                // Fit map to layer bounds
+                const bounds = layer.getBounds();
+                if (bounds && bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+
                 // Invalidate map size to fix gray area on resize
                 setTimeout(() => map.invalidateSize(), 100);
 
+                setLoadProgress(null);
+                onLoadComplete?.();
+
             } catch (err) {
-                console.error('Failed to load COG:', err);
+                console.error('[COG] Failed to load:', err);
                 setError(err.message);
+                setLoadProgress(null);
+                onLoadError?.(err.message);
             } finally {
                 setLoading(false);
             }
@@ -256,12 +379,35 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
 
     // COG overlay - show for highlighted OR selected completed project
     const [cogOpacity, setCogOpacity] = useState(0.8);
+    const [cogLoadStatus, setCogLoadStatus] = useState(null); // 'loading' | 'loaded' | 'error'
+    const [cogError, setCogError] = useState(null);
 
     // Selected project for COG overlay (highlighted or selected, if completed)
     const activeProjectId = highlightProjectId || selectedProjectId;
     const selectedCogProject = activeProjectId
         ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
+
+    // Reset COG status when selected project changes
+    useEffect(() => {
+        if (selectedCogProject) {
+            setCogLoadStatus('loading');
+            setCogError(null);
+        } else {
+            setCogLoadStatus(null);
+            setCogError(null);
+        }
+    }, [selectedCogProject?.id]);
+
+    // COG load handlers
+    const handleCogLoadComplete = useCallback(() => {
+        setCogLoadStatus('loaded');
+    }, []);
+
+    const handleCogLoadError = useCallback((error) => {
+        setCogLoadStatus('error');
+        setCogError(error);
+    }, []);
 
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${isFlexHeight ? 'flex flex-col h-full' : ''}`}>
@@ -273,22 +419,39 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
 
                 {/* Layer Controls */}
                 <div className="flex items-center gap-4">
-                    {/* COG Opacity Control - shown when a completed project is selected */}
+                    {/* COG Status and Opacity Control */}
                     {selectedCogProject && (
                         <div className="flex items-center gap-2">
-                            <span className="text-xs text-blue-600 font-medium">정사영상 로딩중</span>
-                            <div className="flex items-center gap-1.5">
-                                <span className="text-xs text-slate-500">투명도</span>
-                                <input
-                                    type="range"
-                                    min="0"
-                                    max="100"
-                                    value={cogOpacity * 100}
-                                    onChange={(e) => setCogOpacity(e.target.value / 100)}
-                                    className="w-16 h-1 accent-blue-500"
-                                />
-                                <span className="text-xs text-slate-400 w-6">{Math.round(cogOpacity * 100)}%</span>
-                            </div>
+                            {/* Status indicator */}
+                            {cogLoadStatus === 'loading' && (
+                                <span className="text-xs text-blue-600 font-medium flex items-center gap-1">
+                                    <span className="animate-pulse">●</span> 정사영상 로딩중...
+                                </span>
+                            )}
+                            {cogLoadStatus === 'loaded' && (
+                                <span className="text-xs text-emerald-600 font-medium">✓ 정사영상 표시됨</span>
+                            )}
+                            {cogLoadStatus === 'error' && (
+                                <span className="text-xs text-red-500 font-medium" title={cogError}>
+                                    ✕ 로딩 실패
+                                </span>
+                            )}
+
+                            {/* Opacity control - only show when loaded */}
+                            {cogLoadStatus === 'loaded' && (
+                                <div className="flex items-center gap-1.5 ml-2">
+                                    <span className="text-xs text-slate-500">투명도</span>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="100"
+                                        value={cogOpacity * 100}
+                                        onChange={(e) => setCogOpacity(e.target.value / 100)}
+                                        className="w-16 h-1 accent-blue-500"
+                                    />
+                                    <span className="text-xs text-slate-400 w-6">{Math.round(cogOpacity * 100)}%</span>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -324,12 +487,14 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                     {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && <MapBoundsFitter bounds={allPoints} />}
                     {highlightFootprint && <HighlightFlyTo footprint={highlightFootprint} />}
 
-                    {/* COG Overlay Layer - auto-loaded for selected completed project */}
+                    {/* Orthophoto Tile Layer - TiTiler-based for efficient streaming */}
                     {selectedCogProject && (
-                        <CogLayer
+                        <TiTilerOrthoLayer
                             projectId={selectedCogProject.id}
                             visible={true}
                             opacity={cogOpacity}
+                            onLoadComplete={handleCogLoadComplete}
+                            onLoadError={handleCogLoadError}
                         />
                     )}
 

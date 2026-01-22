@@ -8,7 +8,7 @@ sqlalchemy==2.0.25
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
 alembic==1.13.1
-geoalchemy2==0.14.3
+geoalchemy2==0.14.3  # Using WKT parsing for geometry serialization
 
 # Authentication
 python-jose[cryptography]==3.3.0

@@ -212,6 +212,23 @@ services:
     networks:
       - aerial-network
 
+  # === TiTiler (COG Tile Server) ===
+  titiler:
+    image: ghcr.io/developmentseed/titiler:0.18.0
+    environment:
+      # CORS - allow all origins for development
+      - TITILER_API_CORS_ORIGINS=*
+      # MinIO/S3 configuration
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - AWS_S3_ENDPOINT=http://minio:9000
+      - AWS_VIRTUAL_HOSTING=false
+      - AWS_HTTPS=false
+    depends_on:
+      - minio
+    networks:
+      - aerial-network
+
   # === Nginx Reverse Proxy ===
   nginx:
     image: nginx:alpine
@@ -225,6 +242,7 @@ services:
       - frontend
       - api
       - tusd
+      - titiler
     networks:
       - aerial-network
 
