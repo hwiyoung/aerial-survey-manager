@@ -351,10 +351,10 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 
         return {
             fillColor: color,
-            fillOpacity: isActive ? 0.25 : 0.1, // Significantly lighter
+            fillOpacity: isActive ? 0.15 : 0.05, // Extremely light
             color: color,
-            weight: isActive ? 4 : 1.5,
-            opacity: 0.5,
+            weight: isActive ? 3 : 1,
+            opacity: 0.3,
         };
     };
 
@@ -601,6 +601,7 @@ export function FootprintMap({
                     zoom={7}
                     style={{ height: '100%', width: '100%' }}
                     zoomControl={true}
+                    preferCanvas={true}
                 >
                     {/* Central Loading Spinner */}
                     {cogLoadStatus === 'loading' && (
