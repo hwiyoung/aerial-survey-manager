@@ -15,6 +15,7 @@ import LoginPage from './components/LoginPage';
 import api from './api/client';
 import ResumableUploader from './services/upload';
 import { useProcessingProgress } from './hooks/useProcessingProgress';
+import { RegionBoundaryLayer } from './components/Dashboard/FootprintMap';
 
 // Leaflet
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
@@ -22,7 +23,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import ResumableDownloader from './services/download';
 import DashboardView from './components/Dashboard/DashboardView';
-import { CogLayer } from './components/Dashboard/FootprintMap';
+import { CogLayer, TiTilerOrthoLayer } from './components/Dashboard/FootprintMap';
 
 // --- 1. CONSTANTS ---
 const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
@@ -106,20 +107,22 @@ function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     setProgress(10);
 
     try {
-      // Call the real batch export API
+      // Call the real batch export API with custom_filename
       setProgress(30);
       const blob = await api.batchExport(targetProjectIds, {
         format: format,
         crs: crs.includes('5186') ? 'EPSG:5186' : crs.includes('4326') ? 'EPSG:4326' : 'EPSG:32652',
+        custom_filename: filename || null,
       });
 
       setProgress(80);
 
-      // Generate filename
-      const timestamp = new Date().toISOString().slice(0, 10);
-      const downloadFilename = targets.length === 1
-        ? `${targets[0].title}_ortho.${format.toLowerCase() === 'geotiff' ? 'tif' : format.toLowerCase()}`
-        : `batch_export_${timestamp}.zip`;
+      // The batchExport API returns TIF for single project, ZIP for multiple
+      // Use targetProjectIds for more reliable count
+      const count = targetProjectIds.length;
+      const ext = count === 1 ? 'tif' : 'zip';
+      const name = filename || (count === 1 && targets[0] ? `${targets[0].title}_ortho` : 'batch_export');
+      const downloadFilename = name.toLowerCase().endsWith('.' + ext) ? name : `${name}.${ext}`;
 
       // Download the file
       api.downloadBlob(blob, downloadFilename);
@@ -451,7 +454,26 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing, active
             />
           </div>
           {wsMessage && (
-            <p className="text-xs text-blue-600 mt-1 truncate">{wsMessage}</p>
+            <p className="text-xs text-blue-600 mt-1 truncate font-medium">{wsMessage}</p>
+          )}
+
+          {/* Stop Button - Moved here for visibility */}
+          {(wsStatus === 'processing' || wsStatus === 'queued') && (
+            <div className="mt-4 pt-4 border-t border-blue-100/50">
+              <button
+                onClick={async () => {
+                  if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
+                  try {
+                    await api.cancelProcessing(project.id);
+                  } catch (err) {
+                    alert('중단 실패: ' + err.message);
+                  }
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-all border border-red-200 shadow-sm"
+              >
+                <X size={14} /> 처리 중단 (Stop Processing)
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -1196,9 +1218,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
 }
 
 // [Sidebar]
-function Sidebar({ width, isResizing = false, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup }) {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [regionFilter, setRegionFilter] = useState('ALL');
+function Sidebar({ width, isResizing = false, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup, searchTerm, onSearchTermChange, regionFilter, onRegionFilterChange }) {
   const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
 
   // Width-based size mode calculation
@@ -1262,8 +1282,15 @@ function Sidebar({ width, isResizing = false, projects, selectedProjectId, check
         )}
       </div>
       <div className="p-4 pt-2 border-b border-slate-200 space-y-3">
-        <div className="relative"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input type="text" placeholder="검색..." className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-sm" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
-        <select className="w-full p-2 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-600" value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)}><option value="ALL">전체 권역</option>{REGIONS.map(r => <option key={r} value={r}>{r}</option>)}</select>
+        <div className="relative"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input type="text" placeholder="검색..." className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-sm" value={searchTerm} onChange={(e) => onSearchTermChange(e.target.value)} /></div>
+        <select
+          className="w-full p-2 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-600"
+          value={regionFilter}
+          onChange={(e) => onRegionFilterChange(e.target.value)}
+        >
+          <option value="ALL">전체 권역</option>
+          {REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
       </div>
       <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 bg-slate-50 text-xs font-bold text-slate-500">
         <button onClick={handleToggleAll} className="flex items-center gap-2 hover:text-blue-600 transition-colors">
@@ -1575,7 +1602,12 @@ function FitBounds({ images }) {
 function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
   const [isLoading, setIsLoading] = useState(false);
 
-  // Images are already normalized/processed in Dashboard, but here we need RAW coords (wx, wy)
+  // Reset loading state when project changes
+  useEffect(() => {
+    if (project?.status === '완료') {
+      setIsLoading(true);
+    }
+  }, [project?.id]);
   // Dashboard passes 'project.images' which has wx, wy
   const images = useMemo(() => {
     if (!project?.images) return [];
@@ -1603,10 +1635,19 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {/* COG Overlay for completed projects */}
+        {/* TiTiler-based Ortho Layer for better performance */}
         {project?.status === '완료' && (
-          <CogLayer projectId={project.id} visible={true} opacity={0.8} />
+          <TiTilerOrthoLayer
+            projectId={project.id}
+            visible={true}
+            opacity={0.8}
+            onLoadComplete={() => setIsLoading(false)}
+            onLoadError={() => setIsLoading(false)}
+          />
         )}
+
+        {/* Region Boundary Layer */}
+        <RegionBoundaryLayer visible={true} />
 
         {images.length > 0 && <FitBounds images={images} />}
 
@@ -1693,6 +1734,16 @@ function ProMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
         ))}
       </MapContainer>
 
+      {/* Loading Indicator */}
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/40 backdrop-blur-[1px] z-[1001] pointer-events-none">
+          <div className="bg-white/80 p-4 rounded-xl shadow-lg border border-slate-200 flex flex-col items-center gap-2 animate-in zoom-in-95">
+            <Loader2 size={24} className="animate-spin text-blue-600" />
+            <span className="text-xs font-bold text-slate-600">지도 로딩 중...</span>
+          </div>
+        </div>
+      )}
+
       {/* Overlay for non-EO projects */}
       {images.length === 0 && project.images?.length > 0 && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-[1000] pointer-events-none">
@@ -1776,7 +1827,27 @@ const MapPlaceholder = ProMap;
 // [Inspector Panel]
 function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onExport }) {
   const [isImageLoaded, setIsImageLoaded] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  // Real-time progress tracking for the inspector panel
+  const { progress: procProgress, status: procStatus, message: procMessage } = useProcessingProgress(
+    (project?.status === '진행중' || project?.status === 'processing') ? project.id : null
+  );
+
   useEffect(() => { setIsImageLoaded(false); if (image) { const t = setTimeout(() => setIsImageLoaded(true), 600); return () => clearTimeout(t); } }, [image]);
+
+  const handleCancel = async () => {
+    if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
+    setIsCancelling(true);
+    try {
+      await api.cancelProcessing(project.id);
+      // Status will be updated via WebSocket or manual refresh
+    } catch (err) {
+      alert('중단 요청 실패: ' + err.message);
+    } finally {
+      setIsCancelling(false);
+    }
+  };
 
   if (!project) return <div className="flex h-full items-center justify-center bg-slate-50 text-slate-400">프로젝트를 선택하세요</div>;
 
@@ -1815,11 +1886,33 @@ function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onEx
               </button>
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-slate-300 rounded-xl text-slate-400 gap-2">
-              <Loader2 size={24} className={(project.status === '진행중' || project.status === 'processing') ? "animate-spin" : ""} />
-              <span className="text-sm font-medium">
-                {(project.status === '진행중' || project.status === 'processing') ? '정사영상 생성 처리 중...' : '결과물이 없습니다.'}
-              </span>
+            <div className="flex flex-col items-center justify-center min-h-[160px] border-2 border-dashed border-slate-300 rounded-xl text-slate-400 gap-4 p-6 bg-white shadow-inner">
+              <div className="relative">
+                <Loader2 size={32} className={(project.status === '진행중' || project.status === 'processing') ? "animate-spin text-blue-500" : ""} />
+                {(procProgress > 0) && (
+                  <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-blue-600">
+                    {procProgress}%
+                  </div>
+                )}
+              </div>
+              <div className="text-center">
+                <span className="text-sm font-bold text-slate-700 block mb-1">
+                  {(project.status === '진행중' || project.status === 'processing') ? '정사영상 생성 처리 중...' : '결과물이 없습니다.'}
+                </span>
+                {(project.status === '진행중' || project.status === 'processing') && (
+                  <>
+                    <p className="text-xs text-slate-400 mb-4 max-w-xs">{procMessage || '작업을 준비하고 있습니다...'}</p>
+                    <button
+                      onClick={handleCancel}
+                      disabled={isCancelling}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-all border border-red-200 shadow-sm disabled:opacity-50"
+                    >
+                      {isCancelling ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+                      처리 중단 (Stop)
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -2031,6 +2124,8 @@ function Dashboard() {
   }, [selectedProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [regionFilter, setRegionFilter] = useState('ALL');
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -2457,6 +2552,10 @@ function Dashboard() {
             onOpenExport={(projectId) => {
               openExportDialog([projectId]);
             }}
+            searchTerm={searchTerm}
+            onSearchTermChange={setSearchTerm}
+            regionFilter={regionFilter}
+            onRegionFilterChange={setRegionFilter}
             groups={groups}
             expandedGroupIds={expandedGroupIds}
             onToggleGroupExpand={toggleGroupExpand}
@@ -2481,6 +2580,10 @@ function Dashboard() {
                 onProjectClick={(project) => {
                   setSelectedProjectId(project.id);
                   setHighlightProjectId(project.id);
+                }}
+                regionFilter={regionFilter}
+                onRegionClick={(regionId, regionName) => {
+                  setRegionFilter(prev => prev === regionName ? 'ALL' : regionName);
                 }}
                 onDeselectProject={() => { setSelectedProjectId(null); setShowInspector(false); }}
                 highlightProjectId={highlightProjectId}

@@ -26,8 +26,10 @@ from app.schemas.project import (
 )
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.services.eo_parser import EOParserService
+from app.utils.geo import get_region_for_point
 from pyproj import Transformer
 import json
+from sqlalchemy import func
 
 def serialize_geometry(geom):
     """Convert PostGIS geometry to GeoJSON-like list of coordinates.
@@ -548,6 +550,55 @@ async def upload_eo_data(
         
         matched_count += 1
         
+    # Update project overall bounds and region if images were matched
+    if matched_count > 0:
+        # Get all image locations for this project
+        from sqlalchemy import select
+        from app.models.project import Image
+        
+        # We need a fresh query to get all updated locations
+        result = await db.execute(
+            select(Image.location)
+            .where(Image.project_id == project_id, Image.location != None)
+        )
+        locations = result.scalars().all()
+        
+        if locations:
+            # Use PostGIS to calculate convex hull for bounds
+            # For simplicity in this async session, we'll use a raw query or manual calc
+            # Manual bounding box for now to be safe with async/SRID
+            lons = []
+            lats = []
+            for loc in locations:
+                # loc is a WKB element or similar, but since we just set it as string, 
+                # let's try to get its components or just re-calculate from matched rows
+                pass
+            
+            # Better: Calculate from parsed_rows that were matched
+            matched_lons = [row.x for row in parsed_rows if any(fname.lower() == row.image_name.lower() for fname in image_map.keys())]
+            matched_lats = [row.y for row in parsed_rows if any(fname.lower() == row.image_name.lower() for fname in image_map.keys())]
+            
+            if transformer:
+                # Need to transform them to WGS84 for bounds
+                transformed = [transformer.transform(x, y) for x, y in zip(matched_lons, matched_lats)]
+                matched_lons = [t[0] for t in transformed]
+                matched_lats = [t[1] for t in transformed]
+            
+            if matched_lons and matched_lats:
+                min_lon, max_lon = min(matched_lons), max(matched_lons)
+                min_lat, max_lat = min(matched_lats), max(matched_lats)
+                
+                # Update project bounds (simple rectangle)
+                project.bounds = f"SRID=4326;POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
+                
+                # Auto-assign region if not set
+                if not project.region or project.region == "미지정":
+                    center_lon = (min_lon + max_lon) / 2
+                    center_lat = (min_lat + max_lat) / 2
+                    region = get_region_for_point(center_lon, center_lat)
+                    if region:
+                        project.region = region
+
     await db.commit()
     
     return EOUploadResponse(

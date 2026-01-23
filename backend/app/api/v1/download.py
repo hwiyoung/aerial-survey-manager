@@ -342,6 +342,7 @@ class BatchExportRequest(BaseModel):
     project_ids: List[UUID]
     format: str = "GeoTiff"
     crs: str = "EPSG:5186"
+    custom_filename: str | None = None  # Optional custom filename for ZIP
 
 
 @router.post("/batch")
@@ -409,7 +410,16 @@ async def batch_download(
             # Download from MinIO to temp file
             import tempfile as tf
             temp_file = tf.NamedTemporaryFile(delete=False, suffix='.tif')
+            temp_file.close()  # Close before writing
             storage.download_file(ortho_path, temp_file.name)
+            
+            # Verify file size after download (prevents corruption)
+            expected_size = storage.get_object_size(ortho_path)
+            actual_size = os.path.getsize(temp_file.name)
+            if actual_size != expected_size:
+                os.unlink(temp_file.name)
+                continue  # Skip corrupted download
+            
             file_path = temp_file.name
         elif os.path.exists(ortho_path):
             file_path = ortho_path
@@ -428,49 +438,88 @@ async def batch_download(
             detail="No completed orthoimages found for the selected projects",
         )
     
-    # Create ZIP file in memory (for small batches) or temp file (for large)
-    # Using tempfile for reliability
-    temp_zip_path = tempfile.NamedTemporaryFile(delete=False, suffix='.zip').name
+    # [DIAGNOSTIC] Log the number of projects found
+    print(f"DEBUG: Batch download for project_ids={request.project_ids} found {len(projects_with_files)} files")
     
+    # If only one project, stream the TIF directly (No ZIP)
+    if len(projects_with_files) == 1:
+        print(f"DEBUG: Single project branch triggered for {projects_with_files[0]['project'].id}")
+        item = projects_with_files[0]
+        project = item["project"]
+        file_path = item["file_path"]
+        
+        # Determine filename
+        if request.custom_filename:
+            target_filename = request.custom_filename
+            if not target_filename.lower().endswith('.tif') and not target_filename.lower().endswith('.tiff'):
+                target_filename += ".tif"
+        else:
+            safe_title = project.title.replace(" ", "_").replace("/", "_")
+            target_filename = f"{safe_title}_ortho.tif"
+            
+        file_size = os.path.getsize(file_path)
+        encoded_filename = quote(target_filename)
+        
+        async def iter_tif_file():
+            try:
+                async with aiofiles.open(file_path, 'rb') as f:
+                    while chunk := await f.read(8 * 1024 * 1024):
+                        yield chunk
+            finally:
+                # Clean up if it was a temp download from MinIO
+                if file_path.startswith(tempfile.gettempdir()):
+                    try: os.unlink(file_path)
+                    except: pass
+
+        return StreamingResponse(
+            iter_tif_file(),
+            headers={
+                "Content-Length": str(file_size),
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            },
+            media_type="image/tiff",
+        )
+
+    # Multi-project: Use ZIP
+    temp_zip_path = tempfile.NamedTemporaryFile(delete=False, suffix='.zip').name
     try:
-        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zipf:
             for item in projects_with_files:
                 project = item["project"]
                 file_path = item["file_path"]
-                
-                # Create safe filename
                 safe_title = project.title.replace(" ", "_").replace("/", "_")
                 arcname = f"{safe_title}_ortho.tif"
-                
-                # Add file to zip
                 zipf.write(file_path, arcname)
+                
+                if file_path.startswith(tempfile.gettempdir()):
+                    try: os.unlink(file_path)
+                    except: pass
         
-        # Stream the ZIP file
         zip_size = os.path.getsize(temp_zip_path)
         
         async def iter_zip_file():
-            """Stream the ZIP file content."""
             try:
                 async with aiofiles.open(temp_zip_path, 'rb') as f:
-                    while chunk := await f.read(8 * 1024 * 1024):  # 8MB chunks
+                    while chunk := await f.read(8 * 1024 * 1024):
                         yield chunk
             finally:
-                # Clean up temp file after streaming
-                try:
-                    os.unlink(temp_zip_path)
-                except:
-                    pass
+                try: os.unlink(temp_zip_path)
+                except: pass
         
-        # Generate filename with timestamp
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_filename = f"batch_export_{timestamp}.zip"
+        if request.custom_filename:
+            zip_filename = request.custom_filename
+            if not zip_filename.lower().endswith('.zip'):
+                zip_filename += ".zip"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            zip_filename = f"batch_export_{timestamp}.zip"
         
+        encoded_filename = quote(zip_filename)
         return StreamingResponse(
             iter_zip_file(),
             headers={
                 "Content-Length": str(zip_size),
-                "Content-Disposition": f'attachment; filename="{zip_filename}"',
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
             },
             media_type="application/zip",
         )

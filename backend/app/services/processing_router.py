@@ -2,6 +2,7 @@
 import os
 import subprocess
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -110,6 +111,19 @@ class ODMEngine(ProcessingEngine):
             stderr=asyncio.subprocess.STDOUT,  # Merge stderr into stdout
         )
         
+        # Stage-based base progress mapping
+        STAGE_PROGRESS = {
+            "dataset": 5,
+            "opensfm": 20,
+            "openmvs": 40,
+            "mvs": 40,
+            "filterpoints": 50,
+            "meshing": 60,
+            "dem": 70,
+            "orthophoto": 80,
+            "postprocess": 95,
+        }
+        
         # Collect all output and monitor progress
         all_output = []
         current_progress = 0
@@ -119,29 +133,53 @@ class ODMEngine(ProcessingEngine):
             all_output.append(line_str)
             logging.info(f"[ODM] {line_str}")
             
-            # Parse ODM progress from output
+            # 1. Look for explicit percentage in line (e.g., "[Stage] 45%")
+            pct_match = re.search(r'(\d+)%', line_str)
+            
+            # 2. Determine stage base progress
             line_lower = line_str.lower()
-            if "running" in line_lower:
-                if progress_callback:
-                    # Estimate progress based on ODM stages
-                    if "dataset" in line_lower:
-                        current_progress = 5
-                    elif "opensfm" in line_lower:
-                        current_progress = 20
-                    elif "openmvs" in line_lower or "mvs" in line_lower:
-                        current_progress = 40
-                    elif "filterpoints" in line_lower:
-                        current_progress = 50
-                    elif "meshing" in line_lower:
-                        current_progress = 60
-                    elif "dem" in line_lower:
-                        current_progress = 70
-                    elif "orthophoto" in line_lower:
-                        current_progress = 80
-                    elif "postprocess" in line_lower:
-                        current_progress = 95
-                    
-                    await progress_callback(current_progress, line_str)
+            stage_base = 0
+            current_stage = ""
+            for stage, base in STAGE_PROGRESS.items():
+                if stage in line_lower:
+                    stage_base = base
+                    current_stage = stage
+                    break
+            
+            if pct_match:
+                # Calculate progress within the stage or overall
+                # ODM percentages are often relative to the current stage
+                # But we'll try to map it to our 0-100 scale
+                stage_pct = int(pct_match.group(1))
+                
+                if current_stage == "dataset":
+                    current_progress = 0 + (stage_pct * 0.05)
+                elif current_stage in ["opensfm", "openmvs", "mvs"]:
+                    current_progress = 20 + (stage_pct * 0.20)
+                elif current_stage == "filterpoints":
+                    current_progress = 40 + (stage_pct * 0.10)
+                elif current_stage == "meshing":
+                    current_progress = 50 + (stage_pct * 0.10)
+                elif current_stage == "dem":
+                    current_progress = 60 + (stage_pct * 0.10)
+                elif current_stage == "orthophoto":
+                    current_progress = 70 + (stage_pct * 0.15)
+                elif current_stage == "postprocess":
+                    current_progress = 85 + (stage_pct * 0.10)
+                else:
+                    # If we can't determine current stage accurately, 
+                    # use the percentage if it's higher than current
+                    if stage_pct > current_progress:
+                        current_progress = stage_pct
+            elif "running" in line_lower and stage_base > current_progress:
+                # Update based on stage keywords if no percentage found
+                current_progress = stage_base
+            
+            # Ensure progress is capped and integer
+            final_progress = min(99, int(current_progress))
+            
+            if progress_callback and final_progress > 0:
+                await progress_callback(final_progress, line_str)
         
         await process.wait()
         

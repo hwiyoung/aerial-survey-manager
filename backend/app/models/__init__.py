@@ -10,6 +10,7 @@ from app.models.project import (
 )
 from app.models.preset import ProcessingPreset
 from app.models.group import ProjectGroup
+from app.models.region import Region
 
 __all__ = [
     "User",
@@ -23,4 +24,5 @@ __all__ = [
     "QCResult",
     "ProcessingPreset",
     "ProjectGroup",
+    "Region",
 ]

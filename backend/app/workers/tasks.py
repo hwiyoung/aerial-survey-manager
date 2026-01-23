@@ -80,6 +80,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     from app.models.project import Project, ProcessingJob, Image
     from app.services.processing_router import processing_router
     from app.services.storage import StorageService
+    from app.utils.geo import extract_center_from_wkt, get_region_for_point
     
     # Use sync database connection for Celery
     sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
@@ -249,6 +250,14 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             bounds_wkt = get_orthophoto_bounds(str(result_path))
             if bounds_wkt:
                 project.bounds = bounds_wkt
+                
+                # Auto-assign region if not set
+                if not project.region:
+                    lon, lat = extract_center_from_wkt(bounds_wkt)
+                    if lon and lat:
+                        region = get_region_for_point(lon, lat)
+                        if region:
+                            project.region = region
             
             project.status = "completed"
             project.progress = 100

@@ -14,9 +14,13 @@ services:
         - VITE_TUS_URL=/files/
     ports:
       - "3000:80"
+      - "3001:5173" # Vite dev port
     environment:
       - VITE_API_URL=
       - VITE_TUS_URL=/files/
+    volumes:
+      - .:/app
+      - /app/node_modules
     depends_on:
       - api
     networks:
@@ -61,6 +65,7 @@ services:
       -s3-bucket aerial-survey
       -s3-endpoint http://minio:9000
       -s3-object-prefix uploads/
+      -s3-part-size 524288000
       -hooks-http http://api:8000/api/v1/upload/hooks
       -hooks-enabled-events pre-create,post-finish,post-terminate
       -max-size 0
@@ -100,6 +105,11 @@ services:
       - redis
       - db
       - minio
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 32G  # Adjust based on available RAM
     networks:
       - aerial-network
 

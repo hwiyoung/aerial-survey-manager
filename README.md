@@ -222,29 +222,23 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Orthoimage (COG) overlay for completed projects
 
 ### 🔄 Phase 5: Advanced Features (In Progress)
+- [x] **내보내기 기능 고도화 (2026-01-23)**:
+  - 단일 프로젝트 TIF 직접 다운로드, ZIP 무결성 및 파일명 커스텀 로직 수정
 - [x] **Project Grouping (Completed)**:
   - Folder-based project organization, drag-and-drop, create/edit/delete modals
 - [x] **Dashboard Statistics API (Completed)**:
   - Monthly/Regional statistics endpoints (`/stats/monthly`, `/stats/regional`)
-  - Chart components connected to real API data
-- [x] **Batch Export (Completed)**:
-  - Multi-project orthophoto ZIP download from MinIO storage
-- [x] **Project Delete Improvements (2026-01-21)**:
-  - Fixed missing `Path` import, proper local/MinIO cleanup
-- [x] **API Serialization Fixes (2026-01-21)**:
-  - Fixed Pydantic validation for PostGIS geometry bounds
+- [x] **TiTiler 타일 서버 통합 (2026-01-22)**:
+  - COG 타일 스트리밍 (메모리 90%+ 절감), Nginx 프록시 설정
+- [ ] **지도 시각화 최적화 (진행중)**:
+  - 약 17,000개 권역 폴리곤 성능 개선 (Canvas 도입, PostGIS ST_Simplify 적용)
+  - 권역 투명도 하향 조정을 통한 시인성 확보
 - [ ] Multi-user permission management
 - [ ] Organization storage quota
-- [x] Map visualization (Leaflet + Footprints)
-- [x] Dashboard statistics cards
-- [x] **TiTiler 타일 서버 통합 (2026-01-22)**:
-  - COG 파일을 XYZ 타일로 효율적 스트리밍
-  - 257MB+ 파일도 필요한 타일만 로드 (메모리 90%+ 절감)
-  - Nginx 프록시를 통한 `/titiler/` 엔드포인트 제공
 
 ### ⚠️ Known Issues
-- **내보내기 파일**: 내보내기된 파일 가시화 안됨 (파일 손상 가능성)
-- **내보내기 파일명**: 파일명 변경 기능 미작동
+- **지도 성능**: 권역 폴리곤 과다로 인한 브라우저 렌더링 지연 (Canvas 전환 및 데이터 단순화 진행 예정)
+- **가시성**: 권역 레이어가 정사영상 영역을 가리는 문제 (투명도 추가 하향 조정 예정)
 - **COG Loading**: MinIO presigned URL translation may require `MINIO_PUBLIC_ENDPOINT` configuration
 
 ## 🧪 Testing with Real Data

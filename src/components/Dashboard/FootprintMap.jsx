@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
-import { MapContainer, TileLayer, Rectangle, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Rectangle, Popup, useMap, GeoJSON } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
 import { Layers, Eye, EyeOff } from 'lucide-react';
 import proj4 from 'proj4';
+import KOREA_REGIONS from '../../data/koreaRegions';
 
 // Set proj4 globally for georaster-layer-for-leaflet
 if (typeof window !== 'undefined') {
@@ -17,6 +18,7 @@ const STATUS_COLORS = {
     processing: { fill: '#3b82f6', stroke: '#2563eb', label: '진행 중' },
     pending: { fill: '#94a3b8', stroke: '#64748b', label: '대기' },
     error: { fill: '#ef4444', stroke: '#dc2626', label: '오류' },
+    cancelled: { fill: '#64748b', stroke: '#475569', label: '취소됨' },
     highlight: { fill: '#f59e0b', stroke: '#d97706', label: '하이라이트' },
 };
 
@@ -279,7 +281,6 @@ function HighlightFlyTo({ footprint }) {
 
     return null;
 }
-// Map resize handler - invalidates map size when container height changes
 function MapResizeHandler({ height }) {
     const map = useMap();
 
@@ -295,10 +296,124 @@ function MapResizeHandler({ height }) {
 }
 
 /**
+ * Region Boundary Layer
+ * Displays administrative region boundaries on the map
+ */
+/**
+ * Region Boundary Layer
+ * Displays administrative region boundaries on the map from PostGIS
+ */
+export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegion = null }) {
+    const [geojsonData, setGeojsonData] = useState(null);
+    const [loading, setLoading] = useState(false);
+
+    const LAYER_COLORS = {
+        '강원 권역': '#2563eb',      // Blue 600
+        '충청 권역': '#d97706',      // Amber 600
+        '전라동부 권역': '#7c3aed',   // Violet 600
+        '전라서부 권역': '#9333ea',   // Purple 600
+        '경북 권역': '#dc2626',      // Red 600
+        '경남 권역': '#e11d48',      // Rose 600
+        '수도권남부 권역': '#0284c7', // Sky 600
+        '수도권북부 권역': '#059669', // Emerald 600
+        '제주 권역': '#db2777',      // Pink 600
+        'Unknown': '#64748b'
+    };
+
+    const getLayerColor = (layer) => {
+        // Debug fallback: Bright magenta if color not found
+        return LAYER_COLORS[layer] || '#ff00ff';
+    };
+
+    useEffect(() => {
+        if (!visible || geojsonData) return;
+
+        const fetchBoundaries = async () => {
+            setLoading(true);
+            try {
+                const response = await api.request('/regions/boundaries');
+                setGeojsonData(response);
+            } catch (err) {
+                console.error('Failed to fetch regional boundaries:', err);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchBoundaries();
+    }, [visible, geojsonData]);
+
+    if (!visible || !geojsonData) return null;
+
+    const regionStyle = (feature) => {
+        const isActive = activeRegion === feature.properties.name || activeRegion === feature.id;
+        const color = getLayerColor(feature.properties.layer);
+
+        return {
+            fillColor: color,
+            fillOpacity: isActive ? 0.25 : 0.1, // Significantly lighter
+            color: color,
+            weight: isActive ? 4 : 1.5,
+            opacity: 0.5,
+        };
+    };
+
+    const onEachFeature = (feature, layer) => {
+        const label = feature.properties.name || '알 수 없는 구역';
+        layer.bindTooltip(`${label} (${feature.properties.layer || ''})`, {
+            permanent: false,
+            direction: 'center',
+            className: 'region-tooltip font-bold text-[10px]'
+        });
+
+        layer.on({
+            click: (e) => {
+                // Completely disable any reaction on click as requested
+                L.DomEvent.stopPropagation(e);
+                if (e.originalEvent) {
+                    L.DomEvent.preventDefault(e.originalEvent);
+                }
+                // Removed onRegionClick call to prevent any filtering/zoom reaction
+            },
+            dblclick: (e) => {
+                L.DomEvent.stopPropagation(e);
+            },
+            mousedown: (e) => {
+                L.DomEvent.stopPropagation(e);
+            },
+            mouseover: (e) => {
+                // Keep the hover effect as requested
+                e.target.setStyle({ fillOpacity: 0.4, weight: 4, color: '#fff' });
+                e.target.bringToFront();
+            },
+            mouseout: (e) => {
+                e.target.setStyle(regionStyle(feature));
+            }
+        });
+    };
+
+    return (
+        <GeoJSON
+            data={geojsonData}
+            style={regionStyle}
+            onEachFeature={onEachFeature}
+        />
+    );
+}
+
+/**
  * Footprint Map Component
  * Shows real map with project footprints as colored rectangles
  */
-export function FootprintMap({ projects = [], height = 400, onProjectClick, highlightProjectId = null, selectedProjectId = null }) {
+export function FootprintMap({
+    projects = [],
+    height = 400,
+    onProjectClick,
+    highlightProjectId = null,
+    selectedProjectId = null,
+    onRegionClick,
+    activeRegionName = 'ALL'
+}) {
     const [highlightPulse, setHighlightPulse] = useState(false);
     const blinkCountRef = useRef(0);
 
@@ -382,6 +497,9 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
     const [cogLoadStatus, setCogLoadStatus] = useState(null); // 'loading' | 'loaded' | 'error'
     const [cogError, setCogError] = useState(null);
 
+    // Region layer visibility
+    const [showRegions, setShowRegions] = useState(true);
+
     // Selected project for COG overlay (highlighted or selected, if completed)
     const activeProjectId = highlightProjectId || selectedProjectId;
     const selectedCogProject = activeProjectId
@@ -457,6 +575,14 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
 
                     {/* Legend */}
                     <div className="flex gap-3 text-xs">
+                        <button
+                            onClick={() => setShowRegions(!showRegions)}
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showRegions ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}
+                            title="권역 경계 표시 토글"
+                        >
+                            <Layers size={12} />
+                            <span>권역</span>
+                        </button>
                         <div className="flex items-center gap-1.5">
                             <div className="w-3 h-3 rounded" style={{ backgroundColor: STATUS_COLORS.completed.fill }}></div>
                             <span className="text-slate-600">{STATUS_COLORS.completed.label}</span>
@@ -476,6 +602,22 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                     style={{ height: '100%', width: '100%' }}
                     zoomControl={true}
                 >
+                    {/* Central Loading Spinner */}
+                    {cogLoadStatus === 'loading' && (
+                        <div className="absolute inset-0 z-[1001] flex flex-col items-center justify-center bg-slate-900/10 backdrop-blur-[1px]">
+                            <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-200 flex flex-col items-center gap-4 animate-in zoom-in-95 duration-200">
+                                <div className="relative">
+                                    <div className="w-12 h-12 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
+                                    <Layers className="absolute inset-0 m-auto text-blue-600" size={20} />
+                                </div>
+                                <div className="text-center">
+                                    <div className="text-sm font-bold text-slate-800">정사영상 스트리밍 중</div>
+                                    <div className="text-[10px] text-slate-500 mt-1">대용량 COG 데이터를 최적화하여 불러오고 있습니다.</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <TileLayer
                         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -484,7 +626,14 @@ export function FootprintMap({ projects = [], height = 400, onProjectClick, high
                     {/* Handle map resize when height changes */}
                     <MapResizeHandler height={height} />
 
-                    {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && <MapBoundsFitter bounds={allPoints} />}
+                    {/* Region Boundary Layer */}
+                    <RegionBoundaryLayer
+                        visible={showRegions}
+                        onRegionClick={onRegionClick}
+                        activeRegion={activeRegionName}
+                    />
+
+                    {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && !activeRegionName && <MapBoundsFitter bounds={allPoints} />}
                     {highlightFootprint && <HighlightFlyTo footprint={highlightFootprint} />}
 
                     {/* Orthophoto Tile Layer - TiTiler-based for efficient streaming */}

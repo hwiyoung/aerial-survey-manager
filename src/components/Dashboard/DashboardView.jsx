@@ -242,7 +242,9 @@ export default function DashboardView({
     highlightProjectId = null,
     onHighlightEnd = null,
     showInspector = false,
-    renderInspector = null
+    renderInspector = null,
+    regionFilter = 'ALL',
+    onRegionClick
 }) {
     const containerRef = useRef(null);
     const [containerWidth, setContainerWidth] = useState(800);
@@ -391,6 +393,8 @@ export default function DashboardView({
                             onProjectClick={onProjectClick}
                             highlightProjectId={highlightProjectId}
                             selectedProjectId={selectedProject?.id}
+                            onRegionClick={onRegionClick}
+                            activeRegionName={regionFilter}
                         />
                     </div>
 
@@ -433,6 +437,8 @@ export default function DashboardView({
                         onProjectClick={onProjectClick}
                         highlightProjectId={highlightProjectId}
                         selectedProjectId={selectedProject?.id}
+                        onRegionClick={onRegionClick}
+                        activeRegionName={regionFilter}
                     />
 
                     {/* Drag Handle */}
