@@ -36,7 +36,7 @@ export class ResumableUploader {
         const upload = new tus.Upload(file, {
             endpoint: TUS_URL,
             retryDelays: [0, 1000, 3000, 5000, 10000, 30000, 60000], // Extended for TB-scale stability
-            chunkSize: 5 * 1024 * 1024, // 5MB chunks for good balance of progress and speed
+            chunkSize: 20 * 1024 * 1024, // Optimized for large files (20MB)
             // parallelUploads disabled to ensure proper post-finish events with metadata
 
             metadata: {
@@ -133,7 +133,7 @@ export class ResumableUploader {
     /**
      * Upload multiple files with concurrency control
      */
-    uploadFiles(files, projectId, { onFileProgress, onFileComplete, onAllComplete, onError, concurrency = 10 }) {
+    uploadFiles(files, projectId, { onFileProgress, onFileComplete, onAllComplete, onError, concurrency = 6 }) {
         const controllers = [];
         let completedCount = 0;
         let activeCount = 0;

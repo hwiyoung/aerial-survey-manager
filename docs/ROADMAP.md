@@ -12,7 +12,8 @@
 | Phase 2: Large File Transfer | ✅ 완료 | tus 업로드, Resumable 다운로드 |
 | Phase 3: Processing Engine | ✅ 완료 | ODM 통합, 외부 엔진 API |
 | Phase 4: Project Management | ✅ 완료 | EO 파싱, UI 최적화, 대시보드, 프리셋 |
-| Phase 5: Advanced Features | 🔄 진행중 | 지도 시각화(권역), 통계, 내보내기 고도화 |
+| Phase 5: Advanced Features | ✅ 완료 | 권역 시각화 최적화, 통계, 내보내기, TiTiler 통합 |
+| Phase 6: System Hardening | 🔄 진행중 | TB 업로드, Monorepo 구조, UX 애니메이션, Webhook |
 
 ---
 
@@ -23,13 +24,10 @@
 - [x] **단일 프로젝트 직전 다운로드**: 단일 프로젝트의 경우 ZIP 압축 없이 `.tif` 파일로 직접 스트리밍
 - [x] **파일명 커스터마이징**: 사용자가 지정한 파일명이 내보내기 결과물에 정확히 반영되도록 수정
 
-### 5.5.2 🔄 권역 시각화 최적화 (진행중)
-- **이슈**: 약 17,000개의 권역 폴리곤 렌더링으로 인한 지도 성능 저하 및 시인성 방해
-- **해결 계획**:
-  - [ ] **성능 최적화 (Canvas)**: Leaflet SVG 렌더러를 Canvas 렌더러로 전환 (`preferCanvas: true`)
-  - [ ] **데이터 경량화 (Simplification)**: PostGIS `ST_SimplifyPreserveTopology`를 적용하여 기하 데이터 크기 축소 (백엔드)
-  - [ ] **가시성 조정**: 투명도를 극도로 낮추어(0.05~0.1) 정사영상 바운딩 박스를 가리지 않도록 개선
-  - [ ] **상호작용 분리**: 권역 경계 클릭 이벤트 비활성화 (호버 효과만 유지)
+- [x] **성능 최적화 (Canvas)**: Leaflet SVG 렌더러를 Canvas 렌더러로 전환 (`preferCanvas: true`)
+- [x] **데이터 경량화 (Simplification)**: PostGIS `ST_SimplifyPreserveTopology(geom, 0.001)` 적용으로 GeoJSON 용량 70%+ 절감
+- [x] **가시성 조정**: 비활성 권역 fillOpacity 0.03, weight 0.5로 대폭 낮추어 정사영상 시인성 확보
+- [x] **상호작용 분리**: 권역 레이어 `interactive: false` 설정으로 정사영상 클릭 방해 요소 제거
 
 ---
 
@@ -271,15 +269,11 @@
 
 | 날짜 | 항목 | 내용 |
 |------|------|------|
+| 2026-01-27 | 시스템 고도화 | TB급 업로드 최적화(20MB Chunk), Nginx 버퍼링 해제, Monorepo(/engines) 구조 도입 |
+| 2026-01-27 | UX 애니메이션 | 사이드바/패널 하드웨어 가속(will-change) 및 cubic-bezier 애니메이션 적용 |
+| 2026-01-27 | 권역 최적화 | ST_Simplify(0.001) 및 Canvas 렌더링 적용 완료, 상호작용 비활성화로 시인성 확보 |
+| 2026-01-27 | External API | 기술 명세서 작성 완료, Webhook 엔드포인트 구현 및 드라이버 리팩토링 |
 | 2026-01-23 | 내보내기 고도화 | 단일 TIF 직전 다운로드, ZIP 손상 수정, 파일명 커스텀 로직 보완 |
-| 2026-01-23 | 권역 정보 | PostGIS 연동 대시보드 지도 경계 표시, 색상 팔레트 및 상호작용 1차 조율 |
-| 2026-01-22 | TiTiler 통합 | COG 타일 스트리밍 서버 추가, 메모리 효율 대폭 개선 |
-| 2026-01-22 | 정사영상 위치 | 인천 청라 데이터 bounds 정확도 확인 |
-| 2026-01-21 | 프로젝트 삭제 | `Path` 미임포트 오류 수정, 로컬 및 MinIO 정리 로직 개선 |
-| 2026-01-21 | API 직렬화 | PostGIS WKBElement bounds 필드 Pydantic 검증 오류 수정 |
-| 2026-01-21 | 일괄 내보내기 | Project.ortho_path 우선 확인 및 MinIO 다운로드 로직 추가 |
-| 2026-01-20 | 처리 엔진 계획 | ODM 실제 연동, WebSocket 진행률, 결과물 자동 파이프라인 설계 |
-| 2026-01-20 | UX 개선 계획 | 사이드 패널 슬라이딩 애니메이션, 리사이즈 성능 최적화 설계 |
 
 ---
 

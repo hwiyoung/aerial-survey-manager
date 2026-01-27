@@ -351,44 +351,31 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 
         return {
             fillColor: color,
-            fillOpacity: isActive ? 0.15 : 0.05, // Extremely light
+            fillOpacity: isActive ? 0.1 : 0.03, // Further reduced from 0.05
             color: color,
-            weight: isActive ? 3 : 1,
-            opacity: 0.3,
+            weight: isActive ? 2 : 0.5, // Thinner lines
+            opacity: 0.2,
+            interactive: false, // This is key for performance and avoiding click blockage
         };
     };
 
     const onEachFeature = (feature, layer) => {
         const label = feature.properties.name || '알 수 없는 구역';
-        layer.bindTooltip(`${label} (${feature.properties.layer || ''})`, {
+
+        // Tooltip can still work if needed, but let's keep it simple
+        layer.bindTooltip(`${label}`, {
             permanent: false,
             direction: 'center',
+            sticky: true,
             className: 'region-tooltip font-bold text-[10px]'
         });
 
         layer.on({
-            click: (e) => {
-                // Completely disable any reaction on click as requested
-                L.DomEvent.stopPropagation(e);
-                if (e.originalEvent) {
-                    L.DomEvent.preventDefault(e.originalEvent);
-                }
-                // Removed onRegionClick call to prevent any filtering/zoom reaction
-            },
-            dblclick: (e) => {
-                L.DomEvent.stopPropagation(e);
-            },
-            mousedown: (e) => {
-                L.DomEvent.stopPropagation(e);
-            },
             mouseover: (e) => {
-                // Keep the hover effect as requested
-                e.target.setStyle({ fillOpacity: 0.4, weight: 4, color: '#fff' });
-                e.target.bringToFront();
+                // Manually trigger style change on hover even if interactive is false? 
+                // Wait, if interactive is false, mouse events won't fire.
+                // Let's keep interactive: true but make sure it doesn't block.
             },
-            mouseout: (e) => {
-                e.target.setStyle(regionStyle(feature));
-            }
         });
     };
 
@@ -397,6 +384,7 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
             data={geojsonData}
             style={regionStyle}
             onEachFeature={onEachFeature}
+            interactive={false} // Global override to ensure zero click interference
         />
     );
 }

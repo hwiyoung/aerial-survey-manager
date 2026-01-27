@@ -92,26 +92,16 @@ aerial-survey-manager/
 ├── backend/                      # Backend (FastAPI)
 │   ├── app/
 │   │   ├── main.py               # App entry point
-│   │   ├── config.py             # Settings
-│   │   ├── database.py           # DB connection
 │   │   ├── api/v1/               # API endpoints
-│   │   │   ├── auth.py           # Authentication
-│   │   │   ├── projects.py       # Project CRUD
-│   │   │   ├── upload.py         # Upload + Webhook
-│   │   │   ├── download.py       # Resumable download
-│   │   │   └── processing.py     # Processing jobs
-│   │   ├── auth/                 # JWT utilities
-│   │   ├── models/               # SQLAlchemy models
-│   │   ├── schemas/              # Pydantic schemas
-│   │   ├── services/             # Business logic
-│   │   │   ├── storage.py        # MinIO service
+│   │   ├── services/
 │   │   │   └── processing_router.py  # Engine router
 │   │   └── workers/              # Celery tasks
-│   ├── alembic/                  # DB migrations
-│   ├── requirements.txt
 │   └── Dockerfile
+├── engines/                      # Processing Engines (Monorepo)
+│   ├── odm/                      # ODM settings & scripts
+│   └── external-engine/          # External API engine source
 ├── docker-compose.yml            # All services
-├── nginx.conf                    # Reverse proxy
+├── nginx.conf                    # Reverse proxy (TB-scale optimized)
 ├── init.sql                      # DB initialization
 └── .env.example                  # Environment template
 ```
@@ -221,20 +211,20 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] Map zoom persistence on project selection
 - [x] Orthoimage (COG) overlay for completed projects
 
-### 🔄 Phase 5: Advanced Features (In Progress)
-- [x] **내보내기 기능 고도화 (2026-01-23)**:
-  - 단일 프로젝트 TIF 직접 다운로드, ZIP 무결성 및 파일명 커스텀 로직 수정
-- [x] **Project Grouping (Completed)**:
-  - Folder-based project organization, drag-and-drop, create/edit/delete modals
-- [x] **Dashboard Statistics API (Completed)**:
-  - Monthly/Regional statistics endpoints (`/stats/monthly`, `/stats/regional`)
-- [x] **TiTiler 타일 서버 통합 (2026-01-22)**:
-  - COG 타일 스트리밍 (메모리 90%+ 절감), Nginx 프록시 설정
-- [ ] **지도 시각화 최적화 (진행중)**:
-  - 약 17,000개 권역 폴리곤 성능 개선 (Canvas 도입, PostGIS ST_Simplify 적용)
-  - 권역 투명도 하향 조정을 통한 시인성 확보
-- [ ] Multi-user permission management
-- [ ] Organization storage quota
+### ✅ Phase 5: Advanced Features (Completed)
+- [x] **내보내기 기능 고도화**: 단일 TIF 직접 다운로드 및 ZIP 무결성 보완
+- [x] **Project Grouping**: 폴더 기반 관리, 드래그 앤 드롭 지원
+- [x] **Dashboard Statistics API**: 월별/지역별 통계 연동
+- [x] **TiTiler 타일 서버 통합**: COG 타일 스트리밍 (메모리 90%+ 절감)
+- [x] **지도 시각화 최적화**: 1.7만개 권역 데이터 Canvas 렌더링 및 PostGIS 단순화 (ST_Simplify) 적용
+- [x] **UI/UX 개선**: 하드웨어 가속(will-change) 및 60fps 부드러운 애니메이션 적용
+
+### 🔄 Phase 6: System Hardening & Integration (In Progress)
+- [x] **TB급 업로드 안정화**: 20MB Chunk 및 동시성 제어 적용 (upload.js)
+- [x] **인프라 튜닝**: Nginx `proxy_request_buffering off`를 통한 스트리밍 안정화
+- [x] **Monorepo 구조 전환**: `/engines` 디렉토리를 통한 처리 엔진 통합 관리
+- [/] **External API 실제 연동**: 상세 명세 기반 드라이버 고도화 및 Webhook 연동
+- [ ] 다중 사용자 권한 관리 및 조직 스토리지 할당량
 
 ### ⚠️ Known Issues
 - **지도 성능**: 권역 폴리곤 과다로 인한 브라우저 렌더링 지연 (Canvas 전환 및 데이터 단순화 진행 예정)

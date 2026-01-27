@@ -267,10 +267,7 @@ class BroadcastRequest(BaseModel):
 @router.post("/broadcast")
 async def broadcast_update(request: BroadcastRequest):
     """
-    Internal endpoint for Celery workers to broadcast WebSocket updates.
-    
-    Celery runs in a separate process, so it can't directly access the
-    WebSocket connection manager. This endpoint bridges that gap.
+    Internal endpoint for Celery workers or External Engines to trigger WebSocket broadcasts.
     """
     await manager.broadcast(request.project_id, {
         "project_id": request.project_id,
@@ -280,6 +277,53 @@ async def broadcast_update(request: BroadcastRequest):
         "type": "progress" if request.status == "processing" else request.status,
     })
     return {"status": "broadcast_sent"}
+
+
+@router.post("/webhook")
+async def external_processing_webhook(
+    request: BroadcastRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Webhook endpoint for external processing engines to report status.
+    """
+    # 1. Update Job and Project status in DB
+    result = await db.execute(
+        select(ProcessingJob)
+        .where(ProcessingJob.project_id == request.project_id)
+        .order_by(ProcessingJob.started_at.desc().nullsfirst())
+    )
+    job = result.scalar_one_or_none()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job.status = request.status
+    job.progress = request.progress
+    if request.status == "completed":
+        job.completed_at = datetime.utcnow()
+    elif request.status == "failed":
+        job.error_message = request.message
+        
+    # Update project
+    proj_result = await db.execute(select(Project).where(Project.id == request.project_id))
+    project = proj_result.scalar_one_or_none()
+    if project:
+        project.status = request.status
+        project.progress = request.progress
+
+    await db.commit()
+
+    # 2. Broadcast via WebSocket
+    await manager.broadcast(request.project_id, {
+        "project_id": request.project_id,
+        "status": request.status,
+        "progress": request.progress,
+        "message": request.message,
+        "type": "progress" if request.status == "processing" else request.status,
+    })
+
+    return {"status": "received"}
 
 
 # Function to be called by Celery worker to broadcast updates

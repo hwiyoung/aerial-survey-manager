@@ -415,7 +415,7 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing, active
 
   return (
     <aside
-      className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-xl shrink-0 relative overflow-hidden"
+      className="bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-xl shrink-0 relative overflow-hidden smooth-transition will-change-width"
       style={{
         width: width,
         animation: 'slideInFromLeft 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards'

@@ -222,6 +222,8 @@ class ExternalAPIEngine(ProcessingEngine):
         self.base_url = settings.EXTERNAL_ENGINE_URL
         self.api_key = settings.EXTERNAL_ENGINE_API_KEY
         self._job_ids: dict[str, str] = {}  # Map project_id to external job_id
+        import logging
+        self.logger = logging.getLogger("app.processing.external")
     
     async def process(
         self,
@@ -234,61 +236,101 @@ class ExternalAPIEngine(ProcessingEngine):
         """Submit job to external API and poll for completion."""
         
         if not self.base_url:
-            raise ValueError("External engine URL not configured")
+            self.logger.error("External engine URL not configured")
+            raise ValueError("External engine URL not configured. Please check EXTERNAL_ENGINE_URL in .env")
+        
+        # Determine internal callback URL for Webhook
+        # Default to internal docker host if not specified
+        callback_base = os.environ.get("WEBHOOK_URL_BASE", "http://api:8000")
+        callback_url = f"{callback_base}/api/v1/processing/webhook"
+        
+        self.logger.info(f"Submitting job for project {project_id} to {self.base_url}")
         
         async with httpx.AsyncClient(timeout=300.0) as client:
-            # 1. Submit the job
-            # This would typically involve uploading files or providing presigned URLs
-            response = await client.post(
-                f"{self.base_url}/jobs",
-                json={
+            try:
+                # 1. Submit the job
+                payload = {
                     "project_id": project_id,
                     "input_path": str(input_dir),
                     "options": options,
-                },
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            response.raise_for_status()
-            job_data = response.json()
-            external_job_id = job_data["job_id"]
-            
-            self._job_ids[project_id] = external_job_id
-            
-            # 2. Poll for completion
-            while True:
-                status_response = await client.get(
-                    f"{self.base_url}/jobs/{external_job_id}",
+                    "callback_url": callback_url
+                }
+                
+                response = await client.post(
+                    f"{self.base_url}/jobs",
+                    json=payload,
                     headers={"Authorization": f"Bearer {self.api_key}"},
                 )
-                status_response.raise_for_status()
-                status_data = status_response.json()
+                response.raise_for_status()
+                job_data = response.json()
+                external_job_id = job_data.get("job_id")
                 
-                status = status_data.get("status")
-                progress = status_data.get("progress", 0)
+                if not external_job_id:
+                    raise RuntimeError("External engine did not return a job_id")
                 
-                if progress_callback:
-                    await progress_callback(progress, f"External: {status}")
+                self._job_ids[project_id] = external_job_id
+                self.logger.info(f"Job submitted successfully. External Job ID: {external_job_id}")
                 
-                if status == "completed":
-                    result_url = status_data.get("result_url")
+            except Exception as e:
+                self.logger.error(f"Failed to submit job to external engine: {e}")
+                raise RuntimeError(f"External API submission error: {str(e)}")
+
+            # 2. Polling for completion (as fallback to Webhook)
+            # Webhook will update the DB independently, but we keep this loop
+            # to fulfill the awaitable interface of the processing task.
+            retry_count = 0
+            max_retries = 3
+            
+            while True:
+                try:
+                    status_response = await client.get(
+                        f"{self.base_url}/jobs/{external_job_id}",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                    )
+                    status_response.raise_for_status()
+                    status_data = status_response.json()
                     
-                    # 3. Download result
-                    output_path = output_dir / f"{project_id}_ortho.tif"
+                    status = status_data.get("status")
+                    progress = status_data.get("progress", 0)
                     
-                    async with client.stream("GET", result_url) as download:
-                        download.raise_for_status()
-                        with open(output_path, "wb") as f:
-                            async for chunk in download.aiter_bytes():
-                                f.write(chunk)
+                    if progress_callback:
+                        await progress_callback(progress, f"External: {status}")
                     
-                    return output_path
-                
-                elif status == "failed":
-                    error = status_data.get("error", "Unknown error")
-                    raise RuntimeError(f"External processing failed: {error}")
+                    self.logger.debug(f"Job {external_job_id} status: {status}, progress: {progress}%")
+                    
+                    if status == "completed":
+                        result_url = status_data.get("result_url")
+                        if not result_url:
+                            raise RuntimeError("External job completed but no result_url provided")
+                            
+                        # 3. Download result
+                        self.logger.info(f"Job {external_job_id} completed. Downloading result from {result_url}")
+                        output_path = output_dir / f"{project_id}_ortho.tif"
+                        
+                        async with client.stream("GET", result_url) as download:
+                            download.raise_for_status()
+                            with open(output_path, "wb") as f:
+                                async for chunk in download.aiter_bytes():
+                                    f.write(chunk)
+                        
+                        self.logger.info(f"Result downloaded to {output_path}")
+                        return output_path
+                    
+                    elif status == "failed":
+                        error = status_data.get("error", "Unknown error")
+                        self.logger.error(f"External job {external_job_id} failed: {error}")
+                        raise RuntimeError(f"External processing failed: {error}")
+                    
+                    retry_count = 0 # Reset retries on success
+                    
+                except httpx.HTTPError as e:
+                    retry_count += 1
+                    self.logger.warning(f"Error polling external status (attempt {retry_count}): {e}")
+                    if retry_count >= max_retries:
+                        raise RuntimeError(f"Lost connection to external engine after {max_retries} attempts")
                 
                 # Wait before polling again
-                await asyncio.sleep(5)
+                await asyncio.sleep(10) # 10s is safer for external APIs
     
     async def get_status(self, job_id: str) -> dict:
         """Get status from external API."""
@@ -297,11 +339,15 @@ class ExternalAPIEngine(ProcessingEngine):
             return {"status": "unknown"}
         
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}/jobs/{external_id}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            return response.json()
+            try:
+                response = await client.get(
+                    f"{self.base_url}/jobs/{external_id}",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+                return response.json()
+            except Exception as e:
+                self.logger.error(f"Failed to get status for {external_id}: {e}")
+                return {"status": "error", "message": str(e)}
     
     async def cancel(self, job_id: str) -> bool:
         """Cancel job via external API."""
@@ -310,11 +356,15 @@ class ExternalAPIEngine(ProcessingEngine):
             return False
         
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/jobs/{external_id}/cancel",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            return response.status_code == 200
+            try:
+                response = await client.post(
+                    f"{self.base_url}/jobs/{external_id}/cancel",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+                return response.status_code == 200
+            except Exception as e:
+                self.logger.error(f"Failed to cancel job {external_id}: {e}")
+                return False
 
 
 class ProcessingRouter:
