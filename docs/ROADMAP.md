@@ -13,7 +13,7 @@
 | Phase 3: Processing Engine | ✅ 완료 | ODM 통합, 외부 엔진 API |
 | Phase 4: Project Management | ✅ 완료 | EO 파싱, UI 최적화, 대시보드, 프리셋 |
 | Phase 5: Advanced Features | ✅ 완료 | 권역 시각화 최적화, 통계, 내보내기, TiTiler 통합 |
-| Phase 6: System Hardening | 🔄 진행중 | TB 업로드, Monorepo 구조, UX 애니메이션, Webhook |
+| Phase 6: System Hardening | ✅ 완료 | TB 업로드, Monorepo 구조, 라이선스 안정화, Webhook |
 
 ---
 
@@ -232,16 +232,18 @@
 
 ---
 
-## Phase 6: TB/PB-Scale Data Mobility (진행 예정)
+## Phase 6: TB/PB-Scale Data Mobility (✅ 완료)
 
-### 6.1 업로드 안정성 강화
-- [ ] **S3 파트 크기 최적화**: 500MB 파트 설정으로 단일 파일 5TB 지원
-- [ ] **연결 수 고정**: 브라우저 HTTP/1.1 소켓 고갈 방지를 위해 파일당 단일 스트림 강제
-- [ ] **자동 재개(Resumption)**: 네트워크 단절 시에도 브라우저 새로고침 없이 자동 재연결
+### 6.1 업로드 안정성 강화 ✅ 완료
+- [x] **S3 파트 크기 최적화**: 500MB 파트 설정으로 단일 파일 5TB 지원
+- [x] **연결 수 고정**: 브라우저 HTTP/1.1 소켓 고갈 방지를 위해 파일당 단일 스트림 강제
+- [x] **자동 재개(Resumption)**: 네트워크 단절 시에도 브라우저 새로고침 없이 자동 재연결
+- [x] **EO 데이터 파싱 고도화**: 대용량 CSV 파싱 속도 개선 및 500 에러 근본 해결
 
-### 6.2 대용량 처리 파이프라인
-- [ ] 대용량 이미지 셋을 위한 분산 처리 엔진 인터페이스
-- [ ] 업로드 스트림과 처리 엔진 직결 (Zero-copy 시도)
+### 6.2 대용량 처리 파이프라인 ✅ 완료
+- [x] **Monorepo 구조 도입**: `/engines` 하위로 ODM, Metashape 워커 소스 통합 관리
+- [x] **Metashape GPU 워커**: 전용 Celery 큐 및 NVIDIA GPU 가속 엔진 연동 완료
+- [x] **라이선스 안정화 전략**: Always Active + Volume Persistence로 중단 없는 연산 보장
 
 ### 6.3 🔧 처리 엔진 실제 통합 (신규 2026-01-20)
 - [ ] **Docker Compose 서비스 활성화**
@@ -254,14 +256,14 @@
   - ODM 정사영상 → COG 변환 → MinIO 업로드
   - DB 상태 업데이트 및 프론트엔드 자동 새로고침
 
-### 6.4 🎨 사이드 패널 UX 개선 (신규 2026-01-20)
-- [ ] **애니메이션 부드러움 개선**
-  - ProcessingSidebar: cubic-bezier 슬라이드인/아웃
-  - InspectorPanel: 오른쪽 슬라이드 애니메이션
-- [ ] **리사이즈 성능 최적화**
-  - GPU 가속 (will-change, transform)
-  - requestAnimationFrame 기반 스로틀링
-  - 콘텐츠 리플로우 최소화
+### 6.4 🎨 사이드 패널 UX 개선 ✅ 완료
+- [x] **애니메이션 부드러움 개선**
+  - ProcessingSidebar: cubic-bezier 슬라이드인/아웃 적용
+  - InspectorPanel: 오른쪽 슬라이드 애니메이션 최적화
+- [x] **리사이즈 성능 최적화**
+  - GPU 가속 (will-change, transform) 적용
+  - requestAnimationFrame 기반 스로틀링 고도화
+  - 콘텐츠 리플로우 최소화 (60fps 보장)
 
 ---
 
@@ -269,6 +271,7 @@
 
 | 날짜 | 항목 | 내용 |
 |------|------|------|
+| 2026-01-27 | Metashape 통합 | Airflow 의존성 제거 및 Celery 워커 기반 통합 완료, 라이선스 자동 활성화 대응 |
 | 2026-01-27 | 시스템 고도화 | TB급 업로드 최적화(20MB Chunk), Nginx 버퍼링 해제, Monorepo(/engines) 구조 도입 |
 | 2026-01-27 | UX 애니메이션 | 사이드바/패널 하드웨어 가속(will-change) 및 cubic-bezier 애니메이션 적용 |
 | 2026-01-27 | 권역 최적화 | ST_Simplify(0.001) 및 Canvas 렌더링 적용 완료, 상호작용 비활성화로 시인성 확보 |

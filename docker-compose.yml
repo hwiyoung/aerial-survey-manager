@@ -85,8 +85,8 @@ services:
   # === Celery Worker - ODM Queue ===
   worker-odm:
     build:
-      context: ./backend
-      dockerfile: Dockerfile.worker-odm
+      context: .
+      dockerfile: engines/odm/Dockerfile
     command: celery -A app.workers.tasks worker -Q odm --loglevel=info --concurrency=2
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
@@ -96,20 +96,16 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
-      - HOST_DATA_PATH=${PWD}/data/processing  # Host path for Docker-in-Docker volume mounts
+      - HOST_DATA_PATH=${PWD}/data/processing
     volumes:
-      - ./backend:/app
+      - ./backend/app:/app/app
       - ./data/processing:/data/processing
-      - /var/run/docker.sock:/var/run/docker.sock  # For ODM Docker-in-Docker
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
       - db
       - minio
     restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 32G  # Adjust based on available RAM
     networks:
       - aerial-network
 
@@ -130,11 +126,48 @@ services:
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
     volumes:
-      - ./backend:/app
+      - ./backend/app:/app/app
       - ./data/processing:/data/processing
     depends_on:
       - redis
       - db
+    networks:
+      - aerial-network
+
+  # === Celery Worker - Metashape Queue ===
+  worker-metashape:
+    build:
+      context: .
+      dockerfile: engines/metashape/Dockerfile
+    working_dir: /app
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-metashape@%h
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - METASHAPE_LICENSE_KEY=${METASHAPE_LICENSE_KEY:-}
+      - PROJECT_ID=${PROJECT_ID:-unknown}
+      - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
+    volumes:
+      - ./backend/app:/app/app
+      - ./engines/metashape:/app/engines/metashape
+      - ./data/processing:/data/processing
+      - metashape-license:/var/lib/Agisoft/Metashape
+    depends_on:
+      - redis
+      - db
+      - minio
     networks:
       - aerial-network
 
@@ -281,3 +314,4 @@ volumes:
   pgdata:
   redis_data:
   minio_data:
+  metashape-license:

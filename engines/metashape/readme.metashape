@@ -1,0 +1,71 @@
+# Metashape 정사영상 DAG 실행 가이드
+
+## DAG 정보
+- DAG ID: `generate_orthophoto-1` (`dags/make_real_orthophoto.py`)
+- 실행 방식: Airflow REST API로 `POST /api/v1/dags/{dag_id}/dagRuns`
+- 목적: 입력 영상으로 정사영상, DEM, 포인트 클라우드 등을 생성하고 백엔드에 상태/결과를 알림
+
+## 요청 파라미터 (`dag_run.conf`)
+| 파라미터 | 타입 | 필수 | 설명 |
+| --- | --- | --- | --- |
+| `input_images` | `string[]` | Y | Metashape가 읽을 이미지들의 절대경로 목록. DAG 내 BashOperator가 콤마로 join하여 스크립트에 전달 |
+| `image_folder` | `string` | Y | 입력 이미지가 위치한 디렉터리. `metadata.txt` 등 보조 파일 탐색에 사용 |
+| `output_path` | `string` | Y | 결과물이 생성되는 절대경로 (`.outputs/true-ortho/<task>` 등). 각 단계 스크립트가 공통으로 사용 |
+| `process_mode` | `"Preview" \| "Normal" \| "High"` | Y | 정합/깊이맵 해상도 제어. 유효 값 외 입력 시 내부적으로 `Normal` 처리 |
+| `output_tiff_name` | `string` | Y | 최종 TIFF 파일명의 prefix. GSD(cm)를 후미에 붙여 `<name>_<gsd>cm.tif`로 export |
+| `reai_task_id` | `string` | Y | Ortho 백엔드 작업 식별자. 포인트클라우드·알림 API 호출 시 사용 |
+| `input_epsg` | `string` | N (default `4326`) | 프로젝트 및 export 시 설정되는 좌표계 (예: `5186`) |
+| `output_epsg` | `string` | N (default `5186`) | 현재 스크립트에서는 미사용이지만 향후 export 좌표계 제어용 예약 필드 |
+
+Airflow가 자동으로 채우는 `dag_run.run_id`는 각 스텝에서 상태 API 호출 시 사용되므로 고유해야 합니다.
+
+## 실행 예시
+```bash
+curl -X POST \
+  http://<airflow-host>:8080/api/v1/dags/generate_orthophoto-1/dagRuns \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Basic <base64(user:pass)>' \
+  -d '{
+    "dag_run_id": "real-ortho-20240601-001",
+    "conf": {
+      "input_images": [
+        "/opt/data/jobs/123/images/IMG_0001.JPG",
+        "/opt/data/jobs/123/images/IMG_0002.JPG"
+      ],
+      "image_folder": "/opt/data/jobs/123/images",
+      "output_path": "/opt/airflow/.outputs/true-ortho/123",
+      "process_mode": "Normal",
+      "output_tiff_name": "Task123_ortho",
+      "reai_task_id": "123",
+      "input_epsg": "5186",
+      "output_epsg": "5186"
+    }
+  }'
+```
+- `dag_run_id`는 중복되면 안 되며, 재시도 시 새 ID를 부여해야 합니다.
+- API 인증 방식은 Airflow 설정에 맞춰 Basic, JWT, 또는 Kerberos 등을 사용합니다.
+
+## 백엔드 연동 API 흐름
+모든 백엔드 호출은 `BACKEND_URL_ORTHO` 환경변수(기본값 `http://localhost:3033`)를 베이스 URL로 사용합니다.
+
+1. **작업 상태 업데이트** (`common_utils.chnage_task_status_in_ortho`)
+   - Endpoint: `PATCH /tasks/dags/{run_id}/status`
+   - 호출 시점: `align_photos` 시작 시 `"Running"` 세팅, 각 스텝 실패/최종 성공 시 `"Fail"`/`"Success"` 업데이트 (`on_bash_fail`, `export_orthomosaic`).
+2. **CZML 생성 요청** (`export_align_photos`)
+   - Endpoint: `POST /tasks/czml`
+   - Payload: `{ "output_path": "<output_path>" }`
+   - 역할: 정합 결과(reference 파일)로 3D 뷰어용 CZML 데이터 생성.
+3. **포인트 클라우드 후처리** (`build_point_cloud`)
+   - Endpoint: `GET /tasks/{reai_task_id}/point_cloud`
+   - 역할: `point_cloud.zip` 생성 후 백엔드가 데이터 업로드/동기화할 수 있도록 알림.
+4. **결과 알림** (`common_utils.notify_result_in_ortho`, `export_orthomosaic`)
+   - Endpoint: `POST /notifications`
+   - Payload: `{ "comment": "...", "task_id": "<reai_task_id>" }`
+   - 성공 시 “정사영상 생성에 성공했습니다.”, 실패 시 “실패했습니다.” 메시지 전송.
+
+위 외에도 각 단계는 `/tmp/<task_id>.pid`를 이용해 PID 관리, `status.json`에 진행률 기록 등 내부 메타데이터를 남깁니다. 백엔드가 해당 파일을 읽어 UI에 진척도를 표시하도록 구축되어 있다면 `output_path/status.json`을 주기적으로 읽어 사용할 수 있습니다.
+
+## 트러블슈팅 메모
+- 파라미터 누락 시 BashOperator에서 `KeyError`가 발생하므로 API 호출 전에 필드 유무 검증을 권장합니다.
+- `input_images` 경로는 Airflow/Metashape가 접근 가능한 로컬 경로여야 하며, 원격 스토리지 URL은 지원되지 않습니다.
+- `BACKEND_URL_ORTHO`가 설정되지 않으면 로컬(`http://localhost:3033`)을 호출하므로, 운영 환경에서는 적절한 URL을 환경 변수로 주입하세요.

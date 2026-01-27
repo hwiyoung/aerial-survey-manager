@@ -27,7 +27,8 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_routes={
-        "app.workers.tasks.process_orthophoto_odm": {"queue": "odm"},
+        "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
+        "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
         "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
     },
 )

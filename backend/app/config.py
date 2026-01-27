@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     EXTERNAL_ENGINE_URL: str = ""
     EXTERNAL_ENGINE_API_KEY: str = ""
     ODM_DOCKER_IMAGE: str = "opendronemap/odm:latest"
+    METASHAPE_LICENSE_KEY: str = ""
     
     # Upload / Data
     TUS_ENDPOINT: str = "http://localhost:1080/files/"

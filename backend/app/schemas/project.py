@@ -104,11 +104,14 @@ class EOData(BaseModel):
 class EOConfig(BaseModel):
     """EO file parsing configuration."""
     delimiter: str = ","
-    has_header: bool = True
+    has_header: bool = Field(default=True, alias="hasHeader")
     crs: str = "EPSG:4326"
     columns: dict = Field(
-        default={"id": 0, "x": 1, "y": 2, "z": 3, "omega": 4, "phi": 5, "kappa": 6}
+        default={"image_name": 0, "x": 1, "y": 2, "z": 3, "omega": 4, "phi": 5, "kappa": 6}
     )
+
+    class Config:
+        populate_by_name = True
 
 
 class EOUploadResponse(BaseModel):
@@ -145,7 +148,7 @@ class CameraModelResponse(CameraModelBase):
 # --- Processing Job Schemas ---
 class ProcessingOptions(BaseModel):
     """Processing options schema."""
-    engine: str = "odm"  # odm, external
+    engine: str = "odm"  # odm, metashape, external
     gsd: float = 5.0  # cm/pixel
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"

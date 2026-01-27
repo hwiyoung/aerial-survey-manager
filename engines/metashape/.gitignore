@@ -1,0 +1,9 @@
+/ortho-input
+/ortho-output
+/logs
+*.pyc
+*.pid
+airflow.cfg
+airflow.db
+/metashape_installer
+.env

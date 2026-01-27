@@ -39,7 +39,9 @@ export function useProcessingProgress(projectId) {
             ws.onopen = () => {
                 console.log('[WS] Connected to processing status');
                 setIsConnected(true);
-                setStatus('processing');
+                // Status should NOT be set to 'processing' here. 
+                // It should be determined by actual status messages from the backend
+                // or remain 'connecting' until the first message arrives.
 
                 // Start ping interval to keep connection alive
                 pingIntervalRef.current = setInterval(() => {

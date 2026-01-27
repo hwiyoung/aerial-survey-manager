@@ -548,7 +548,38 @@ function ProcessingSidebar({ width, project, onCancel, onStartProcessing, active
 
         {/* Processing Parameters */}
         <div className="space-y-3">
-          <h4 className="text-sm font-bold text-slate-700 border-b pb-2">2. 처리 파라미터</h4>
+          <h4 className="text-sm font-bold text-slate-700 border-b pb-2">2. 처리 엔진 및 파라미터</h4>
+
+          <div className="space-y-2">
+            <label className="block text-sm text-slate-600 font-medium">처리 엔진 (Engine)</label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => setOptions(prev => ({ ...prev, engine: 'odm' }))}
+                className={`flex flex-col items-center gap-1.5 py-2.5 rounded-lg border-2 transition-all ${options.engine === 'odm' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
+              >
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${options.engine === 'odm' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                  <span className="text-[10px] font-bold">ODM</span>
+                </div>
+                <span className="text-[10px] font-bold">오픈소스</span>
+              </button>
+
+              <button
+                onClick={() => setOptions(prev => ({ ...prev, engine: 'metashape' }))}
+                className={`flex flex-col items-center gap-1.5 py-2.5 rounded-lg border-2 transition-all ${options.engine === 'metashape' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
+              >
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${options.engine === 'metashape' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                  <span className="text-[10px] font-bold">MS</span>
+                </div>
+                <span className="text-[10px] font-bold">Metashape</span>
+              </button>
+
+            </div>
+            <p className="text-[10px] text-slate-400">
+              {options.engine === 'odm' && 'OpenDroneMap을 사용하여 서버에서 직접 처리합니다.'}
+              {options.engine === 'metashape' && 'Agisoft Metashape SDK를 사용하여 고품질 정사영상을 생성합니다.'}
+            </p>
+          </div>
+
           <div className="space-y-2">
             <label className="block text-sm text-slate-600">GSD (cm/pixel)</label>
             <input

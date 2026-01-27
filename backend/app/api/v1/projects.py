@@ -1,8 +1,11 @@
 """Project API endpoints."""
+import re
+import logging
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
-import re
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -404,8 +407,19 @@ async def upload_eo_data(
     import json
     try:
         eo_config_data = json.loads(config)
+        # Handle camelCase from frontend if Pydantic alias didn't catch it
+        if "hasHeader" in eo_config_data and "has_header" not in eo_config_data:
+            eo_config_data["has_header"] = eo_config_data["hasHeader"]
+        
+        # Ensure 'image_name' exists in columns if 'id' was sent
+        if "columns" in eo_config_data:
+            cols = eo_config_data["columns"]
+            if "id" in cols and "image_name" not in cols:
+                cols["image_name"] = cols["id"]
+        
         eo_config = EOConfig(**eo_config_data)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"EO Config parse warning: {e}. Using defaults.")
         eo_config = EOConfig()
         
     # Read file content
@@ -418,6 +432,12 @@ async def upload_eo_data(
     elif delimiter == "tab":
         delimiter = "\t"
         
+    # Fetch project
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     print(f"EO Upload: Starting parse with delimiter='{delimiter}', has_header={eo_config.has_header}")  # DEBUG
     print(f"EO Upload: Content first 200 chars: {content[:200]}")  # DEBUG
     try:
@@ -487,111 +507,98 @@ async def upload_eo_data(
     else:
         try:
             # always_xy=True: input is (x, y) [long/east, lat/north], output is (long, lat)
+            from pyproj import Transformer
             transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
         except Exception as e:
-            # If CRS is invalid, we proceed with raw values (or could raise error)
-            print(f"Failed to create transformer for {source_crs}: {e}")
-            pass
+            # If CRS is invalid, we proceed with raw values
+            logger.warning(f"Failed to create transformer for {source_crs}: {e}")
+            transformer = None
 
-    for row in parsed_rows:
-        # 1. Try exact match
-        image = image_map.get(row.image_name)
-        
-        # 2. Try exact match with lowercase (if file system convention differs)
-        if not image:
-             # Find case-insensitive match in full filenames
-             # This is O(N) per row, optimization possible but OK for 1000 images
-             for fname, img_obj in image_map.items():
-                 if fname.lower() == row.image_name.lower():
-                     image = img_obj
-                     break
+    # Prepare EO records
+    eo_objects = {}
+    matched_count = 0
+    errors = []
 
-        # 3. Try stem match (if EO name has no extension)
-        if not image:
-            row_stem = os.path.splitext(row.image_name)[0].lower()
-            image = image_stem_map.get(row_stem)
+    try:
+        for row in parsed_rows:
+            # Matching logic
+            image = image_map.get(row.image_name)
+            if not image:
+                 for fname, img_obj in image_map.items():
+                     if fname.lower() == row.image_name.lower():
+                         image = img_obj
+                         break
+            if not image:
+                row_stem = os.path.splitext(row.image_name)[0].lower()
+                image = image_stem_map.get(row_stem)
 
-        if not image:
-            errors.append(f"Image not found for filename: {row.image_name}")
-            continue
-            
-        x_val = row.x
-        y_val = row.y
-        crs_val = source_crs
-        
-        # Transform keys if needed
-        if transformer:
-            try:
-                # Transform returns (lon, lat) because always_xy=True and target is 4326
-                # row.x (Easting), row.y (Northing) -> lon, lat
-                lon, lat = transformer.transform(row.x, row.y)
-                x_val = lon
-                y_val = lat
-                crs_val = target_crs # Stored as WGS84
-            except Exception as e:
-                errors.append(f"Transform error for {row.image_name}: {e}")
+            if not image:
+                errors.append(f"Image not found for filename: {row.image_name}")
                 continue
-
-        eo = ExteriorOrientation(
-            image_id=image.id,
-            x=x_val,
-            y=y_val,
-            z=row.z,
-            omega=row.omega,
-            phi=row.phi,
-            kappa=row.kappa,
-            crs=crs_val
-        )
-        db.add(eo)
-        
-        # Update image location (Point geometry)
-        # Use WGS84 coordinates (x_val=lon, y_val=lat)
-        image.location = f"SRID=4326;POINT({x_val} {y_val})"
-        
-        matched_count += 1
-        
-    # Update project overall bounds and region if images were matched
-    if matched_count > 0:
-        # Get all image locations for this project
-        from sqlalchemy import select
-        from app.models.project import Image
-        
-        # We need a fresh query to get all updated locations
-        result = await db.execute(
-            select(Image.location)
-            .where(Image.project_id == project_id, Image.location != None)
-        )
-        locations = result.scalars().all()
-        
-        if locations:
-            # Use PostGIS to calculate convex hull for bounds
-            # For simplicity in this async session, we'll use a raw query or manual calc
-            # Manual bounding box for now to be safe with async/SRID
-            lons = []
-            lats = []
-            for loc in locations:
-                # loc is a WKB element or similar, but since we just set it as string, 
-                # let's try to get its components or just re-calculate from matched rows
-                pass
             
-            # Better: Calculate from parsed_rows that were matched
-            matched_lons = [row.x for row in parsed_rows if any(fname.lower() == row.image_name.lower() for fname in image_map.keys())]
-            matched_lats = [row.y for row in parsed_rows if any(fname.lower() == row.image_name.lower() for fname in image_map.keys())]
-            
-            if transformer:
-                # Need to transform them to WGS84 for bounds
-                transformed = [transformer.transform(x, y) for x, y in zip(matched_lons, matched_lats)]
-                matched_lons = [t[0] for t in transformed]
-                matched_lats = [t[1] for t in transformed]
-            
-            if matched_lons and matched_lats:
-                min_lon, max_lon = min(matched_lons), max(matched_lons)
-                min_lat, max_lat = min(matched_lats), max(matched_lats)
+            # Skip if we already processed this image in this file
+            if image.id in eo_objects:
+                continue
                 
-                # Update project bounds (simple rectangle)
+            x_val = row.x
+            y_val = row.y
+            crs_val = source_crs
+            
+            # Transform if needed
+            if transformer:
+                try:
+                    lon, lat = transformer.transform(row.x, row.y)
+                    x_val = lon
+                    y_val = lat
+                    crs_val = target_crs
+                except Exception as e:
+                    errors.append(f"Transform error for {row.image_name}: {e}")
+                    continue
+
+            eo = ExteriorOrientation(
+                image_id=image.id,
+                x=x_val,
+                y=y_val,
+                z=row.z,
+                omega=row.omega,
+                phi=row.phi,
+                kappa=row.kappa,
+                crs=crs_val
+            )
+            eo_objects[image.id] = eo
+            
+            # Update image location (Point geometry)
+            # Use string representation for GeoAlchemy2 to handle easily
+            image.location = f"SRID=4326;POINT({x_val} {y_val})"
+            matched_count += 1
+            
+        if matched_count > 0:
+            # Delete any existing EO for THESE images only
+            # The previous logic was slightly flawed in bulk delete if IDs weren't matched yet
+            await db.execute(
+                delete(ExteriorOrientation).where(ExteriorOrientation.image_id.in_(list(eo_objects.keys())))
+            )
+            
+            # Add all new EO records
+            for eo in eo_objects.values():
+                db.add(eo)
+            
+            # Calculate project bounds from matched coordinates (WGS84)
+            lons = [eo.x for eo in eo_objects.values()]
+            lats = [eo.y for eo in eo_objects.values()]
+            
+            if lons and lats:
+                min_lon, max_lon = min(lons), max(lons)
+                min_lat, max_lat = min(lats), max(lats)
+                
+                # Check for "clumping" or invalid bounds (single point)
+                # If it's a single point, we make a tiny box
+                if min_lon == max_lon: min_lon -= 0.0001; max_lon += 0.0001
+                if min_lat == max_lat: min_lat -= 0.0001; max_lat += 0.0001
+                
                 project.bounds = f"SRID=4326;POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
                 
-                # Auto-assign region if not set
+                # Auto-assign region
                 if not project.region or project.region == "미지정":
                     center_lon = (min_lon + max_lon) / 2
                     center_lat = (min_lat + max_lat) / 2
@@ -599,7 +606,16 @@ async def upload_eo_data(
                     if region:
                         project.region = region
 
-    await db.commit()
+        await db.commit()
+    except Exception as e:
+        import traceback
+        logger.error(f"EO Upload Database Error: {str(e)}")
+        logger.error(traceback.format_exc())
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error during EO save: {str(e)}"
+        )
     
     return EOUploadResponse(
         parsed_count=len(parsed_rows),

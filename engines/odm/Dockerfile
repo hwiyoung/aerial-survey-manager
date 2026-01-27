@@ -27,11 +27,11 @@ ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 
 # Install Python dependencies
-COPY requirements.txt .
+COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY backend/app/ ./app/
 
 # Create necessary directories
 RUN mkdir -p /data/processing

@@ -1,0 +1,52 @@
+# Stage 1: CUDA 기반 베이스 이미지 (GPU 지원)
+FROM nvidia/cuda:12.0.0-base-ubuntu22.04 AS base
+
+# 루트 사용자로 변경하여 필요한 시스템 패키지 설치
+USER root
+RUN apt-get update && \
+    apt-get install -y tzdata && \
+    ln -fs /usr/share/zoneinfo/Asia/Seoul /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3 \
+      python3-pip \
+      curl \
+      wget \
+      libglu1-mesa \
+      libgl1-mesa-glx \
+      gdal-bin \
+      gcc \
+      python3-dev \
+      build-essential \
+      libglib2.0-0 \
+      libsm6 \
+      libxrender1 \
+      libxext6 \
+      libgl1-mesa-glx \
+      libgdal-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# 업그레이드 pip
+RUN pip install --upgrade pip
+
+# 백엔드 공통 의존성 설치 (celery, pydantic-settings 등 포함)
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# 지오스페이셜 및 과학 계산 패키지 설치 (Metashape 스크립트용)
+RUN pip install psycopg2-binary GDAL \
+    redis==4.5.1 geopandas==0.11.1 numpy==1.26.4 \
+    fiona==1.8.21 pyogrio==0.5.1 shapely==1.8.5.post1 \
+    rasterio==1.3.0 
+    
+# Metashape 설치
+RUN wget https://download.agisoft.com/Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311-abi3-linux_x86_64.whl && \
+    pip3 install Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311-abi3-linux_x86_64.whl && \
+    rm -f Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311-abi3-linux_x86_64.whl
+
+# 작업 디렉토리 설정
+WORKDIR /app
+
+# 기본 명령어
+CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "metashape", "--loglevel=info"]

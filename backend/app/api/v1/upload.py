@@ -53,7 +53,7 @@ async def initiate_image_upload(
         upload_status="uploading",
     )
     db.add(image)
-    await db.flush()
+    await db.commit()
     await db.refresh(image)
     
     # The upload_id will be set by tus server via webhook

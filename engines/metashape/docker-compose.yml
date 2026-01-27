@@ -1,0 +1,132 @@
+version: "3"
+
+x-airflow-common: &airflow-common
+  platform: linux/amd64
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    - AIRFLOW__CELERY__BROKER_URL=redis://redis:6379/0
+    - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres/airflow
+    - AIRFLOW__CORE__LOAD_EXAMPLES=false
+    - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ${DEFAULT_PATH}/.uploads:/app/.uploads
+    - ${DEFAULT_PATH}/.outputs:/app/.outputs
+    - ${DEFAULT_PATH}/.inputs:/app/.inputs
+    # - ${WORKING_DIRECTORY}:${WORKING_DIRECTORY}
+  env_file:
+    - .env
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: reai_airflow_postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7.2-bookworm
+    container_name: reai_airflow_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+
+  airflow-init:
+    image: apache/airflow:2.5.0-python3.8
+    container_name: reai_airflow_init
+    <<: *airflow-common
+    command: >
+      bash -c "airflow db init &&
+               airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com"
+
+  airflow-webserver:
+    image: apache/airflow:2.5.0-python3.8
+    container_name: reai_airflow_webserver
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8082:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    image: apache/airflow:2.5.0-python3.8
+    container_name: reai_airflow_scheduler
+    <<: *airflow-common
+    command: ["airflow", "scheduler"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  airflow-worker:
+    image: repo.innopam.kr/reai/metashape-airflow:1.0.2
+    container_name: reai_airflow_worker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '1' ]
+              capabilities: [ gpu ]
+    devices:
+      - "/dev/nvidia-uvm:/dev/nvidia-uvm"
+      - "/dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools"
+      - "/dev/nvidia-modeset:/dev/nvidia-modeset"
+      - "/dev/nvidiactl:/dev/nvidiactl"
+      - "/dev/nvidia1:/dev/nvidia1" # device_ids와 일치하는 GPU 장치
+    mac_address: "02:42:ac:16:00:05"
+    command: >
+      bash -c "rm -f /opt/airflow/airflow-worker.pid && exec airflow celery worker"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CELERY__BROKER_URL=redis://redis:6379/0
+      - AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ${DEFAULT_PATH}/.uploads:/app/.uploads
+      - ${DEFAULT_PATH}/.outputs:/app/.outputs
+      - ${DEFAULT_PATH}/.inputs:/app/.inputs
+      - /var/run/docker.sock:/var/run/docker.sock   # ← 필수
+      - /usr/bin/docker:/usr/bin/docker             # (CLI 필요 시)
+      - true-ortho-volume:/var
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    
+
+volumes:
+  postgres-db-volume:
+  true-ortho-volume:

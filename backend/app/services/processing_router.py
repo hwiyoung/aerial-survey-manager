@@ -3,9 +3,10 @@ import os
 import subprocess
 import asyncio
 import re
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Callable, Awaitable
 from datetime import datetime
 
 import httpx
@@ -13,12 +14,12 @@ import httpx
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger("app.processing.router")
 
 
 class ProcessingEngine(ABC):
     """Abstract base class for processing engines."""
     
-    @abstractmethod
     async def process(
         self,
         project_id: str,
@@ -29,25 +30,13 @@ class ProcessingEngine(ABC):
     ) -> Path:
         """
         Run the processing pipeline.
-        
-        Args:
-            project_id: Project identifier
-            input_dir: Directory containing input images
-            output_dir: Directory for output files
-            options: Processing options (gsd, crs, format, etc.)
-            progress_callback: Callback function for progress updates
-        
-        Returns:
-            Path to the generated orthophoto
         """
         pass
     
-    @abstractmethod
     async def get_status(self, job_id: str) -> dict:
         """Get the status of a processing job."""
         pass
     
-    @abstractmethod
     async def cancel(self, job_id: str) -> bool:
         """Cancel a processing job."""
         pass
@@ -367,20 +356,132 @@ class ExternalAPIEngine(ProcessingEngine):
                 return False
 
 
+class MetashapeEngine(ProcessingEngine):
+    """
+    Engine using Agisoft Metashape Python SDK.
+    Runs locally on worker-metashape.
+    """
+    async def process(
+        self,
+        project_id: str,
+        input_dir: Path,
+        output_dir: Path,
+        options: dict,
+        progress_callback: Optional[Callable[[float, str], Awaitable[None]]] = None,
+    ) -> Path:
+        import subprocess
+        import sys
+        import os
+        import json
+        
+        if progress_callback:
+            await progress_callback(0, "Metashape 엔진 초기화 및 라이선스 활성화 중...")
+            
+        # 1. 사이클 시작: 라이선스 활성화
+        script_base = Path("/app/engines/metashape/dags/metashape")
+        activate_script = script_base / "activate.py"
+        deactivate_script = script_base / "deactivate.py"
+        
+        try:
+            if activate_script.exists():
+                logger.info("🔑 사이클 시작: Metashape 라이선스 활성화를 시도합니다.")
+                act_result = subprocess.run([sys.executable, str(activate_script)], capture_output=True, text=True)
+                if act_result.stdout:
+                    logger.info(f"Activation stdout: {act_result.stdout.strip()}")
+                if act_result.stderr:
+                    logger.warning(f"Activation stderr: {act_result.stderr.strip()}")
+
+            # 2. 본 작업 수행 (기존 로직)
+            image_files = [str(f) for f in input_dir.glob("*") if f.suffix.lower() in [".jpg", ".jpeg", ".tif", ".tiff"]]
+            if not image_files:
+                raise RuntimeError("처리할 이미지가 없습니다.")
+                
+            steps = [
+                ("align_photos.py", "이미지 정렬 (Align Photos)"),
+                ("build_depth_maps.py", "깊이 맵 생성 (Build Depth Maps)"),
+                ("build_point_cloud.py", "포인트 클라우드 생성 (Build Point Cloud)"),
+                ("build_dem.py", "DEM 생성 (Build DEM)"),
+                ("build_orthomosaic.py", "정사모자이크 생성 (Build Orthomosaic)"),
+                ("export_orthomosaic.py", "결과물 내보내기 (Export Orthomosaic)"),
+            ]
+            
+            process_mode = options.get("gsd", "Normal")
+            if process_mode not in ["Preview", "Normal", "High"]:
+                process_mode = "Normal"
+            output_epsg = options.get("output_crs", "4326")
+            
+            for i, (script_name, message) in enumerate(steps):
+                if progress_callback:
+                    step_progress = (i / len(steps)) * 100
+                    await progress_callback(step_progress, message)
+                    
+                script_path = script_base / script_name
+                if not script_path.exists():
+                    logger.error(f"Metashape script not found: {script_path}")
+                    raise RuntimeError(f"Metashape 필수 스크립트를 찾을 수 없습니다: {script_name}")
+                    
+                cmd = [
+                    sys.executable, str(script_path),
+                    "--input_images", ",".join(image_files),
+                    "--image_folder", str(input_dir),
+                    "--output_path", str(output_dir),
+                    "--run_id", project_id,
+                    "--process_mode", process_mode,
+                    "--output_tiff_name", "result.tif",
+                    "--output_epsg", output_epsg,
+                    "--reai_task_id", project_id
+                ]
+                
+                logger.info(f"🚀 [DEBUG_v5] Running Metashape step: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    logger.error(f"Metashape step {script_name} failed: {result.stderr}")
+                    raise RuntimeError(f"Metashape 처리 실패 ({script_name}): {result.stderr}")
+                    
+            # Result check
+            result_tif = output_dir / "result.tif"
+            if not result_tif.exists():
+                logger.warning(f"Result TIF not found at {result_tif}, searching in {output_dir}")
+                tifs = list(output_dir.glob("*.tif"))
+                if tifs:
+                    result_tif = tifs[0]
+                else:
+                    raise RuntimeError("최종 정사영상 결과물을 찾을 수 없습니다.")
+                    
+            if progress_callback:
+                await progress_callback(100, "Metashape 처리 완료")
+                
+            return result_tif
+
+        except Exception as e:
+            logger.error(f"Metashape processing error: {e}")
+            raise e
+
+    async def get_status(self, job_id: str) -> dict:
+        """Get the status of a processing job."""
+        return {"status": "running"}
+        
+    async def cancel(self, job_id: str) -> bool:
+        """Cancel a processing job."""
+        return False
+
+
 class ProcessingRouter:
     """Router to select and use appropriate processing engine."""
     
     def __init__(self):
-        self.engines = {
+        self._engines = {
             "odm": ODMEngine(),
             "external": ExternalAPIEngine(),
+            "metashape": MetashapeEngine(),
         }
     
     def get_engine(self, engine_name: str) -> ProcessingEngine:
         """Get processing engine by name."""
-        if engine_name not in self.engines:
+        if engine_name not in self._engines:
             raise ValueError(f"Unknown engine: {engine_name}")
-        return self.engines[engine_name]
+        return self._engines[engine_name]
     
     async def process(
         self,

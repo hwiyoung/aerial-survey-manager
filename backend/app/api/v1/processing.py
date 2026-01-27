@@ -113,10 +113,16 @@ async def start_processing(
     project.status = "queued"
     project.progress = 0
     
-    # Submit to Celery (will be implemented in workers/tasks.py)
+    # Submit to Celery
     # The queue is selected based on the engine
     from app.workers.tasks import process_orthophoto
-    queue_name = "odm" if options.engine == "odm" else "external"
+    
+    if options.engine == "metashape":
+        queue_name = "metashape"
+    elif options.engine == "odm":
+        queue_name = "odm"
+    else:
+        queue_name = "external"
     
     task = process_orthophoto.apply_async(
         args=[str(job.id), str(project_id), options.model_dump()],
