@@ -367,6 +367,7 @@ class ApiClient {
                 project_ids: projectIds,
                 format: options.format || 'GeoTiff',
                 crs: options.crs || 'EPSG:5186',
+                gsd: options.gsd ? parseFloat(options.gsd) : null,
                 custom_filename: options.custom_filename || null,
             }),
         });

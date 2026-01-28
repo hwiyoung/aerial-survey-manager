@@ -342,6 +342,7 @@ class BatchExportRequest(BaseModel):
     project_ids: List[UUID]
     format: str = "GeoTiff"
     crs: str = "EPSG:5186"
+    gsd: float | None = None  # Planned GSD in cm/pixel
     custom_filename: str | None = None  # Optional custom filename for ZIP
 
 
@@ -406,6 +407,7 @@ async def batch_download(
         
         # Check if it's a MinIO path or local path
         storage = StorageService()
+        source_path = None
         if storage.object_exists(ortho_path):
             # Download from MinIO to temp file
             import tempfile as tf
@@ -420,15 +422,93 @@ async def batch_download(
                 os.unlink(temp_file.name)
                 continue  # Skip corrupted download
             
-            file_path = temp_file.name
+            source_path = temp_file.name
         elif os.path.exists(ortho_path):
-            file_path = ortho_path
+            source_path = ortho_path
         else:
             continue  # Skip if file doesn't exist anywhere
         
+        # --- Handle Re-projection if requested (Fixing the 3857 issue) ---
+        target_crs = request.crs
+        final_file_path = source_path
+        
+        try:
+            import subprocess
+            import json
+            import re
+            import sys
+            
+            # Using gdalinfo via subprocess to avoid osgeo dependency
+            print(f"DEBUG: Processing re-projection for project {project.id}", flush=True)
+            info_result = subprocess.run(["gdalinfo", "-json", source_path], capture_output=True, text=True)
+            
+            source_epsg = "Unknown"
+            if info_result.returncode == 0:
+                info = json.loads(info_result.stdout)
+                # Try multiple ways to get WKT
+                source_wkt = info.get('coordinateSystem', {}).get('wkt', '') or info.get('stac', {}).get('proj:wkt2', '')
+                
+                # Check EPSG
+                epsg_match = re.search(r'ID\["EPSG",(\d+)\]', source_wkt)
+                source_epsg = f"EPSG:{epsg_match.group(1)}" if epsg_match else "Unknown"
+                print(f"DEBUG: Detected Source EPSG: {source_epsg}", flush=True)
+            else:
+                print(f"ERROR: gdalinfo failed for {source_path}: {info_result.stderr}", flush=True)
+
+            target_res = float(request.gsd) / 100.0 if request.gsd else None
+            
+            # Re-project if CRS is different OR GSD is specified
+            needs_warp = (target_crs != source_epsg) or (target_res is not None)
+            
+            if needs_warp:
+                print(f"DEBUG: Warping starting: {source_path} ({source_epsg}) -> {target_crs} (GSD: {request.gsd}cm)", flush=True)
+                warped_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{target_crs.replace(":", "_")}.tif')
+                warped_file.close()
+                
+                warp_cmd = [
+                    "gdalwarp",
+                    "-t_srs", target_crs,
+                    "-r", "bilinear",
+                    "-overwrite",
+                    "-co", "COMPRESS=LZW",
+                ]
+                
+                if target_res:
+                    # If target is WGS84 (EPSG:4326), GSD in meters must be converted to degrees
+                    # 1 degree is roughly 111,320m. This is an approximation.
+                    if target_crs == "EPSG:4326":
+                        deg_res = target_res / 111320.0
+                        print(f"DEBUG: Converting GSD {target_res}m to {deg_res} degrees for EPSG:4326", flush=True)
+                        warp_cmd.extend(["-tr", f"{deg_res:.12f}", f"{deg_res:.12f}"])
+                    else:
+                        warp_cmd.extend(["-tr", str(target_res), str(target_res)])
+                    
+                warp_cmd.extend([source_path, warped_file.name])
+                
+                print(f"DEBUG: Executing command: {' '.join(warp_cmd)}", flush=True)
+                result = subprocess.run(warp_cmd, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    final_file_path = warped_file.name
+                    print(f"DEBUG: Successfully warped to {warped_file.name}", flush=True)
+                    # If source was a temp file, delete it
+                    if source_path.startswith(tempfile.gettempdir()):
+                        try: os.unlink(source_path)
+                        except: pass
+                else:
+                    print(f"ERROR: gdalwarp failed: {result.stderr}", flush=True)
+            else:
+                print(f"DEBUG: Skipping warp (Source EPSG '{source_epsg}' == Target '{target_crs}' and no GSD change)", flush=True)
+
+        except Exception as warp_err:
+            print(f"WARNING: Re-projection exception: {warp_err}", flush=True)
+            import traceback
+            traceback.print_exc()
+            # Fallback to original file
+        
         projects_with_files.append({
             "project": project,
-            "file_path": file_path,
+            "file_path": final_file_path,
         })
 
     

@@ -52,3 +52,4 @@ data/
 pgdata/
 redis_data/
 minio_data/
+docs/ADMIN_GUIDE.md

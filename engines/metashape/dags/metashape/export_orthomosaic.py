@@ -12,11 +12,11 @@ def export_orthomosaic(output_path, run_id,output_tiff_name,reai_task_id, input_
         progress_callback(value, "Build Orthomosaic", output_path)
 
 
-    input_raster_dem = os.path.join(output_path, "orthophoto.tif")
-    output_cog = os.path.join(output_path, "orthophoto_cog.tif")
+    input_raster_dem = os.path.join(output_path, "result.tif")
+    output_cog = os.path.join(output_path, "result_cog.tif")
 
     try:
-        thumbnail_name = "orthophoto.tif".replace('.tif', '_thumbnail.png')
+        thumbnail_name = "result.tif".replace('.tif', '_thumbnail.png')
         thumbnail_path = os.path.join(output_path, 'outputs', thumbnail_name)
         ds = gdal.Open(input_raster_dem)
         if ds is None:

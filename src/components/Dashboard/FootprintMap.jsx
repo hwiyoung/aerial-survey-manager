@@ -308,14 +308,14 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
     const [loading, setLoading] = useState(false);
 
     const LAYER_COLORS = {
+        '수도권북부 권역': '#059669', // Emerald 600
+        '수도권남부 권역': '#0284c7', // Sky 600
         '강원 권역': '#2563eb',      // Blue 600
         '충청 권역': '#d97706',      // Amber 600
         '전라동부 권역': '#7c3aed',   // Violet 600
         '전라서부 권역': '#9333ea',   // Purple 600
         '경북 권역': '#dc2626',      // Red 600
         '경남 권역': '#e11d48',      // Rose 600
-        '수도권남부 권역': '#0284c7', // Sky 600
-        '수도권북부 권역': '#059669', // Emerald 600
         '제주 권역': '#db2777',      // Pink 600
         'Unknown': '#64748b'
     };
@@ -346,21 +346,21 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
     if (!visible || !geojsonData) return null;
 
     const regionStyle = (feature) => {
-        const isActive = activeRegion === feature.properties.name || activeRegion === feature.id;
+        const isActive = activeRegion === feature.properties.layer || activeRegion === feature.id;
         const color = getLayerColor(feature.properties.layer);
 
         return {
             fillColor: color,
-            fillOpacity: isActive ? 0.1 : 0.03, // Further reduced from 0.05
+            fillOpacity: isActive ? 0.2 : 0.08, // Increased for better interactivity
             color: color,
-            weight: isActive ? 2 : 0.5, // Thinner lines
-            opacity: 0.2,
-            interactive: false, // This is key for performance and avoiding click blockage
+            weight: isActive ? 2 : 1, // Minimum weight of 1 for better visibility
+            opacity: 0.3,
+            interactive: true,
         };
     };
 
     const onEachFeature = (feature, layer) => {
-        const label = feature.properties.name || '알 수 없는 구역';
+        const label = feature.properties.layer || '알 수 없는 구역';
 
         // Tooltip can still work if needed, but let's keep it simple
         layer.bindTooltip(`${label}`, {
@@ -371,11 +371,23 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
         });
 
         layer.on({
-            mouseover: (e) => {
-                // Manually trigger style change on hover even if interactive is false? 
-                // Wait, if interactive is false, mouse events won't fire.
-                // Let's keep interactive: true but make sure it doesn't block.
+            click: (e) => {
+                L.DomEvent.stopPropagation(e);
+                if (onRegionClick) {
+                    onRegionClick(feature.id, feature.properties.layer);
+                }
             },
+            mouseover: (e) => {
+                const layer = e.target;
+                layer.setStyle({
+                    fillOpacity: 0.2,
+                    weight: 2
+                });
+            },
+            mouseout: (e) => {
+                const layer = e.target;
+                layer.setStyle(regionStyle(feature));
+            }
         });
     };
 
@@ -384,7 +396,7 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
             data={geojsonData}
             style={regionStyle}
             onEachFeature={onEachFeature}
-            interactive={false} // Global override to ensure zero click interference
+            interactive={true} // Enabled for regional interactivity
         />
     );
 }

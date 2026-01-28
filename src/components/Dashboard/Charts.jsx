@@ -73,13 +73,16 @@ export function DistributionPieChart({ data, title = '지역별 분포', height 
                             <Cell key={`cell-${index}`} fill={COLORS.multi[index % COLORS.multi.length]} />
                         ))}
                     </Pie>
-                    <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
+                    <Tooltip formatter={(value) => value != null && typeof value === 'number' ? `${value.toFixed(1)}%` : '0%'} />
                     <Legend
                         layout="vertical"
                         align="right"
                         verticalAlign="middle"
                         wrapperStyle={{ fontSize: '11px', fontFamily: 'inherit', paddingLeft: '10px' }}
-                        formatter={(value, entry) => `${value} (${entry.payload.value?.toFixed(1) || 0}%)`}
+                        formatter={(value, entry) => {
+                            const val = entry?.payload?.value;
+                            return `${value} (${typeof val === 'number' ? val.toFixed(1) : 0}%)`;
+                        }}
                     />
                 </PieChart>
             </ResponsiveContainer>
@@ -128,11 +131,11 @@ export function ProgressDonutChart({ completed, total, title = '처리 현황', 
             <div className="flex justify-center gap-6 mt-2 text-xs">
                 <div className="flex items-center gap-1.5">
                     <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-                    <span className="text-slate-600">완료 {completed.toLocaleString()}건</span>
+                    <span className="text-slate-600">완료 {(completed || 0).toLocaleString()}건</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                     <div className="w-2.5 h-2.5 rounded-full bg-slate-200"></div>
-                    <span className="text-slate-600">미완료 {remaining.toLocaleString()}건</span>
+                    <span className="text-slate-600">미완료 {(remaining || 0).toLocaleString()}건</span>
                 </div>
             </div>
         </div>

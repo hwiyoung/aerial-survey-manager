@@ -42,7 +42,7 @@ def build_orthomosaic( output_path, run_id, input_epsg="4326", ):
 
         
 
-        chunk.exportRaster(path=os.path.join(output_path, "orthophoto.tif"),source_data=Metashape.DataSource.OrthomosaicData, projection=proj,image_compression=compression)
+        chunk.exportRaster(path=os.path.join(output_path, "result.tif"),source_data=Metashape.DataSource.OrthomosaicData, projection=proj,image_compression=compression)
 
 
         progress_callback_wrapper(99.9)

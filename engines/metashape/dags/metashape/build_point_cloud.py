@@ -34,19 +34,20 @@ def build_point_cloud( output_path, run_id,reai_task_id):
         print("\n✅ Point cloud built successfully.")
 
 
-        # BACKEND_URL 가져오기
-        backend_url_ortho = os.getenv("BACKEND_URL_ORTHO","http:/localhost:3033")
-        # API 호출 추가
-        api_url = f"{backend_url_ortho}/tasks/{reai_task_id}/point_cloud"
-        response = requests.get(api_url)
+        try:
+            # BACKEND_URL 가져오기
+            backend_url_ortho = os.getenv("BACKEND_URL_ORTHO","http://api:8000/api/v1/processing")
+            # API 호출 추가
+            api_url = f"{backend_url_ortho}/tasks/{reai_task_id}/point_cloud"
+            response = requests.get(api_url, timeout=5)
 
-        if response.status_code == 200:
-            progress_callback_wrapper(100)        
-            print("API call successful")
-        else:
-            change_task_status_in_ortho(run_id,"Fail")
-            progress_callback_wrapper(1000)
-            print("API call failed with status code:", response.status_code)
+            if response.status_code == 200:
+                progress_callback_wrapper(100)        
+                print("API call successful")
+            else:
+                print(f"⚠️ API call returned status code: {response.status_code} (Endpoint might be missing)")
+        except Exception as api_e:
+            print(f"⚠️ API callback failed (non-critical): {api_e}")
     except Exception as e:
         change_task_status_in_ortho(run_id,"Fail")
         progress_callback_wrapper(1000)

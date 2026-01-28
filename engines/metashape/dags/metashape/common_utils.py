@@ -138,6 +138,23 @@ def activate_metashape_license():
 
     print(f"🔑 Metashape 라이선스 활성화를 시도합니다... (Key: {license_key[:5]}***)")
     print(f"📣 Machine ID Check: {Metashape.License().machine_id if hasattr(Metashape.License(), 'machine_id') else 'N/A'}")
+    
+    # Check for existing license files
+    possible_paths = [
+        "/var/lib/Agisoft/Metashape",
+        "/root/.local/share/Agisoft/Metashape"
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            print(f"📂 Checking path: {p}")
+            try:
+                files = os.listdir(p)
+                print(f"   Files: {files}")
+            except Exception as e:
+                print(f"   Error listing files: {e}")
+        else:
+            print(f"📂 Path does not exist: {p}")
+            
     try:
         # 기존에 엉킨 세션이 있을 수 있으므로 비활성화를 먼저 시도시도 (실패해도 무방)
         try:
