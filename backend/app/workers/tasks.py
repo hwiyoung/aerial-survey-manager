@@ -30,6 +30,7 @@ celery_app.conf.update(
         "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
         "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
         "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
+        "app.workers.tasks.generate_thumbnail": {"queue": "odm"},  # lightweight task, use ODM queue
     },
 )
 

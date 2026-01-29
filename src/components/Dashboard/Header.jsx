@@ -2,7 +2,7 @@ import React from 'react';
 import { Map, Bell, User, LogOut } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
-export default function Header() {
+export default function Header({ onLogoClick }) {
     const { user, logout } = useAuth();
 
     return (
@@ -10,9 +10,14 @@ export default function Header() {
             <div
                 className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => {
-                    // URL 파라미터 초기화하여 깨끗한 상태로 메인 페이지 복귀
-                    window.history.pushState({}, '', window.location.pathname);
-                    window.location.reload();
+                    if (onLogoClick) {
+                        // 상태 기반 네비게이션으로 대시보드 복귀
+                        onLogoClick();
+                    } else {
+                        // 폴백: URL 파라미터 초기화하여 깨끗한 상태로 메인 페이지 복귀
+                        window.history.pushState({}, '', window.location.pathname);
+                        window.location.reload();
+                    }
                 }}
                 title="메인 페이지로 이동"
             >

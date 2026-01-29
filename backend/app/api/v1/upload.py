@@ -45,17 +45,34 @@ async def initiate_image_upload(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-    
-    # Create image record
-    image = Image(
-        project_id=project_id,
-        filename=filename,
-        file_size=file_size,
-        upload_status="uploading",
+
+    # Check if image with same filename already exists (prevent duplicates)
+    existing_result = await db.execute(
+        select(Image).where(
+            Image.project_id == project_id,
+            Image.filename == filename,
+        )
     )
-    db.add(image)
-    await db.commit()
-    await db.refresh(image)
+    existing_image = existing_result.scalar_one_or_none()
+
+    if existing_image:
+        # Reset status to uploading for retry/re-upload
+        existing_image.upload_status = "uploading"
+        existing_image.file_size = file_size
+        await db.commit()
+        await db.refresh(existing_image)
+        image = existing_image
+    else:
+        # Create new image record
+        image = Image(
+            project_id=project_id,
+            filename=filename,
+            file_size=file_size,
+            upload_status="uploading",
+        )
+        db.add(image)
+        await db.commit()
+        await db.refresh(image)
     
     # The upload_id will be set by tus server via webhook
     # For now, we generate a placeholder that maps to the image

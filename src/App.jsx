@@ -205,12 +205,8 @@ function Dashboard() {
 
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
 
-  // Auto-select first project if none selected
-  useEffect(() => {
-    if (!selectedProjectId && projects.length > 0) {
-      setSelectedProjectId(projects[0].id);
-    }
-  }, [projects, selectedProjectId]);
+  // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
+  // 로고 클릭 시 전체 대시보드를 보여주기 위해 자동 선택 비활성화
   const [projectImages, setProjectImages] = useState([]); // Store fetched images
   const [activeUploads, setActiveUploads] = useState([]); // Tracking upload progress
   const [uploaderController, setUploaderController] = useState(null);
@@ -312,6 +308,22 @@ function Dashboard() {
       }
     }
   }, [initialViewMode, initialProjectId, projects, projectImages, processingProject]);
+
+  // 브라우저 뒤로가기/앞으로가기 처리
+  useEffect(() => {
+    const handlePopState = (event) => {
+      // 뒤로가기 시 대시보드로 복귀
+      setViewMode('dashboard');
+      setProcessingProject(null);
+      setSelectedProjectId(null);
+      setShowInspector(false);
+      setHighlightProjectId(null);
+      refreshProjects();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [refreshProjects]);
 
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
@@ -522,8 +534,18 @@ function Dashboard() {
           },
           onAllComplete: async () => {
             console.log('All uploads finished');
-            // We don't alert here anymore to avoid disruption, 
+            // We don't alert here anymore to avoid disruption,
             // the UI will show "completed" state.
+
+            // 썸네일 생성을 위해 지연 후 이미지 목록 새로고침 (3초 후, 8초 후)
+            // 썸네일 생성은 Celery 백그라운드 작업으로 처리되므로 약간의 지연 필요
+            const refreshThumbnails = async (delay) => {
+              await new Promise(resolve => setTimeout(resolve, delay));
+              setImageRefreshKey(prev => prev + 1);
+              console.log(`Thumbnail refresh triggered after ${delay}ms`);
+            };
+            refreshThumbnails(3000);  // 3초 후 첫 번째 새로고침
+            refreshThumbnails(8000);  // 8초 후 두 번째 새로고침
           },
           onError: (idx, name, err) => {
             console.error(`Failed ${name}`, err);
@@ -551,6 +573,8 @@ function Dashboard() {
 
       setProcessingProject(projectForProcessing);
       setViewMode('processing');
+      // 브라우저 히스토리에 추가 (뒤로가기 지원)
+      window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
 
       // Ensure project list is refreshed with new data including EO
       await refreshProjects();
@@ -579,6 +603,9 @@ function Dashboard() {
       // Start processing via API
       const result = await api.startProcessing(projectId, processingOptions);
       console.log('Processing started:', result);
+
+      // 업로드 패널 자동 숨김 (처리 시작 시)
+      setActiveUploads([]);
 
       // Stay on processing page to show progress
       // The ProcessingSidebar will show progress via WebSocket connection
@@ -639,7 +666,19 @@ function Dashboard() {
           animation: slideInFromRight 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
         }
       `}</style>
-      <Header />
+      <Header onLogoClick={() => {
+        // 상태 기반 네비게이션으로 대시보드 복귀
+        setViewMode('dashboard');
+        setProcessingProject(null);
+        setSelectedProjectId(null);
+        setShowInspector(false);
+        setHighlightProjectId(null);
+        setActiveGroupId(null);
+        setSearchTerm('');
+        setRegionFilter('ALL');
+        refreshProjects();
+        window.history.pushState({}, '', window.location.pathname);
+      }} />
       <div className="flex flex-1 overflow-hidden relative">
         {viewMode === 'processing' ? (
           <ProcessingSidebar
@@ -648,10 +687,19 @@ function Dashboard() {
             activeUploads={activeUploads}
             onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); refreshProjects(); }}
             onStartProcessing={handleStartProcessing}
-            onComplete={() => {
-              refreshProjects();
-              // Force update selected project images
+            onComplete={async () => {
+              console.log('onComplete called - refreshing data'); // 디버그용
+              // 프로젝트 목록 갱신
+              await refreshProjects();
               setImageRefreshKey(prev => prev + 1);
+
+              // processingProject 상태를 완료로 직접 설정
+              if (processingProject?.id) {
+                setProcessingProject(prev => prev ? ({
+                  ...prev,
+                  status: '완료'
+                }) : null);
+              }
             }}
           />
         ) : (
@@ -737,6 +785,8 @@ function Dashboard() {
                 });
                 setSelectedProjectId(projectId);
                 setViewMode('processing');
+                // 브라우저 히스토리에 추가 (뒤로가기 지원)
+                window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${projectId}`);
               }
             }}
             onOpenExport={(projectId) => {
@@ -775,7 +825,16 @@ function Dashboard() {
                 onRegionClick={(regionId, regionName) => {
                   setRegionFilter(prev => prev === regionName ? 'ALL' : regionName);
                 }}
-                onDeselectProject={() => { setSelectedProjectId(null); setShowInspector(false); }}
+                onDeselectProject={() => {
+                  console.log('onDeselectProject called'); // 디버그용
+                  setSelectedProjectId(null);
+                  setShowInspector(false);
+                  setHighlightProjectId(null);
+                  // processingProject도 null로 설정 (대시보드 모드에서 완전 초기화)
+                  if (viewMode === 'dashboard') {
+                    setProcessingProject(null);
+                  }
+                }}
                 highlightProjectId={highlightProjectId}
                 onHighlightEnd={() => setHighlightProjectId(null)}
                 showInspector={showInspector}

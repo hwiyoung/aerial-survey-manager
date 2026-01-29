@@ -87,6 +87,7 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                 ) : (
                     <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
                 )}
+                <span className="text-[10px] text-slate-400 flex items-center gap-0.5 shrink-0"><FileImage size={10} /> {project.imageCount || project.image_count || 0}</span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
                 <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                     <button onClick={handleProcessing} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="처리 시작"><Play size={14} /></button>

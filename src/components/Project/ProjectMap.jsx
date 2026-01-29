@@ -99,11 +99,28 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                                 </div>
                             </div>
                         </Tooltip>
-                        <Popup minWidth={260} maxWidth={320}>
+                        <Popup minWidth={260} maxWidth={320} closeOnClick={false}>
                             <div className="p-1">
-                                <div className="w-full h-28 bg-slate-100 rounded-lg mb-2 flex items-center justify-center overflow-hidden border border-slate-200">
+                                <div className="w-full h-28 bg-slate-100 rounded-lg mb-2 flex items-center justify-center overflow-hidden border border-slate-200 relative">
                                     {img.thumbnail_url ? (
-                                        <img src={img.thumbnail_url} alt={img.name} className="w-full h-full object-cover" />
+                                        <>
+                                            <img
+                                                src={img.thumbnail_url}
+                                                alt={img.name}
+                                                className="w-full h-full object-cover"
+                                                onError={(e) => {
+                                                    // 이미지 로드 실패 시 폴백 표시
+                                                    e.target.style.display = 'none';
+                                                    if (e.target.nextSibling) {
+                                                        e.target.nextSibling.style.display = 'flex';
+                                                    }
+                                                }}
+                                            />
+                                            <div className="absolute inset-0 text-slate-400 text-xs flex-col items-center justify-center gap-1 hidden">
+                                                <Camera size={24} className="text-slate-300" />
+                                                <span>미리보기 로드 실패</span>
+                                            </div>
+                                        </>
                                     ) : (
                                         <div className="text-slate-400 text-xs flex flex-col items-center gap-1">
                                             <Camera size={24} className="text-slate-300" />

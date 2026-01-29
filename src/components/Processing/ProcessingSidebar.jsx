@@ -22,6 +22,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
 
     // UI states
     const [isCompletionModalOpen, setIsCompletionModalOpen] = useState(false);
+    const [hasTriggeredComplete, setHasTriggeredComplete] = useState(false); // 완료 처리 중복 방지
 
     // Real-time processing progress via WebSocket
     const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected } = useProcessingProgress(
@@ -48,13 +49,20 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         loadPresets();
     }, []);
 
-    // Trigger refresh when processing complete
+    // Trigger refresh when processing complete (한 번만 실행)
+    // onComplete는 모달에서 사용자가 선택할 때만 호출 (깜빡거림 방지)
     useEffect(() => {
-        if ((wsStatus === 'complete' || wsStatus === 'completed')) {
+        if ((wsStatus === 'complete' || wsStatus === 'completed') && !hasTriggeredComplete) {
+            setHasTriggeredComplete(true);
             setIsCompletionModalOpen(true);
-            if (onComplete) onComplete();
+            // onComplete는 여기서 호출하지 않음 - 모달 버튼에서 호출
         }
-    }, [wsStatus, onComplete]);
+    }, [wsStatus, hasTriggeredComplete]);
+
+    // 프로젝트가 변경되면 완료 플래그 리셋
+    useEffect(() => {
+        setHasTriggeredComplete(false);
+    }, [project?.id]);
 
     // Reset isStarting when statuses reflect actual progress
     useEffect(() => {
@@ -412,8 +420,10 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                         </p>
                         <div className="flex flex-col gap-3">
                             <button
-                                onClick={() => {
+                                onClick={(e) => {
+                                    e.stopPropagation();
                                     setIsCompletionModalOpen(false);
+                                    if (onComplete) onComplete(); // 대시보드 이동 시 데이터 갱신
                                     onCancel(); // Use existing onCancel to go back to main page
                                 }}
                                 className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold text-lg hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95"
@@ -421,12 +431,15 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                 대시보드로 이동
                             </button>
                             <button
-                                onClick={() => {
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    console.log('나중에 확인 클릭됨'); // 디버그용
                                     setIsCompletionModalOpen(false);
-                                    // If we stay, ensure we refresh the data one more time
+                                    // 현재 화면 유지 - 데이터 갱신만 수행
                                     if (onComplete) onComplete();
                                 }}
-                                className="w-full py-3 text-slate-400 font-medium hover:text-slate-600"
+                                className="w-full py-3 text-slate-500 font-medium hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                             >
                                 나중에 확인 (현재 화면 유지)
                             </button>

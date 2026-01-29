@@ -69,6 +69,13 @@
   z-index: 0;
 }
 
+/* 프로젝트 바운딩박스 호버 시 권역 툴팁 숨김 */
+.project-hovered .region-tooltip {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
 /* Animations & Smoothness */
 .smooth-transition {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);

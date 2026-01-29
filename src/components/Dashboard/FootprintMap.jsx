@@ -297,15 +297,29 @@ function MapResizeHandler({ height }) {
 
 /**
  * Region Boundary Layer
- * Displays administrative region boundaries on the map
- */
-/**
- * Region Boundary Layer
  * Displays administrative region boundaries on the map from PostGIS
+ * hoveredProjectId가 있으면 툴팁을 숨김 (프로젝트 바운딩박스 우선)
  */
-export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegion = null, interactive = true }) {
+export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegion = null, interactive = true, footprints = [], hoveredProjectId = null }) {
     const [geojsonData, setGeojsonData] = useState(null);
     const [loading, setLoading] = useState(false);
+    const layersRef = useRef([]); // 모든 레이어 참조 저장
+
+    // hoveredProjectId가 설정되면 모든 권역 툴팁 닫기
+    useEffect(() => {
+        if (hoveredProjectId && layersRef.current.length > 0) {
+            layersRef.current.forEach(layer => {
+                if (layer && layer.closeTooltip) {
+                    layer.closeTooltip();
+                }
+            });
+        }
+    }, [hoveredProjectId]);
+
+    // GeoJSON이 다시 생성될 때 레이어 참조 초기화
+    useEffect(() => {
+        layersRef.current = [];
+    }, [geojsonData, footprints.length]);
 
     const LAYER_COLORS = {
         '수도권북부 권역': '#059669', // Emerald 600
@@ -362,7 +376,10 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
     const onEachFeature = (feature, layer) => {
         const label = feature.properties.layer || '알 수 없는 구역';
 
-        // Tooltip can still work if needed, but let's keep it simple
+        // 레이어 참조 저장 (툴팁 제어용)
+        layersRef.current.push(layer);
+
+        // 권역 툴팁 바인딩 (프로젝트 호버 시 숨김)
         layer.bindTooltip(`${label}`, {
             permanent: false,
             direction: 'center',
@@ -372,31 +389,74 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 
         layer.on({
             click: (e) => {
+                // 클릭 지점에 프로젝트가 있는지 확인 (프로젝트 우선)
+                const clickPoint = e.latlng;
+                const hasProjectAtPoint = footprints.some(f => {
+                    if (!f.bounds) return false;
+                    const bounds = L.latLngBounds(f.bounds);
+                    return bounds.contains(clickPoint);
+                });
+
+                // 프로젝트가 있으면 권역 클릭 무시 (프로젝트 우선 선택)
+                if (hasProjectAtPoint) {
+                    return;
+                }
+
                 L.DomEvent.stopPropagation(e);
                 if (onRegionClick) {
                     onRegionClick(feature.id, feature.properties.layer);
                 }
             },
             mouseover: (e) => {
-                const layer = e.target;
-                layer.setStyle({
+                // 마우스 위치에 프로젝트가 있으면 권역 툴팁 숨김
+                const mousePoint = e.latlng;
+                const hasProjectAtMouse = footprints.some(f => {
+                    if (!f.bounds) return false;
+                    const bounds = L.latLngBounds(f.bounds);
+                    return bounds.contains(mousePoint);
+                });
+
+                if (hasProjectAtMouse) {
+                    layer.closeTooltip();
+                    return; // 스타일 변경도 하지 않음
+                }
+
+                const layer_target = e.target;
+                layer_target.setStyle({
                     fillOpacity: 0.2,
                     weight: 2
                 });
             },
             mouseout: (e) => {
-                const layer = e.target;
-                layer.setStyle(regionStyle(feature));
+                const layer_target = e.target;
+                layer_target.setStyle(regionStyle(feature));
+            },
+            // 툴팁이 열리기 전에 체크
+            tooltipopen: (e) => {
+                // 마우스 위치에 프로젝트가 있으면 툴팁 즉시 닫기
+                const map = e.target._map;
+                if (map) {
+                    const mousePoint = map.mouseEventToLatLng(e.originalEvent || { clientX: 0, clientY: 0 });
+                    const hasProjectAtMouse = footprints.some(f => {
+                        if (!f.bounds) return false;
+                        const bounds = L.latLngBounds(f.bounds);
+                        return bounds.contains(mousePoint);
+                    });
+                    if (hasProjectAtMouse) {
+                        layer.closeTooltip();
+                    }
+                }
             }
         });
     };
 
     return (
         <GeoJSON
+            key={`region-layer-${footprints.length}`}
             data={geojsonData}
             style={regionStyle}
             onEachFeature={onEachFeature}
-            interactive={interactive} // Toggleable interactivity
+            interactive={interactive}
         />
     );
 }
@@ -417,6 +477,7 @@ export function FootprintMap({
     const [highlightPulse, setHighlightPulse] = useState(false);
     const blinkCountRef = useRef(0);
     const [overlapProjects, setOverlapProjects] = useState(null); // { projects, latlng }
+    const [hoveredProjectId, setHoveredProjectId] = useState(null); // 호버 중인 프로젝트 ID
 
     // Pulse animation for highlight - exactly 4 blinks
     useEffect(() => {
@@ -596,7 +657,7 @@ export function FootprintMap({
                 </div>
             </div>
 
-            <div className={isFlexHeight ? 'flex-1' : ''} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0 }}>
+            <div className={`${isFlexHeight ? 'flex-1' : ''} ${hoveredProjectId ? 'project-hovered' : ''}`} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0 }}>
                 <MapContainer
                     center={[36.5, 127.5]}
                     zoom={7}
@@ -628,11 +689,13 @@ export function FootprintMap({
                     {/* Handle map resize when height changes */}
                     <MapResizeHandler height={height} />
 
-                    {/* Region Boundary Layer */}
+                    {/* Region Boundary Layer - 프로젝트 호버 시 툴팁 숨김 */}
                     <RegionBoundaryLayer
                         visible={showRegions}
                         onRegionClick={onRegionClick}
                         activeRegion={activeRegionName}
+                        footprints={footprints}
+                        hoveredProjectId={hoveredProjectId}
                     />
 
                     {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && !activeRegionName && <MapBoundsFitter bounds={allPoints} />}
@@ -652,21 +715,39 @@ export function FootprintMap({
                     {footprints.map((fp) => {
                         const isHighlighted = fp.id === highlightProjectId;
                         const isSelected = fp.id === selectedProjectId;
+                        const isHovered = fp.id === hoveredProjectId;
                         const colors = isHighlighted ? STATUS_COLORS.highlight : STATUS_COLORS[fp.status];
+
+                        // 호버 시 강조 효과
+                        const getStrokeColor = () => {
+                            if (isHighlighted) return highlightPulse ? '#fbbf24' : '#d97706';
+                            if (isSelected) return '#2563eb';
+                            if (isHovered) return '#7c3aed'; // 보라색 (권역과 구분)
+                            return colors.stroke;
+                        };
+                        const getFillColor = () => {
+                            if (isHighlighted) return highlightPulse ? '#fde68a' : '#fbbf24';
+                            if (isSelected) return '#60a5fa';
+                            if (isHovered) return '#a78bfa'; // 연보라색
+                            return colors.fill;
+                        };
 
                         return (
                             <Rectangle
                                 key={fp.id}
                                 bounds={fp.bounds}
                                 pathOptions={{
-                                    color: isHighlighted ? (highlightPulse ? '#fbbf24' : '#d97706') : (isSelected ? '#2563eb' : colors.stroke),
-                                    fillColor: isHighlighted ? (highlightPulse ? '#fde68a' : '#fbbf24') : (isSelected ? '#60a5fa' : colors.fill),
-                                    fillOpacity: isHighlighted || isSelected ? 0.7 : 0.5,
-                                    weight: (isHighlighted || isSelected) ? 4 : 2,
+                                    color: getStrokeColor(),
+                                    fillColor: getFillColor(),
+                                    fillOpacity: (isHighlighted || isSelected || isHovered) ? 0.7 : 0.5,
+                                    weight: (isHighlighted || isSelected || isHovered) ? 4 : 2,
+                                    bubblingMouseEvents: false, // 권역 레이어로 이벤트 전파 방지
                                 }}
                                 eventHandlers={{
                                     click: (e) => {
+                                        // 이벤트 전파 완전 차단 (권역 레이어보다 프로젝트 우선)
                                         L.DomEvent.stopPropagation(e);
+                                        L.DomEvent.preventDefault(e);
 
                                         // Find all other projects at this location to handle overlaps
                                         const latlng = e.latlng;
@@ -685,12 +766,48 @@ export function FootprintMap({
                                             if (onProjectClick) onProjectClick(fp.project);
                                         }
                                     },
+                                    mouseover: (e) => {
+                                        setHoveredProjectId(fp.id);
+                                        // Leaflet 레이어를 앞으로 가져오기
+                                        e.target.bringToFront();
+                                    },
+                                    mouseout: () => {
+                                        setHoveredProjectId(null);
+                                    },
                                 }}
                             >
-                                <Tooltip direction="top" offset={[0, -5]}>
-                                    <div className="text-xs font-bold">
-                                        {fp.project.title}
-                                        <div className="text-[10px] font-normal text-slate-500">{fp.project.region} · {STATUS_COLORS[fp.status].label}</div>
+                                {/* 호버 시 겹치는 모든 프로젝트 표시 */}
+                                <Tooltip direction="top" offset={[0, -5]} sticky>
+                                    <div className="text-xs px-1 py-0.5">
+                                        {(() => {
+                                            // 현재 위치에서 겹치는 모든 프로젝트 찾기
+                                            const overlapping = footprints.filter(f => {
+                                                if (!f.bounds || !fp.bounds) return false;
+                                                const b1 = L.latLngBounds(f.bounds);
+                                                const b2 = L.latLngBounds(fp.bounds);
+                                                return b1.overlaps(b2) || b1.equals(b2);
+                                            });
+
+                                            if (overlapping.length > 1) {
+                                                return (
+                                                    <div>
+                                                        <div className="font-bold text-purple-700 mb-1">📍 {overlapping.length}개 프로젝트 겹침</div>
+                                                        {overlapping.slice(0, 5).map((f, i) => (
+                                                            <div key={f.id} className={`${f.id === fp.id ? 'font-bold text-purple-600' : 'text-slate-600'}`}>
+                                                                {i + 1}. {f.project.title}
+                                                            </div>
+                                                        ))}
+                                                        {overlapping.length > 5 && <div className="text-slate-400">...외 {overlapping.length - 5}개</div>}
+                                                    </div>
+                                                );
+                                            }
+                                            return (
+                                                <div>
+                                                    <div className="font-bold">📍 {fp.project.title}</div>
+                                                    <div className="text-[10px] text-slate-500">{fp.project.region} · {STATUS_COLORS[fp.status]?.label || fp.status}</div>
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                 </Tooltip>
                             </Rectangle>
