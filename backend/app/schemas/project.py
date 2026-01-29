@@ -39,6 +39,9 @@ class ProjectResponse(ProjectBase):
     created_at: datetime
     updated_at: datetime
     image_count: int = 0
+    source_size: Optional[int] = None
+    ortho_size: Optional[int] = None
+    area: Optional[float] = None
     ortho_path: Optional[str] = None
     bounds: Optional[List[List[float]]] = None  # List of [lat, lng] or [[lat, lng], ...]
     
@@ -66,6 +69,7 @@ class ImageResponse(ImageBase):
     project_id: UUID
     original_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     captured_at: Optional[datetime] = None
     resolution: Optional[str] = None
     file_size: Optional[int] = None

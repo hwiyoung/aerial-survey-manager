@@ -11,6 +11,7 @@ from app.models.project import Project, Image
 from app.schemas.project import ImageResponse, ImageUploadResponse
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.config import get_settings
+from app.services.storage import get_storage
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 settings = get_settings()
@@ -142,6 +143,13 @@ async def tus_webhook(
                 image.original_path = storage_path
                 image.upload_status = "completed"
                 await db.commit()
+                
+                # Trigger thumbnail generation in background
+                try:
+                    from app.workers.tasks import generate_thumbnail
+                    generate_thumbnail.delay(str(image.id))
+                except Exception as e:
+                    print(f"Failed to trigger thumbnail task: {e}")
         
         return {}
     
@@ -191,4 +199,24 @@ async def list_project_images(
     )
     images = result.scalars().unique().all()
     
-    return [ImageResponse.model_validate(img) for img in images]
+    storage = get_storage()
+    response = []
+    for img in images:
+        img_dict = {
+            "id": img.id,
+            "project_id": img.project_id,
+            "filename": img.filename,
+            "original_path": img.original_path,
+            "thumbnail_path": img.thumbnail_path,
+            "thumbnail_url": storage.get_presigned_url(img.thumbnail_path) if img.thumbnail_path else None,
+            "captured_at": img.captured_at,
+            "resolution": img.resolution,
+            "file_size": img.file_size,
+            "has_error": img.has_error,
+            "upload_status": img.upload_status,
+            "created_at": img.created_at,
+            "exterior_orientation": img.exterior_orientation,
+        }
+        response.append(ImageResponse.model_validate(img_dict))
+    
+    return response

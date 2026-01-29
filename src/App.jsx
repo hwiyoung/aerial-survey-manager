@@ -172,6 +172,16 @@ function Dashboard() {
     }
   };
 
+  const handleRenameProject = async (projectId, newTitle) => {
+    try {
+      await api.updateProject(projectId, { title: newTitle });
+      refreshProjects();
+    } catch (err) {
+      console.error('Failed to rename project:', err);
+      alert('이름 변경 실패: ' + err.message);
+    }
+  };
+
   const toggleGroupExpand = (groupId) => {
     setExpandedGroupIds(prev => {
       const next = new Set(prev);
@@ -194,6 +204,13 @@ function Dashboard() {
   }, []);
 
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
+
+  // Auto-select first project if none selected
+  useEffect(() => {
+    if (!selectedProjectId && projects.length > 0) {
+      setSelectedProjectId(projects[0].id);
+    }
+  }, [projects, selectedProjectId]);
   const [projectImages, setProjectImages] = useState([]); // Store fetched images
   const [activeUploads, setActiveUploads] = useState([]); // Tracking upload progress
   const [uploaderController, setUploaderController] = useState(null);
@@ -216,8 +233,6 @@ function Dashboard() {
           return;
         }
 
-        // Extract coordinates from EO data if available
-        // Backend returns exterior_orientation object
         const points = images.map(img => {
           const eo = img.exterior_orientation;
           return {
@@ -277,7 +292,7 @@ function Dashboard() {
   const [selectedImageId, setSelectedImageId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
-  const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [sidebarWidth, setSidebarWidth] = useState(800);
   const [isResizing, setIsResizing] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [showInspector, setShowInspector] = useState(false); // Inspector only opens on double-click
@@ -305,15 +320,25 @@ function Dashboard() {
   const [highlightProjectId, setHighlightProjectId] = useState(null);
 
   const selectedProject = useMemo(() => {
-    if (viewMode === 'processing') return processingProject;
+    // Try to find in projects list first
     const proj = projects.find(p => p.id === selectedProjectId);
-    if (!proj) return null;
 
-    // Merge fetched images
-    return {
-      ...proj,
-      images: projectImages
-    };
+    if (proj) {
+      return {
+        ...proj,
+        images: projectImages
+      };
+    }
+
+    // Fallback to processingProject (for newly created projects)
+    if (viewMode === 'processing' && processingProject) {
+      return {
+        ...processingProject,
+        images: projectImages.length > 0 ? projectImages : (processingProject.images || [])
+      };
+    }
+
+    return null;
   }, [viewMode, processingProject, projects, selectedProjectId, projectImages]);
 
   const selectedImage = selectedProject?.images?.find(img => img.id === selectedImageId) || null;
@@ -431,6 +456,7 @@ function Dashboard() {
               return {
                 id: img.id,
                 name: img.filename,
+                // If EO exists, use it. Otherwise 0
                 wx: eo ? eo.x : 0,
                 wy: eo ? eo.y : 0,
                 z: eo ? eo.z : null,
@@ -528,6 +554,7 @@ function Dashboard() {
 
       // Ensure project list is refreshed with new data including EO
       await refreshProjects();
+      setImageRefreshKey(prev => prev + 1);
 
     } catch (err) {
       console.error('Failed to create project:', err);
@@ -619,9 +646,13 @@ function Dashboard() {
             width={sidebarWidth}
             project={projects.find(p => p.id === processingProject?.id) || processingProject}
             activeUploads={activeUploads}
-            onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); }}
+            onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); refreshProjects(); }}
             onStartProcessing={handleStartProcessing}
-            onComplete={refreshProjects}
+            onComplete={() => {
+              refreshProjects();
+              // Force update selected project images
+              setImageRefreshKey(prev => prev + 1);
+            }}
           />
         ) : (
           <Sidebar
@@ -645,6 +676,7 @@ function Dashboard() {
                 alert('삭제 실패: ' + err.message);
               }
             }}
+            onRenameProject={handleRenameProject}
             onBulkDelete={async () => {
               const count = checkedProjectIds.size;
               if (!window.confirm(`선택한 ${count}개의 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.`)) return;

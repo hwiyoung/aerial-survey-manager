@@ -42,10 +42,27 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                     <h2 className="text-2xl font-bold leading-tight mb-6">{project.title}</h2>
                     <div className="space-y-4 text-sm">
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역/업체</span><span className="font-medium">{project.region}/{project.company}</span></div>
-                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">상태</span><span className={`font-bold ${project.status === '완료' ? 'text-emerald-600' : project.status === '오류' ? 'text-red-600' : 'text-blue-600'}`}>{project.status}</span></div>
-                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">원본사진</span><span className="font-medium">{project.imageCount || 0}장</span></div>
+                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">상태</span><span className={`font-bold ${project.status === '완료' || project.status === 'completed' ? 'text-emerald-600' : project.status === '오류' || project.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>{project.status === 'completed' ? '완료' : project.status}</span></div>
+                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">원본사진</span><span className="font-medium">{project.image_count || project.imageCount || 0}장</span></div>
+                        {project.source_size && (
+                            <div className="flex justify-between border-b pb-2">
+                                <span className="text-slate-500">원본 총 용량</span>
+                                <span className="font-medium">{(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB</span>
+                            </div>
+                        )}
+                        {project.ortho_size && (
+                            <div className="flex justify-between border-b pb-2">
+                                <span className="text-slate-500">정사영상 용량</span>
+                                <span className="font-medium">{(project.ortho_size / (1024 * 1024)).toFixed(1)} MB</span>
+                            </div>
+                        )}
+                        {project.area && (
+                            <div className="flex justify-between border-b pb-2">
+                                <span className="text-slate-500">정사영상 면적</span>
+                                <span className="font-medium text-blue-600 font-bold">{project.area.toFixed(3)} km²</span>
+                            </div>
+                        )}
                         {project.startDate && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">촬영일</span><span className="font-medium">{project.startDate}</span></div>}
-                        {project.dataSize && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">데이터용량</span><span className="font-medium">{project.dataSize}</span></div>}
                     </div>
                 </div>
                 <div className="flex-1 p-6 bg-slate-50 overflow-y-auto">

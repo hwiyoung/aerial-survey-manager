@@ -15,11 +15,13 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
 
     // Processing options state
     const [options, setOptions] = useState({
-        engine: 'odm',
+        engine: 'metashape',
         gsd: 5.0,
-        output_crs: 'EPSG:5186',
-        output_format: 'GeoTiff'
+        output_crs: 'EPSG:5186'
     });
+
+    // UI states
+    const [isCompletionModalOpen, setIsCompletionModalOpen] = useState(false);
 
     // Real-time processing progress via WebSocket
     const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected } = useProcessingProgress(
@@ -48,8 +50,9 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
 
     // Trigger refresh when processing complete
     useEffect(() => {
-        if ((wsStatus === 'complete' || wsStatus === 'completed') && onComplete) {
-            onComplete();
+        if ((wsStatus === 'complete' || wsStatus === 'completed')) {
+            setIsCompletionModalOpen(true);
+            if (onComplete) onComplete();
         }
     }, [wsStatus, onComplete]);
 
@@ -78,8 +81,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
             setOptions({
                 engine: preset.options.engine || 'odm',
                 gsd: preset.options.gsd || 5.0,
-                output_crs: preset.options.output_crs || 'EPSG:5186',
-                output_format: preset.options.output_format || 'GeoTiff'
+                output_crs: preset.options.output_crs || 'EPSG:5186'
             });
         }
     };
@@ -168,16 +170,16 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                 <Loader2 size={14} className="animate-spin" />
                                 {wsStatus === 'connecting' ? '연결 중...' : '처리 진행 중'}
                             </span>
-                            <span className="font-bold text-blue-600">{wsProgress}%</span>
+                            <span className="font-bold text-blue-600">{(wsStatus === 'complete' || wsStatus === 'completed') ? 100 : wsProgress}%</span>
                         </div>
                         <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
                             <div
                                 className="h-full bg-blue-600 transition-all duration-500 ease-out"
-                                style={{ width: `${wsProgress}%` }}
+                                style={{ width: `${(wsStatus === 'complete' || wsStatus === 'completed') ? 100 : wsProgress}%` }}
                             />
                         </div>
                         {wsMessage && (
-                            <p className="text-xs text-blue-600 mt-1 truncate font-medium">{wsMessage}</p>
+                            <p className="text-xs text-blue-600 mt-1 truncate font-medium">{(wsStatus === 'complete' || wsStatus === 'completed') ? '처리 완료' : wsMessage}</p>
                         )}
 
                         {/* Stop Button - Moved here for visibility */}
@@ -220,140 +222,105 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                 </div>
             )}
             <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6">
-                {/* Preset Selection */}
+                {/* 1. Input Data Info */}
                 <div className="space-y-3">
                     <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
-                        <Bookmark size={14} className="text-blue-500" />프리셋 선택
+                        1. 입력 데이터 정보
                     </h4>
-                    <div className="flex gap-2">
-                        <select
-                            className="flex-1 border border-slate-200 p-2 rounded text-sm bg-white"
-                            value={selectedPresetId || ''}
-                            onChange={(e) => handlePresetSelect(e.target.value || null)}
-                            disabled={loadingPresets}
-                        >
-                            <option value="">-- 프리셋 선택 --</option>
-                            {defaultPresets.length > 0 && (
-                                <optgroup label="기본 프리셋">
-                                    {defaultPresets.map(p => (
-                                        <option key={p.id} value={p.id}>{p.name}</option>
-                                    ))}
-                                </optgroup>
-                            )}
-                            {presets.length > 0 && (
-                                <optgroup label="내 프리셋">
-                                    {presets.map(p => (
-                                        <option key={p.id} value={p.id}>{p.name}</option>
-                                    ))}
-                                </optgroup>
-                            )}
-                        </select>
-                        {selectedPresetId && presets.find(p => p.id === selectedPresetId) && (
-                            <button
-                                onClick={() => handleDeletePreset(selectedPresetId)}
-                                className="p-2 text-red-500 hover:bg-red-50 rounded"
-                                title="프리셋 삭제"
-                            >
-                                <Trash2 size={16} />
-                            </button>
-                        )}
-                    </div>
-                    <button
-                        onClick={() => setIsSaveModalOpen(true)}
-                        className="w-full text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 py-2 rounded flex items-center justify-center gap-1"
-                    >
-                        <Save size={14} /> 현재 설정을 프리셋으로 저장
-                    </button>
-                </div>
-
-                {/* Input Data Info */}
-                <div className="space-y-3">
-                    <h4 className="text-sm font-bold text-slate-700 border-b pb-2">1. 입력 데이터 정보</h4>
-                    <div className="grid grid-cols-2 gap-4 text-sm"><div><span className="text-slate-500 block text-xs">이미지 수</span><span className="font-mono">{project?.imageCount || 0} 장</span></div><div><span className="text-slate-500 block text-xs">EO 데이터</span><span className="text-emerald-600 font-bold">로드됨</span></div></div>
-                </div>
-
-                {/* Processing Parameters */}
-                <div className="space-y-3">
-                    <h4 className="text-sm font-bold text-slate-700 border-b pb-2">2. 처리 엔진 및 파라미터</h4>
-
-                    <div className="space-y-2">
-                        <label className="block text-sm text-slate-600 font-medium">처리 엔진 (Engine)</label>
-                        <div className="grid grid-cols-3 gap-2">
-                            <button
-                                onClick={() => setOptions(prev => ({ ...prev, engine: 'odm' }))}
-                                className={`flex flex-col items-center gap-1.5 py-2.5 rounded-lg border-2 transition-all ${options.engine === 'odm' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
-                            >
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${options.engine === 'odm' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                    <span className="text-[10px] font-bold">ODM</span>
-                                </div>
-                                <span className="text-[10px] font-bold">오픈소스</span>
-                            </button>
-
-                            <button
-                                onClick={() => setOptions(prev => ({ ...prev, engine: 'metashape' }))}
-                                className={`flex flex-col items-center gap-1.5 py-2.5 rounded-lg border-2 transition-all ${options.engine === 'metashape' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
-                            >
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${options.engine === 'metashape' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                    <span className="text-[10px] font-bold">MS</span>
-                                </div>
-                                <span className="text-[10px] font-bold">Metashape</span>
-                            </button>
-
+                    <div className="grid grid-cols-2 gap-4 text-sm font-medium">
+                        <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <span className="text-slate-500 block text-[10px] uppercase tracking-wider mb-1">이미지 수</span>
+                            <span className="text-slate-800 font-bold">{project?.imageCount || 0} 장</span>
                         </div>
-                        <p className="text-[10px] text-slate-400">
-                            {options.engine === 'odm' && 'OpenDroneMap을 사용하여 서버에서 직접 처리합니다.'}
-                            {options.engine === 'metashape' && 'Agisoft Metashape SDK를 사용하여 고품질 정사영상을 생성합니다.'}
-                        </p>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="block text-sm text-slate-600">GSD (cm/pixel)</label>
-                        <input
-                            type="number"
-                            value={options.gsd}
-                            onChange={(e) => setOptions(prev => ({ ...prev, gsd: parseFloat(e.target.value) || 5.0 }))}
-                            className="border border-slate-200 p-2 rounded w-full text-sm"
-                            step="0.5"
-                            min="0.5"
-                        />
-                    </div>
-                    <div className="space-y-2">
-                        <label className="block text-sm text-slate-600">좌표계</label>
-                        <select
-                            className="w-full border border-slate-200 p-2 rounded text-sm bg-white"
-                            value={options.output_crs}
-                            onChange={(e) => setOptions(prev => ({ ...prev, output_crs: e.target.value }))}
-                        >
-                            <option value="EPSG:5186">GRS80 / TM Middle (EPSG:5186)</option>
-                            <option value="EPSG:5187">GRS80 / TM East (EPSG:5187)</option>
-                            <option value="EPSG:5185">GRS80 / TM West (EPSG:5185)</option>
-                            <option value="EPSG:4326">WGS84 (EPSG:4326)</option>
-                        </select>
+                        <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <span className="text-slate-500 block text-[10px] uppercase tracking-wider mb-1">EO 데이터</span>
+                            <span className="text-emerald-600 font-bold">로드됨</span>
+                        </div>
                     </div>
                 </div>
 
-                {/* Output Format */}
+                {/* 2. Processing Options (Formerly Preset Selection) */}
                 <div className="space-y-3">
-                    <h4 className="text-sm font-bold text-slate-700 border-b pb-2">3. 출력 형식</h4>
-                    <div className="flex gap-4">
-                        <label className="flex items-center gap-2 text-sm cursor-pointer">
-                            <input
-                                type="radio"
-                                name="output_format"
-                                value="GeoTiff"
-                                checked={options.output_format === 'GeoTiff'}
-                                onChange={(e) => setOptions(prev => ({ ...prev, output_format: e.target.value }))}
-                            /> GeoTiff
-                        </label>
-                        <label className="flex items-center gap-2 text-sm cursor-pointer">
-                            <input
-                                type="radio"
-                                name="output_format"
-                                value="JPG"
-                                checked={options.output_format === 'JPG'}
-                                onChange={(e) => setOptions(prev => ({ ...prev, output_format: e.target.value }))}
-                            /> JPG
-                        </label>
+                    <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
+                        2. 처리 설정 (Processing Options)
+                    </h4>
+
+                    {/* Preset Selector */}
+                    <div className="space-y-2">
+                        <label className="text-xs text-slate-500 font-medium ml-1">프리셋 불러오기</label>
+                        <div className="flex gap-2">
+                            <select
+                                className="flex-1 border border-slate-200 p-2.5 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                                value={selectedPresetId || ''}
+                                onChange={(e) => handlePresetSelect(e.target.value || null)}
+                                disabled={loadingPresets}
+                            >
+                                <option value="">-- 프리셋 선택 --</option>
+                                {defaultPresets.length > 0 && (
+                                    <optgroup label="기본 프리셋">
+                                        {defaultPresets.map(p => (
+                                            <option key={p.id} value={p.id}>{p.name}</option>
+                                        ))}
+                                    </optgroup>
+                                )}
+                                {presets.length > 0 && (
+                                    <optgroup label="내 프리셋">
+                                        {presets.map(p => (
+                                            <option key={p.id} value={p.id}>{p.name}</option>
+                                        ))}
+                                    </optgroup>
+                                )}
+                            </select>
+                            {selectedPresetId && presets.find(p => p.id === selectedPresetId) && (
+                                <button
+                                    onClick={() => handleDeletePreset(selectedPresetId)}
+                                    className="p-2.5 text-red-500 hover:bg-red-50 border border-red-100 rounded-lg transition-colors"
+                                    title="프리셋 삭제"
+                                >
+                                    <Trash2 size={18} />
+                                </button>
+                            )}
+                        </div>
+                        <button
+                            onClick={() => setIsSaveModalOpen(true)}
+                            className="w-full text-[11px] text-slate-500 hover:text-blue-600 hover:bg-blue-50 py-1.5 rounded-md flex items-center justify-center gap-1 border border-dashed border-slate-200 transition-all"
+                        >
+                            <Save size={12} /> 현재 설정을 프리셋으로 저장
+                        </button>
+                    </div>
+
+                    {/* Processing Parameters */}
+                    <div className="space-y-4 pt-2">
+                        <div className="space-y-2">
+                            <label className="block text-xs text-slate-500 font-medium ml-1">처리 엔진 (Engine)</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button
+                                    onClick={() => setOptions(prev => ({ ...prev, engine: 'odm' }))}
+                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${options.engine === 'odm' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
+                                >
+                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${options.engine === 'odm' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                        <span className="text-[10px] font-bold">ODM</span>
+                                    </div>
+                                    <div className="text-left">
+                                        <div className="text-xs font-bold">오픈소스 엔진</div>
+                                        <div className="text-[9px] opacity-70">General Purpose</div>
+                                    </div>
+                                </button>
+
+                                <button
+                                    onClick={() => setOptions(prev => ({ ...prev, engine: 'metashape' }))}
+                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${options.engine === 'metashape' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
+                                >
+                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${options.engine === 'metashape' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                        <span className="text-[10px] font-bold">MS</span>
+                                    </div>
+                                    <div className="text-left">
+                                        <div className="text-xs font-bold">Metashape</div>
+                                        <div className="text-[9px] opacity-70">High Precision</div>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -421,13 +388,48 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                 <div className="mt-1 grid grid-cols-2 gap-1">
                                     <span>GSD: {options.gsd} cm</span>
                                     <span>좌표계: {options.output_crs}</span>
-                                    <span>형식: {options.output_format}</span>
                                 </div>
                             </div>
                         </div>
                         <div className="flex gap-3 mt-6">
                             <button onClick={() => setIsSaveModalOpen(false)} className="flex-1 py-2 border border-slate-200 rounded text-sm font-medium hover:bg-slate-50">취소</button>
                             <button onClick={handleSavePreset} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-bold">저장</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Completion Prompt Modal */}
+            {isCompletionModalOpen && (
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-2xl animate-in zoom-in-95 duration-200 text-center">
+                        <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <CheckCircle2 size={48} />
+                        </div>
+                        <h3 className="text-2xl font-bold text-slate-800 mb-2">처리 완료!</h3>
+                        <p className="text-slate-500 mb-8 leading-relaxed">
+                            정사영상 생성이 성공적으로 완료되었습니다.<br />
+                            대시보드로 돌아가 결과를 확인하시겠습니까?
+                        </p>
+                        <div className="flex flex-col gap-3">
+                            <button
+                                onClick={() => {
+                                    setIsCompletionModalOpen(false);
+                                    onCancel(); // Use existing onCancel to go back to main page
+                                }}
+                                className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold text-lg hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95"
+                            >
+                                대시보드로 이동
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setIsCompletionModalOpen(false);
+                                    // If we stay, ensure we refresh the data one more time
+                                    if (onComplete) onComplete();
+                                }}
+                                className="w-full py-3 text-slate-400 font-medium hover:text-slate-600"
+                            >
+                                나중에 확인 (현재 화면 유지)
+                            </button>
                         </div>
                     </div>
                 </div>

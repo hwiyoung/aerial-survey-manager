@@ -194,26 +194,26 @@ function ProjectDetailView({ project, onBack }) {
             <div className="grid grid-cols-2 gap-4">
                 <DashboardStatsCard
                     icon={<Camera size={18} />}
-                    value={project.imageCount?.toLocaleString() || '0'}
+                    value={project.imageCount?.toLocaleString() || project.image_count?.toLocaleString() || '0'}
                     unit="장"
                     label="원본 사진"
                 />
                 <DashboardStatsCard
                     icon={<MapPin size={18} />}
-                    value={project.area?.toFixed(1) || '0'}
+                    value={project.area?.toFixed(2) || '0'}
                     unit="km²"
                     label="촬영 면적"
                 />
                 <DashboardStatsCard
                     icon={<HardDrive size={18} />}
-                    value={project.size || '0'}
-                    unit="GB"
-                    label="데이터 용량"
+                    value={project.ortho_size ? (project.ortho_size / (1024 * 1024)).toFixed(1) : (project.source_size ? (project.source_size / (1024 * 1024 * 1024)).toFixed(2) : '0')}
+                    unit={project.ortho_size ? "MB" : "GB"}
+                    label={project.ortho_size ? "정사영상 용량" : "원본 총 용량"}
                 />
                 <DashboardStatsCard
                     icon={<FolderCheck size={18} />}
-                    value={project.date || '-'}
-                    label="촬영일"
+                    value={project.created_at ? new Date(project.created_at).toLocaleDateString() : '-'}
+                    label="생성일"
                 />
             </div>
 
@@ -354,11 +354,12 @@ export default function DashboardView({
         const total = projects.length;
 
         const totalImages = projects.reduce((sum, p) => sum + (p.imageCount || p.image_count || 0), 0);
-        const totalSize = projects.reduce((sum, p) => sum + (parseFloat(p.size) || 0), 0);
+        // dataSize is based on ortho_size (MB to GB conversion)
+        const totalSizeMB = projects.reduce((sum, p) => sum + (p.ortho_size ? p.ortho_size / (1024 * 1024) : 0), 0);
+        const dataSize = (totalSizeMB / 1024).toFixed(1);
 
-        // Area calculation based on actual projects (estimate if no real data)
+        // Area calculation based on actual projects
         const area = projects.reduce((sum, p) => sum + (p.area || 0), 0).toFixed(1);
-        const dataSize = totalSize > 0 ? totalSize.toFixed(1) : '0';
 
         return {
             processing,
@@ -367,7 +368,7 @@ export default function DashboardView({
             failed,
             total,
             area: area || '0',
-            dataSize,
+            dataSize: dataSize !== '0.0' ? dataSize : '0',
             photoCount: totalImages,
             avgPhotos: total > 0 ? Math.round(totalImages / total) : 0,
         };

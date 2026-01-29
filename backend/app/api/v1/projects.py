@@ -163,6 +163,9 @@ async def list_projects(
             "created_at": project.created_at,
             "updated_at": project.updated_at,
             "image_count": image_count,
+            "source_size": project.source_size,
+            "ortho_size": project.ortho_size,
+            "area": project.area,
             "ortho_path": project.ortho_path,
             "bounds": serialize_geometry(bounds_wkt),  # Now using WKT string
         }
@@ -186,7 +189,7 @@ async def create_project(
     """Create a new project."""
     project = Project(
         title=data.title,
-        region=data.region,
+        region=data.region or "미지정",
         company=data.company,
         owner_id=current_user.id,
         organization_id=current_user.organization_id,
@@ -208,6 +211,9 @@ async def create_project(
         "created_at": project.created_at,
         "updated_at": project.updated_at,
         "image_count": 0,
+        "source_size": project.source_size,
+        "ortho_size": project.ortho_size,
+        "area": project.area,
         "ortho_path": project.ortho_path,
         "bounds": serialize_geometry(project.bounds),
     }
@@ -264,6 +270,9 @@ async def get_project(
         "created_at": project.created_at,
         "updated_at": project.updated_at,
         "image_count": image_count,
+        "source_size": project.source_size,
+        "ortho_size": project.ortho_size,
+        "area": project.area,
         "ortho_path": project.ortho_path,
         "bounds": serialize_geometry(bounds_wkt),
     }
@@ -331,6 +340,9 @@ async def update_project(
         "created_at": project.created_at,
         "updated_at": project.updated_at,
         "image_count": image_count,
+        "source_size": project.source_size,
+        "ortho_size": project.ortho_size,
+        "area": project.area,
         "ortho_path": project.ortho_path,
         "bounds": serialize_geometry(bounds_wkt),
     }
@@ -598,13 +610,12 @@ async def upload_eo_data(
                 
                 project.bounds = f"SRID=4326;POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
                 
-                # Auto-assign region
-                if not project.region or project.region == "미지정":
-                    center_lon = (min_lon + max_lon) / 2
-                    center_lat = (min_lat + max_lat) / 2
-                    region = get_region_for_point(center_lon, center_lat)
-                    if region:
-                        project.region = region
+                # Auto-assign region based on EO data
+                center_lon = (min_lon + max_lon) / 2
+                center_lat = (min_lat + max_lat) / 2
+                region = get_region_for_point(center_lon, center_lat)
+                if region:
+                    project.region = region
 
         await db.commit()
     except Exception as e:

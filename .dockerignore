@@ -1,0 +1,17 @@
+node_modules
+.git
+.github
+dist
+build
+.env
+data
+logs
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.vscode
+.idea
+*.log

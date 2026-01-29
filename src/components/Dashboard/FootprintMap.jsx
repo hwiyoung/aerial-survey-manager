@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
-import { MapContainer, TileLayer, Rectangle, Popup, useMap, GeoJSON } from 'react-leaflet';
+import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
-import { Layers, Eye, EyeOff } from 'lucide-react';
+import { Layers, Eye, EyeOff, ChevronRight } from 'lucide-react';
 import proj4 from 'proj4';
 import KOREA_REGIONS from '../../data/koreaRegions';
 
@@ -303,7 +303,7 @@ function MapResizeHandler({ height }) {
  * Region Boundary Layer
  * Displays administrative region boundaries on the map from PostGIS
  */
-export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegion = null }) {
+export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegion = null, interactive = true }) {
     const [geojsonData, setGeojsonData] = useState(null);
     const [loading, setLoading] = useState(false);
 
@@ -355,7 +355,7 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
             color: color,
             weight: isActive ? 2 : 1, // Minimum weight of 1 for better visibility
             opacity: 0.3,
-            interactive: true,
+            interactive: interactive,
         };
     };
 
@@ -396,7 +396,7 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
             data={geojsonData}
             style={regionStyle}
             onEachFeature={onEachFeature}
-            interactive={true} // Enabled for regional interactivity
+            interactive={interactive} // Toggleable interactivity
         />
     );
 }
@@ -416,6 +416,7 @@ export function FootprintMap({
 }) {
     const [highlightPulse, setHighlightPulse] = useState(false);
     const blinkCountRef = useRef(0);
+    const [overlapProjects, setOverlapProjects] = useState(null); // { projects, latlng }
 
     // Pulse animation for highlight - exactly 4 blinks
     useEffect(() => {
@@ -650,6 +651,7 @@ export function FootprintMap({
 
                     {footprints.map((fp) => {
                         const isHighlighted = fp.id === highlightProjectId;
+                        const isSelected = fp.id === selectedProjectId;
                         const colors = isHighlighted ? STATUS_COLORS.highlight : STATUS_COLORS[fp.status];
 
                         return (
@@ -657,37 +659,74 @@ export function FootprintMap({
                                 key={fp.id}
                                 bounds={fp.bounds}
                                 pathOptions={{
-                                    color: isHighlighted ? (highlightPulse ? '#fbbf24' : '#d97706') : colors.stroke,
-                                    fillColor: isHighlighted ? (highlightPulse ? '#fde68a' : '#fbbf24') : colors.fill,
-                                    fillOpacity: isHighlighted ? 0.7 : 0.5,
-                                    weight: isHighlighted ? 4 : 2,
+                                    color: isHighlighted ? (highlightPulse ? '#fbbf24' : '#d97706') : (isSelected ? '#2563eb' : colors.stroke),
+                                    fillColor: isHighlighted ? (highlightPulse ? '#fde68a' : '#fbbf24') : (isSelected ? '#60a5fa' : colors.fill),
+                                    fillOpacity: isHighlighted || isSelected ? 0.7 : 0.5,
+                                    weight: (isHighlighted || isSelected) ? 4 : 2,
                                 }}
                                 eventHandlers={{
-                                    click: () => onProjectClick && onProjectClick(fp.project),
+                                    click: (e) => {
+                                        L.DomEvent.stopPropagation(e);
+
+                                        // Find all other projects at this location to handle overlaps
+                                        const latlng = e.latlng;
+                                        const overlapping = footprints.filter(f => {
+                                            const bounds = L.latLngBounds(f.bounds);
+                                            return bounds.contains(latlng);
+                                        });
+
+                                        if (overlapping.length > 1) {
+                                            setOverlapProjects({
+                                                projects: overlapping.map(f => f.project),
+                                                latlng: latlng
+                                            });
+                                        } else {
+                                            setOverlapProjects(null);
+                                            if (onProjectClick) onProjectClick(fp.project);
+                                        }
+                                    },
                                 }}
                             >
-                                <Popup>
-                                    <div className="text-sm min-w-[200px]">
-                                        <div className="flex items-center gap-2 mb-1">
-                                            <strong className="text-slate-800">{fp.title}</strong>
-                                            <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded font-mono uppercase tracking-tighter">ID: {fp.id?.slice(0, 8)}</span>
-                                        </div>
-                                        <div className="text-xs text-slate-500">
-                                            상태: {STATUS_COLORS[fp.status].label}
-                                        </div>
-                                        {fp.status === 'completed' && (
-                                            <div className="mt-2 px-2 py-1 bg-emerald-100 text-emerald-700 text-xs rounded text-center">
-                                                정사영상 사용 가능
-                                            </div>
-                                        )}
+                                <Tooltip direction="top" offset={[0, -5]}>
+                                    <div className="text-xs font-bold">
+                                        {fp.project.title}
+                                        <div className="text-[10px] font-normal text-slate-500">{fp.project.region} · {STATUS_COLORS[fp.status].label}</div>
                                     </div>
-                                </Popup>
+                                </Tooltip>
                             </Rectangle>
                         );
                     })}
+
+                    {/* Multiple Project Selection Popup */}
+                    {overlapProjects && (
+                        <Popup
+                            position={overlapProjects.latlng}
+                            onClose={() => setOverlapProjects(null)}
+                            minWidth={200}
+                        >
+                            <div className="p-1">
+                                <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider border-b pb-1">프로젝트 선택 ({overlapProjects.projects.length})</h4>
+                                <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+                                    {overlapProjects.projects.map(p => (
+                                        <button
+                                            key={p.id}
+                                            onClick={() => {
+                                                if (onProjectClick) onProjectClick(p);
+                                                setOverlapProjects(null);
+                                            }}
+                                            className={`w-full text-left px-3 py-2 rounded text-sm transition-colors flex items-center justify-between group ${p.id === selectedProjectId ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}
+                                        >
+                                            <span className="truncate font-medium">{p.title}</span>
+                                            <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 text-slate-400" />
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </Popup>
+                    )}
                 </MapContainer>
-            </div>
-        </div>
+            </div >
+        </div >
     );
 }
 

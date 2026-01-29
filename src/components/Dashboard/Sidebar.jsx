@@ -7,7 +7,9 @@ import {
 
 const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
 
-export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onOpenInspector, onToggle, onDelete, onOpenProcessing, onOpenExport, draggable = false }) {
+export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onOpenInspector, onToggle, onDelete, onRename, onOpenProcessing, onOpenExport, draggable = false }) {
+    const [isEditing, setIsEditing] = useState(false);
+    const [editValue, setEditValue] = useState(project.title);
     const clickTimeoutRef = useRef(null);
     const CLICK_DELAY = 250;
 
@@ -44,6 +46,20 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
         }
     };
 
+    const handleRenameSubmit = async (e) => {
+        e.stopPropagation();
+        if (editValue.trim() && editValue !== project.title) {
+            await onRename(editValue);
+        }
+        setIsEditing(false);
+    };
+
+    const handleRenameCancel = (e) => {
+        e.stopPropagation();
+        setEditValue(project.title);
+        setIsEditing(false);
+    };
+
     const handleProcessing = (e) => {
         e.stopPropagation();
         onOpenProcessing();
@@ -66,7 +82,11 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
         return (
             <div onClick={handleClick} onDoubleClick={handleDoubleClick} draggable={draggable} onDragStart={handleDragStart} className={`relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent"}`}>
                 <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} />}</div>
-                <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
+                {isEditing ? (
+                    <input autoFocus value={editValue} onClick={e => e.stopPropagation()} onChange={e => setEditValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(e); if (e.key === 'Escape') handleRenameCancel(e); }} onBlur={handleRenameSubmit} className="text-sm font-bold border rounded px-1 flex-1 min-w-0" />
+                ) : (
+                    <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
+                )}
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
                 <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                     <button onClick={handleProcessing} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="처리 시작"><Play size={14} /></button>
@@ -81,20 +101,30 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
             <div onClick={handleClick} onDoubleClick={handleDoubleClick} draggable={draggable} onDragStart={handleDragStart} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
                 <div className="flex items-center gap-3">
                     <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="text-slate-400 hover:text-blue-600 cursor-pointer shrink-0">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
-                    <h4 className="text-sm font-bold text-slate-800 truncate min-w-0 max-w-[200px]">{project.title}</h4>
+                    {isEditing ? (
+                        <input autoFocus value={editValue} onClick={e => e.stopPropagation()} onChange={e => setEditValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(e); if (e.key === 'Escape') handleRenameCancel(e); }} onBlur={handleRenameSubmit} className="text-sm font-bold border rounded px-1 flex-1 min-w-0" />
+                    ) : (
+                        <h4 className="text-sm font-bold text-slate-800 truncate min-w-0 max-w-[200px]">{project.title}</h4>
+                    )}
                     <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                         <span className="bg-slate-100 px-1.5 py-0.5 rounded">{project.region}</span>
                         <span className="text-slate-300">|</span>
                         <span className="truncate max-w-[100px]">{project.company}</span>
                         <span className="text-slate-300">|</span>
                         <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
+                        {project.area && <><span className="text-slate-300">|</span><span className="font-bold text-blue-600"> {project.area.toFixed(2)} km²</span></>}
                         {project.startDate && <><span className="text-slate-300">|</span><span>📅 {project.startDate}</span></>}
                     </div>
                     <div className="flex-1" />
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
-                    <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all shrink-0" title="프로젝트 삭제">
-                        <Trash2 size={14} />
-                    </button>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                        <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="이름 변경">
+                            <Edit2 size={14} />
+                        </button>
+                        <button onClick={handleDelete} className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all shrink-0" title="프로젝트 삭제">
+                            <Trash2 size={14} />
+                        </button>
+                    </div>
                 </div>
                 {(project.status === '진행중' || project.status === 'processing') && (
                     <div className="mt-2 ml-8">
@@ -129,7 +159,11 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                 <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
                 <div className="flex-1 min-w-0">
                     <div className="flex justify-between items-start">
-                        <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
+                        {isEditing ? (
+                            <input autoFocus value={editValue} onClick={e => e.stopPropagation()} onChange={e => setEditValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(e); if (e.key === 'Escape') handleRenameCancel(e); }} onBlur={handleRenameSubmit} className="text-sm font-bold border rounded px-1 flex-1 min-w-0 mr-2" />
+                        ) : (
+                            <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
+                        )}
                         <div className="flex items-center gap-1">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${(project.status === '완료' || project.status === 'completed') ? "bg-emerald-50 text-emerald-600 border-emerald-100" : (project.status === '진행중' || project.status === 'processing' || project.status === 'queued') ? "bg-blue-50 text-blue-600 border-blue-100" : (project.status === '오류' || project.status === 'error') ? "bg-red-50 text-red-600 border-red-100" : "bg-slate-50 text-slate-500 border-slate-100"}`}>
                                 {project.status === 'completed' ? '완료' : project.status === 'processing' ? '진행중' : project.status === 'pending' ? '대기' : project.status === 'error' ? '오류' : project.status}
@@ -137,6 +171,7 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                             {(project.status === '완료' || project.status === 'completed') && (
                                 <span className="flex items-center gap-1 text-[9px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded shadow-sm animate-pulse whitespace-nowrap"><Eye size={10} /> 결과</span>
                             )}
+                            <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="이름 변경"><Edit2 size={14} /></button>
                             <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제"><Trash2 size={14} /></button>
                         </div>
                     </div>
@@ -151,10 +186,22 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
     );
 }
 
-function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDelete, selectedProjectId, onSelectProject, onOpenInspector, checkedProjectIds, onToggleCheck, sizeMode, onOpenProcessing, onOpenExport, onDeleteProject, onFilter, isActive }) {
+function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDelete, onRenameProject, selectedProjectId, onSelectProject, onOpenInspector, checkedProjectIds, onToggleCheck, sizeMode, onOpenProcessing, onOpenExport, onDeleteProject, onFilter, isActive }) {
     const [isDragOver, setIsDragOver] = useState(false);
+    const menuRef = useRef(null);
     const [showMenu, setShowMenu] = useState(false);
     const groupProjects = projects.filter(p => p.group_id === group.id);
+
+    useEffect(() => {
+        if (!showMenu) return;
+        const handleClickOutside = (e) => {
+            if (menuRef.current && !menuRef.current.contains(e.target)) {
+                setShowMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showMenu]);
 
     const handleDragOver = (e) => { e.preventDefault(); setIsDragOver(true); };
     const handleDragLeave = () => setIsDragOver(false);
@@ -172,12 +219,12 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
                 <div className="w-4 h-4 rounded flex-shrink-0" style={{ backgroundColor: group.color || '#94a3b8' }} />
                 <span className={`text-sm font-medium flex-1 truncate cursor-pointer hover:text-blue-600 ${isActive ? 'text-blue-600' : 'text-slate-700'}`} onClick={(e) => { e.stopPropagation(); onFilter && onFilter(group.id); }}>{group.name}</span>
                 <span className="text-xs text-slate-400">{groupProjects.length}</span>
-                <div className="relative">
+                <div className="relative" ref={menuRef}>
                     <button onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} className="p-1 hover:bg-slate-200 rounded opacity-0 group-hover:opacity-100"><MoreHorizontal size={14} className="text-slate-400" /></button>
                     {showMenu && (
                         <div className="absolute right-0 top-6 bg-white border border-slate-200 rounded-md shadow-lg z-50 py-1 min-w-[120px]">
-                            <button onClick={() => { onEdit(group); setShowMenu(false); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-slate-100 flex items-center gap-2"><Edit2 size={14} /> 수정</button>
-                            <button onClick={() => { onDelete(group); setShowMenu(false); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-red-50 text-red-600 flex items-center gap-2"><Trash2 size={14} /> 삭제</button>
+                            <button onClick={(e) => { e.stopPropagation(); onEdit(group); setShowMenu(false); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-slate-100 flex items-center gap-2"><Edit2 size={14} /> 수정</button>
+                            <button onClick={(e) => { e.stopPropagation(); onDelete(group); setShowMenu(false); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-red-50 text-red-600 flex items-center gap-2"><Trash2 size={14} /> 삭제</button>
                         </div>
                     )}
                 </div>
@@ -185,7 +232,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
             {isExpanded && groupProjects.length > 0 && (
                 <div className="pl-6 space-y-1 mt-1">
                     {groupProjects.map(project => (
-                        <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} onSelect={() => onSelectProject(project.id)} onOpenInspector={() => onOpenInspector(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} draggable />
+                        <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} onSelect={() => onSelectProject(project.id)} onOpenInspector={() => onOpenInspector(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onRename={(newName) => onRenameProject(project.id, newName)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} draggable />
                     ))}
                 </div>
             )}
@@ -193,7 +240,7 @@ function GroupItem({ group, projects, isExpanded, onToggle, onDrop, onEdit, onDe
     );
 }
 
-export default function Sidebar({ width, isResizing = false, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup, searchTerm, onSearchTermChange, regionFilter, onRegionFilterChange }) {
+export default function Sidebar({ width, isResizing = false, projects, selectedProjectId, checkedProjectIds, onSelectProject, onOpenInspector, onToggleCheck, onOpenUpload, onBulkExport, onSelectMultiple, onDeleteProject, onRenameProject, onBulkDelete, onOpenProcessing, onOpenExport, groups = [], expandedGroupIds = new Set(), onToggleGroupExpand, onMoveProjectToGroup, onCreateGroup, onEditGroup, onDeleteGroup, activeGroupId = null, onFilterGroup, searchTerm, onSearchTermChange, regionFilter, onRegionFilterChange }) {
     const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
     const sizeMode = useMemo(() => {
         if (width < 400) return 'compact';
@@ -246,13 +293,13 @@ export default function Sidebar({ width, isResizing = false, projects, selectedP
             <div className="flex-1 overflow-y-auto custom-scrollbar">
                 <div className="p-2 space-y-1">
                     {groups.map(group => (
-                        <GroupItem key={group.id} group={group} projects={filteredProjects} isExpanded={expandedGroupIds.has(group.id)} onToggle={() => onToggleGroupExpand && onToggleGroupExpand(group.id)} onDrop={onMoveProjectToGroup} onEdit={onEditGroup} onDelete={() => onDeleteGroup && onDeleteGroup(group.id)} selectedProjectId={selectedProjectId} onSelectProject={onSelectProject} onOpenInspector={onOpenInspector} checkedProjectIds={checkedProjectIds} onToggleCheck={onToggleCheck} sizeMode={sizeMode} onOpenProcessing={onOpenProcessing} onOpenExport={onOpenExport} onDeleteProject={onDeleteProject} onFilter={onFilterGroup} isActive={activeGroupId === group.id} />
+                        <GroupItem key={group.id} group={group} projects={filteredProjects} isExpanded={expandedGroupIds.has(group.id)} onToggle={() => onToggleGroupExpand && onToggleGroupExpand(group.id)} onDrop={onMoveProjectToGroup} onEdit={onEditGroup} onDelete={() => onDeleteGroup && onDeleteGroup(group.id)} onRenameProject={onRenameProject} selectedProjectId={selectedProjectId} onSelectProject={onSelectProject} onOpenInspector={onOpenInspector} checkedProjectIds={checkedProjectIds} onToggleCheck={onToggleCheck} sizeMode={sizeMode} onOpenProcessing={onOpenProcessing} onOpenExport={onOpenExport} onDeleteProject={onDeleteProject} onFilter={onFilterGroup} isActive={activeGroupId === group.id} />
                     ))}
                     {ungroupedProjects.length > 0 && (
                         <div className={`mt-2 pt-2 border-t border-dashed border-slate-200 ${isDragOverUngrouped ? 'bg-blue-50 ring-2 ring-blue-300 rounded' : ''}`} onDragOver={handleDragOverUngrouped} onDragLeave={handleDragLeaveUngrouped} onDrop={handleDropUngrouped} >
                             {groups.length > 0 && <div className="text-xs text-slate-400 px-2 py-1 font-medium">미분류 프로젝트</div>}
                             {ungroupedProjects.map(project => (
-                                <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} draggable={true} onSelect={() => onSelectProject(project.id)} onOpenInspector={() => onOpenInspector(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} />
+                                <ProjectItem key={project.id} project={project} isSelected={project.id === selectedProjectId} isChecked={checkedProjectIds.has(project.id)} sizeMode={sizeMode} draggable={true} onSelect={() => onSelectProject(project.id)} onOpenInspector={() => onOpenInspector(project.id)} onToggle={() => onToggleCheck(project.id)} onDelete={() => onDeleteProject(project.id)} onRename={(newName) => onRenameProject(project.id, newName)} onOpenProcessing={() => onOpenProcessing(project.id)} onOpenExport={() => onOpenExport(project.id)} />
                             ))}
                         </div>
                     )}

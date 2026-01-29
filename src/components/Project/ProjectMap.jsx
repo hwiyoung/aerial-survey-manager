@@ -68,7 +68,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                     />
                 )}
 
-                <RegionBoundaryLayer visible={true} />
+                <RegionBoundaryLayer visible={true} interactive={!isProcessingMode} />
 
                 {images.length > 0 && <FitBounds images={images} />}
 

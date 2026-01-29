@@ -68,6 +68,32 @@ def get_orthophoto_bounds(file_path: str) -> Optional[str]:
     return None
 
 
+def calculate_area_km2(wkt_polygon: str) -> float:
+    """Calculate area of a WKT polygon in km2 using PostGIS geometry."""
+    # This will be done via SQL query in the task
+    return 0.0
+
+
+def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:
+    """Find the region that has the most overlapping area with the given polygon."""
+    from sqlalchemy import text
+    try:
+        # Query regions table to find the layer with maximum intersection area
+        query = text("""
+            SELECT layer
+            FROM regions
+            WHERE ST_Intersects(geom, ST_Transform(ST_GeomFromText(:wkt, 4326), 5179))
+            ORDER BY ST_Area(ST_Intersection(geom, ST_Transform(ST_GeomFromText(:wkt, 4326), 5179))) DESC
+            LIMIT 1
+        """)
+        result = db_session.execute(query, {"wkt": wkt_polygon}).fetchone()
+        if result:
+            return result[0]
+    except Exception as e:
+        print(f"Failed to find best region: {e}")
+    return None
+
+
 @celery_app.task(bind=True, name="app.workers.tasks.process_orthophoto")
 def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     """
@@ -143,7 +169,11 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             
             update_progress(5, "Downloading images from storage...")
             
+            total_source_size = 0
             for i, image in enumerate(images):
+                if image.file_size:
+                    total_source_size += image.file_size
+                
                 if image.original_path:
                     local_path = input_dir / image.filename
                     storage.download_file(image.original_path, str(local_path))
@@ -151,6 +181,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     # Update download progress
                     download_progress = 5 + int((i + 1) / len(images) * 15)
                     update_progress(download_progress, f"Downloaded {i + 1}/{len(images)} images")
+            
+            project.source_size = total_source_size
+            db.commit()
             
             update_progress(20, "Starting processing engine...")
             
@@ -221,7 +254,42 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             checksum = calculate_file_checksum(str(result_path))
             file_size = os.path.getsize(result_path)
             
-            # Broadcast completion via WebSocket
+            # Update project bounds from orthophoto
+            update_progress(98, "Updating project footprint...")
+            bounds_wkt = get_orthophoto_bounds(str(result_path))
+            if bounds_wkt:
+                project.bounds = bounds_wkt
+                
+                # Calculate area using PostGIS
+                try:
+                    from sqlalchemy import text
+                    # Project to 5179 (suitable for Korea area calculation)
+                    area_query = text("SELECT ST_Area(ST_Transform(ST_GeomFromText(:wkt, 4326), 5179)) / 1000000.0")
+                    area_result = db.execute(area_query, {"wkt": bounds_wkt}).scalar()
+                    project.area = area_result
+                except Exception as area_err:
+                    print(f"Area calculation failed: {area_err}")
+                
+                # Auto-assign region based on overlap
+                best_region = get_best_region_overlap(bounds_wkt, db)
+                if best_region:
+                    project.region = best_region
+                elif not project.region:
+                    # Fallback to point check if no intersection found in regions table
+                    lon, lat = extract_center_from_wkt(bounds_wkt)
+                    if lon and lat:
+                        region = get_region_for_point(lon, lat)
+                        if region:
+                            project.region = region
+            
+            # Final status update
+            project.status = "completed"
+            project.progress = 100
+            project.ortho_path = result_object_name  # Store ortho path in project
+            project.ortho_size = file_size
+            db.commit()
+
+            # Broadcast completion via WebSocket AFTER all DB updates
             try:
                 import httpx
                 # Call internal API to broadcast WebSocket update
@@ -237,34 +305,6 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 )
             except Exception as ws_error:
                 print(f"WebSocket broadcast failed: {ws_error}")
-            
-            # Update job with result
-            job.status = "completed"
-            job.progress = 100
-            job.completed_at = datetime.utcnow()
-            job.result_path = result_object_name  # Use storage path for presigned URL access
-            job.result_checksum = checksum
-            job.result_size = file_size
-            
-            # Update project bounds from orthophoto
-            update_progress(98, "Updating project footprint...")
-            bounds_wkt = get_orthophoto_bounds(str(result_path))
-            if bounds_wkt:
-                project.bounds = bounds_wkt
-                
-                # Auto-assign region if not set
-                if not project.region:
-                    lon, lat = extract_center_from_wkt(bounds_wkt)
-                    if lon and lat:
-                        region = get_region_for_point(lon, lat)
-                        if region:
-                            project.region = region
-            
-            project.status = "completed"
-            project.progress = 100
-            project.ortho_path = result_object_name  # Store ortho path in project
-            
-            db.commit()
             
             return {
                 "status": "completed",

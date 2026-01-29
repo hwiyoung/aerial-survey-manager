@@ -22,14 +22,14 @@ async def get_region_boundaries(db: AsyncSession = Depends(get_db)):
         FROM (
           SELECT jsonb_build_object(
             'type',       'Feature',
-            'id',         id,
-            'geometry',   ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform(geom, 4326), 0.001))::jsonb,
+            'geometry',   ST_AsGeoJSON(ST_SimplifyPreserveTopology(ST_Transform(ST_Union(geom), 4326), 0.005))::jsonb,
             'properties', jsonb_build_object(
-                'name', name,
+                'name', layer,
                 'layer', layer
             )
           ) AS feature
           FROM regions
+          GROUP BY layer
         ) features;
     """)
     

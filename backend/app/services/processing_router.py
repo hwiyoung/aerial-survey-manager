@@ -375,7 +375,7 @@ class MetashapeEngine(ProcessingEngine):
         import json
         
         if progress_callback:
-            await progress_callback(0, "Metashape 엔진 초기화 및 라이선스 활성화 중...")
+            await progress_callback(0, "엔진 초기화 중...")
             
         # 1. 사이클 시작: 라이선스 활성화
         script_base = Path("/app/engines/metashape/dags/metashape")

@@ -42,6 +42,9 @@ class Project(Base):
     
     # Spatial data (PostGIS)
     bounds = mapped_column(Geometry("POLYGON", srid=4326), nullable=True)
+    area: Mapped[float | None] = mapped_column(Float, nullable=True) # km2
+    source_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True) # total size of source images
+    ortho_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True) # size of generated ortho
     ortho_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     
     # Relationships
