@@ -164,15 +164,13 @@ services:
       - ./backend/app:/app/app
       - ./engines/metashape:/app/engines/metashape
       - ./data/processing:/data/processing
-      - metashape-license:/var/lib/Agisoft/Metashape
-      - metashape-license:/root/.local/share/Agisoft/Metashape
+      - metashape-license:/var/tmp/agisoft/licensing
     depends_on:
       - redis
       - db
       - minio
     networks:
       aerial-network:
-        ipv4_address: 172.23.0.100
         aliases:
           - worker-metashape
     mac_address: "02:42:AC:17:00:64"  # Static MAC for stable Machine ID

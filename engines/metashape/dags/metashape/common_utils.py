@@ -115,77 +115,78 @@ def activate_metashape_license():
     """
     license_key = os.getenv("METASHAPE_LICENSE_KEY")
     if not license_key:
-        print("ℹ️ METASHAPE_LICENSE_KEY 환경 변수가 설정되지 않았습니다.")
+        print("ℹ️ METASHAPE_LICENSE_KEY 환경 변수가 설정되지 않았습니다.", flush=True)
         return
 
-    # 이미 활성화되어 있는지 여러 방법으로 체크
+    # 1. 라이선스 상태 확인
     is_activated = False
     try:
-        if Metashape.License().activated:
+        # Metashape 2.2.0+ 에서는 .valid 사용
+        if hasattr(Metashape.License(), 'valid') and Metashape.License().valid:
             is_activated = True
     except:
         pass
     
-    try:
-        if not is_activated and Metashape.app.activated:
-            is_activated = True
-    except:
-        pass
+    if not is_activated:
+        try:
+            if hasattr(Metashape.app, 'activated') and Metashape.app.activated:
+                is_activated = True
+        except:
+            pass
 
     if is_activated:
-        print("✅ Metashape가 이미 활성화되어 있습니다.")
+        print("✅ Metashape 라이선스가 이미 활성화되어 있습니다.", flush=True)
         return
 
-    print(f"🔑 Metashape 라이선스 활성화를 시도합니다... (Key: {license_key[:5]}***)")
-    print(f"📣 Machine ID Check: {Metashape.License().machine_id if hasattr(Metashape.License(), 'machine_id') else 'N/A'}")
+    # 2. 라이선스 미활성화 상태인 경우 활성화 프로세스 시작
+    print(f"🔑 Metashape 라이선스 활성화를 시작합니다... (Key: {license_key[:5]}***)", flush=True)
     
-    # Check for existing license files
+    # [참고] 라이선스 파일 경로 확인 (디버깅용)
     possible_paths = [
+        "/var/tmp/agisoft/licensing",
         "/var/lib/Agisoft/Metashape",
         "/root/.local/share/Agisoft/Metashape"
     ]
     for p in possible_paths:
         if os.path.exists(p):
-            print(f"📂 Checking path: {p}")
+            print(f"📂 경로 확인: {p}", flush=True)
             try:
                 files = os.listdir(p)
-                print(f"   Files: {files}")
-            except Exception as e:
-                print(f"   Error listing files: {e}")
-        else:
-            print(f"📂 Path does not exist: {p}")
+                if files: print(f"   내부 파일: {files}", flush=True)
+            except: pass
             
     try:
-        # 기존에 엉킨 세션이 있을 수 있으므로 비활성화를 먼저 시도시도 (실패해도 무방)
+        # 3. 기존에 엉킨 세션이 있을 수 있으므로 비활성화를 먼저 시도 (권장사항)
         try:
             Metashape.License().deactivate()
-            print("ℹ️ 이전 라이선스 세션 비활성화를 시도했습니다.")
-        except Exception as de_e:
-            print(f"ℹ️ 세션 비활성화 건너뜀 (이미 비어있을 수 있음): {de_e}")
+        except:
+            pass
             
-        print("📣 Metashape.License().activate() 호출 중...")
+        # 4. 라이선스 활성화 실행
+        print("📣 Metashape.License().activate() 호출 중...", flush=True)
         Metashape.License().activate(license_key)
         
-        # 활성화 확인
-        if Metashape.License().activated:
-            print("✅ Metashape.License().activated: True")
-        if Metashape.app.activated:
-            print("✅ Metashape.app.activated: True")
-            
-        if Metashape.License().activated or Metashape.app.activated:
-            print("✅ Metashape 라이선스 활성화 최종 성공")
+        # 5. 최종 활성화 확인
+        final_valid = False
+        try: final_valid = Metashape.License().valid
+        except: pass
+        
+        final_app_act = False
+        try: final_app_act = Metashape.app.activated
+        except: pass
+
+        if final_valid or final_app_act:
+            print("✅ Metashape 라이선스 활성화 최종 성공", flush=True)
         else:
-            print("❌ Metashape 라이선스 활성화 실패 (에러는 없으나 상태가 False)")
+            print("❌ Metashape 라이선스 활성화 실패 (활성화 후 상태가 여전히 False)", flush=True)
+
     except Exception as e:
         if "already" in str(e).lower():
-            print(f"ℹ️ 라이선스가 이미 활성화되어 있습니다 (Exception): {e}")
+            print(f"ℹ️ 라이선스가 이미 활성화되어 있습니다 (Exception): {e}", flush=True)
         elif "not available" in str(e).lower():
-            print(f"⚠️ 라이선스 가용 수량 부족! (중요: 다른 곳에서 비활성화가 필요할 수 있습니다): {e}")
-            # 이 에러가 나면 비활성화를 한 번 더 명시적으로 시도해볼 수 있음
-            try: Metashape.License().deactivate() 
-            except: pass
+            print(f"⚠️ 라이선스 가용 수량 부족! (다른 곳에서 비활성화가 필요할 수 있습니다): {e}", flush=True)
         else:
-            print(f"⚠️ 라이선스 활성화 중 예외 발생: {e}")
+            print(f"⚠️ 라이선스 활성화 중 예외 발생: {e}", flush=True)
             import traceback
             traceback.print_exc()
 

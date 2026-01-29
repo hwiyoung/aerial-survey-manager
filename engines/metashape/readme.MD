@@ -1,78 +1,39 @@
-https://github.com/innopam/geo-registration
-# Airflow Ortho Project
+# Metashape Processing Engine
 
-This project uses Apache Airflow to manage and orchestrate workflows for the Ortho application.
+항공측량 매니저 플랫폼의 고성능 정사영상 처리 엔진입니다. Agisoft Metashape Professional Python SDK를 기반으로 동작합니다.
 
-## Prerequisites
+## 🚀 Key Features
+- **GPU Acceleration**: NVIDIA CUDA 가속을 통한 고속 매칭 및 포인트 클라우드 생성
+- **Celery Integration**: 분산 처리 큐를 통한 비동기 작업 관리
+- **License Persistence**: Docker 볼륨 및 고정 MAC 주소를 활용한 안정적인 라이선스 유지
 
-- Python 3.7+
-- Apache Airflow 2.0+
-- Docker (optional, for containerized deployment)
+## 🛠 Setup & Licensing
 
-## Installation
+### 1. Environment Setup
+`.env` 파일에 라이선스 키 및 하드웨어 설정을 입력합니다.
 
-1. Clone the repository:
+```env
+METASHAPE_LICENSE_KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+```
 
-   ```bash
-   git clone https://github.com/yourusername/airflow-ortho.git
-   cd airflow-ortho
-   ```
+### 2. License Activation
+컨테이너 실행 후 최초 1회 활성화가 필요합니다.
 
-2. Create a virtual environment and activate it:
+```bash
+docker exec worker-metashape python3 /app/engines/metashape/dags/metashape/activate.py
+```
 
-   ```bash
-   pyenv virtualenv 3.11.2 airflow-ortho
-   ```
+### 3. Verification
+활성화 상태를 확인하려면 다음 명령어를 실행합니다.
+```bash
+docker exec worker-metashape python3 -c "import Metashape; print(Metashape.License().valid)"
+```
 
-   ```bash
-   pyenv activate airflow-ortho
-   ```
+## 📁 Structure
+- `dags/`: Airflow 호환용 DAG 파일 (Celery Worker에서도 공유됨)
+- `dags/metashape/`: 실제 Metashape 처리 로직 및 공통 유틸리티
+- `Dockerfile`: CUDA 12.0 기반 Metashape 런타임 이미지
 
-3. Install the required dependencies:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Initialize the Airflow database:
-   ```bash
-   airflow db init
-   ```
-
-## Configuration
-
-1. Set up the Airflow configuration file (`airflow.cfg`) as needed.
-2. Define your DAGs in the `d₩ags/` directory.
-
-## Running Airflow
-
-1. Start the Airflow web server:
-
-   ```bash
-   airflow webserver --port 8080
-   ```
-
-2. Start the Airflow scheduler:
-
-   ```bash
-   airflow scheduler
-   ```
-
-3. Access the Airflow UI by navigating to `http://localhost:8080` in your web browser.
-
-## Deployment
-
-For containerized deployment, use the provided `Dockerfile` and `docker-compose.yml` to build and run the application.
-
-## Contributing
-
-Please read `CONTRIBUTING.md` for details on our code of conduct and the process for submitting pull requests.
-
-## License
-
-This project is licensed under the MIT License - see the `LICENSE` file for details.
-
-## Acknowledgments
-
-- Apache Airflow
-- Docker
+## ⚠️ Notes
+- Metashape 2.2.0 버전을 사용하며, 라이선스 체크 시 `.valid` 속성을 사용합니다.
+- 라이선스 파일은 `/var/tmp/agisoft/licensing` 경로에 저장되도록 설정되어 있습니다.

@@ -223,8 +223,8 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] **TB급 업로드 안정화**: 20MB Chunk 및 동시성 제어 적용 (upload.js)
 - [x] **인프라 튜닝**: Nginx `proxy_request_buffering off`를 통한 스트리밍 안정화
 - [x] **Monorepo 구조 전환**: `/engines` 디렉토리를 통한 처리 엔진 통합 관리
-- [x] **Metashape 엔진 통합**: 고성능 GPU 워커 구축 및 파이프라인 연동 완료
-- [x] **라이선스 안정화**: Always Active + 볼륨 영속화 전략으로 중단 없는 처리 보장
+- [x] **Metashape 엔진 통합**: 고성능 GPU 워커 구축 및 파이프라인 연동 완료 (2.2.0 호환성 패치 적용)
+- [x] **라이선스 안정화**: Always Active + 볼륨 영속화(/var/tmp/agisoft/licensing) 전략으로 중단 없는 처리 보장
 - [x] **EO 데이터 파싱 최적화**: 500 에러 해결 및 대용량 매칭 로직 안정화
 - [x] **External API 드라이버**: 상세 명세 기반 드라이버 고도화 및 Webhook 연동 완료
 
