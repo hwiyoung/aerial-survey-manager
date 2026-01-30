@@ -254,6 +254,24 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
     return null;
 }
 
+const REGION_PANE = 'region-boundary';
+const PROJECT_PANE = 'project-footprint';
+
+export function MapPanes() {
+    const map = useMap();
+
+    useEffect(() => {
+        if (!map) return;
+        const regionPane = map.getPane(REGION_PANE) || map.createPane(REGION_PANE);
+        const projectPane = map.getPane(PROJECT_PANE) || map.createPane(PROJECT_PANE);
+
+        regionPane.style.zIndex = '2';
+        projectPane.style.zIndex = '3';
+    }, [map]);
+
+    return null;
+}
+
 // Map bounds fitter component
 function MapBoundsFitter({ bounds }) {
     const map = useMap();
@@ -365,11 +383,12 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 
         return {
             fillColor: color,
-            fillOpacity: isActive ? 0.2 : 0.08, // Increased for better interactivity
+            fillOpacity: 0, // Fully transparent fill
             color: color,
-            weight: isActive ? 2 : 1, // Minimum weight of 1 for better visibility
-            opacity: 0.3,
+            weight: isActive ? 3 : 2,
+            opacity: 0.85,
             interactive: interactive,
+            fill: false,
         };
     };
 
@@ -423,8 +442,9 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 
                 const layer_target = e.target;
                 layer_target.setStyle({
-                    fillOpacity: 0.2,
-                    weight: 2
+                    fillOpacity: 0,
+                    weight: 3,
+                    opacity: 0.9
                 });
             },
             mouseout: (e) => {
@@ -457,6 +477,7 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
             style={regionStyle}
             onEachFeature={onEachFeature}
             interactive={interactive}
+            pane={REGION_PANE}
         />
     );
 }
@@ -561,12 +582,20 @@ export function FootprintMap({
 
     // Region layer visibility
     const [showRegions, setShowRegions] = useState(true);
+    const [showFootprints, setShowFootprints] = useState(true);
 
     // Selected project for COG overlay (highlighted or selected, if completed)
     const activeProjectId = highlightProjectId || selectedProjectId;
     const selectedCogProject = activeProjectId
         ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
+
+    useEffect(() => {
+        if (!showFootprints) {
+            setHoveredProjectId(null);
+            setOverlapProjects(null);
+        }
+    }, [showFootprints]);
 
     // Reset COG status when selected project changes
     useEffect(() => {
@@ -638,6 +667,14 @@ export function FootprintMap({
                     {/* Legend */}
                     <div className="flex gap-3 text-xs">
                         <button
+                            onClick={() => setShowFootprints(!showFootprints)}
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showFootprints ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}
+                            title="프로젝트 바운딩박스 표시 토글"
+                        >
+                            {showFootprints ? <Eye size={12} /> : <EyeOff size={12} />}
+                            <span>프로젝트</span>
+                        </button>
+                        <button
                             onClick={() => setShowRegions(!showRegions)}
                             className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showRegions ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}
                             title="권역 경계 표시 토글"
@@ -665,6 +702,7 @@ export function FootprintMap({
                     zoomControl={true}
                     preferCanvas={true}
                 >
+                    <MapPanes />
                     {/* Central Loading Spinner */}
                     {cogLoadStatus === 'loading' && (
                         <div className="absolute inset-0 z-[1001] flex flex-col items-center justify-center bg-slate-900/10 backdrop-blur-[1px]">
@@ -694,8 +732,8 @@ export function FootprintMap({
                         visible={showRegions}
                         onRegionClick={onRegionClick}
                         activeRegion={activeRegionName}
-                        footprints={footprints}
-                        hoveredProjectId={hoveredProjectId}
+                        footprints={showFootprints ? footprints : []}
+                        hoveredProjectId={showFootprints ? hoveredProjectId : null}
                     />
 
                     {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && !activeRegionName && <MapBoundsFitter bounds={allPoints} />}
@@ -712,7 +750,7 @@ export function FootprintMap({
                         />
                     )}
 
-                    {footprints.map((fp) => {
+                    {showFootprints && footprints.map((fp) => {
                         const isHighlighted = fp.id === highlightProjectId;
                         const isSelected = fp.id === selectedProjectId;
                         const isHovered = fp.id === hoveredProjectId;
@@ -736,6 +774,7 @@ export function FootprintMap({
                             <Rectangle
                                 key={fp.id}
                                 bounds={fp.bounds}
+                                pane={PROJECT_PANE}
                                 pathOptions={{
                                     color: getStrokeColor(),
                                     fillColor: getFillColor(),
@@ -751,10 +790,7 @@ export function FootprintMap({
 
                                         // Find all other projects at this location to handle overlaps
                                         const latlng = e.latlng;
-                                        const overlapping = footprints.filter(f => {
-                                            const bounds = L.latLngBounds(f.bounds);
-                                            return bounds.contains(latlng);
-                                        });
+                                        const overlapping = footprints.filter(f => isNearlySameBounds(f.bounds, fp.bounds));
 
                                         if (overlapping.length > 1) {
                                             setOverlapProjects({
@@ -783,15 +819,13 @@ export function FootprintMap({
                                             // 현재 위치에서 겹치는 모든 프로젝트 찾기
                                             const overlapping = footprints.filter(f => {
                                                 if (!f.bounds || !fp.bounds) return false;
-                                                const b1 = L.latLngBounds(f.bounds);
-                                                const b2 = L.latLngBounds(fp.bounds);
-                                                return b1.overlaps(b2) || b1.equals(b2);
+                                                return isNearlySameBounds(f.bounds, fp.bounds);
                                             });
 
                                             if (overlapping.length > 1) {
                                                 return (
                                                     <div>
-                                                        <div className="font-bold text-purple-700 mb-1">📍 {overlapping.length}개 프로젝트 겹침</div>
+                                                        <div className="font-bold text-purple-700 mb-1">📍 {overlapping.length}개 프로젝트 경계 거의 동일</div>
                                                         {overlapping.slice(0, 5).map((f, i) => (
                                                             <div key={f.id} className={`${f.id === fp.id ? 'font-bold text-purple-600' : 'text-slate-600'}`}>
                                                                 {i + 1}. {f.project.title}
@@ -820,6 +854,7 @@ export function FootprintMap({
                             position={overlapProjects.latlng}
                             onClose={() => setOverlapProjects(null)}
                             minWidth={200}
+                            closeOnClick={false}
                         >
                             <div className="p-1">
                                 <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider border-b pb-1">프로젝트 선택 ({overlapProjects.projects.length})</h4>
@@ -827,9 +862,15 @@ export function FootprintMap({
                                     {overlapProjects.projects.map(p => (
                                         <button
                                             key={p.id}
-                                            onClick={() => {
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
                                                 if (onProjectClick) onProjectClick(p);
                                                 setOverlapProjects(null);
+                                            }}
+                                            onMouseDown={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
                                             }}
                                             className={`w-full text-left px-3 py-2 rounded text-sm transition-colors flex items-center justify-between group ${p.id === selectedProjectId ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}
                                         >
@@ -848,4 +889,31 @@ export function FootprintMap({
 }
 
 export default FootprintMap;
+    const boundsArea = (bounds) => {
+        const minLat = Math.min(bounds[0][0], bounds[1][0]);
+        const maxLat = Math.max(bounds[0][0], bounds[1][0]);
+        const minLng = Math.min(bounds[0][1], bounds[1][1]);
+        const maxLng = Math.max(bounds[0][1], bounds[1][1]);
+        return Math.max(0, maxLat - minLat) * Math.max(0, maxLng - minLng);
+    };
 
+    const boundsIntersectionArea = (a, b) => {
+        const minLat = Math.max(Math.min(a[0][0], a[1][0]), Math.min(b[0][0], b[1][0]));
+        const maxLat = Math.min(Math.max(a[0][0], a[1][0]), Math.max(b[0][0], b[1][0]));
+        const minLng = Math.max(Math.min(a[0][1], a[1][1]), Math.min(b[0][1], b[1][1]));
+        const maxLng = Math.min(Math.max(a[0][1], a[1][1]), Math.max(b[0][1], b[1][1]));
+        const h = Math.max(0, maxLat - minLat);
+        const w = Math.max(0, maxLng - minLng);
+        return h * w;
+    };
+
+    const isNearlySameBounds = (a, b) => {
+        const areaA = boundsArea(a);
+        const areaB = boundsArea(b);
+        if (areaA === 0 || areaB === 0) return false;
+        const inter = boundsIntersectionArea(a, b);
+        const union = areaA + areaB - inter;
+        const iou = union > 0 ? inter / union : 0;
+        const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
+        return iou >= 0.9 && areaRatio >= 0.95;
+    };

@@ -18,6 +18,8 @@
 
 - EO 업로드 시 파싱된 데이터가 자동으로 `data/processing/{project_id}/images/metadata.txt`에 저장됩니다.
 - Metashape `align_photos.py`는 위 파일을 우선 탐색해 `importReference`에 사용합니다.
+- `metadata.txt`는 **이미지 파일명과 매칭된 행만** 저장됩니다. 매칭이 0건이면 `importReference`가 수행되지 않습니다.
+- 매칭이 실패하면 `reference_normalized.txt`가 생성되지 않으며, 이후 DEM 단계에서 `Empty DEM` 오류가 발생할 수 있습니다.
 - 필요 시 명시 경로를 사용하려면:
   - 스크립트 인자: `--reference_path /path/to/eo.txt`
   - 환경변수: `EO_REFERENCE_PATH` 또는 `METASHAPE_REFERENCE_PATH`

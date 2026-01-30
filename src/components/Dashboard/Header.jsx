@@ -1,5 +1,5 @@
 import React from 'react';
-import { Map, Bell, User, LogOut } from 'lucide-react';
+import { Bell, User, LogOut } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export default function Header({ onLogoClick }) {
@@ -21,8 +21,10 @@ export default function Header({ onLogoClick }) {
                 }}
                 title="메인 페이지로 이동"
             >
-                <div className="bg-blue-600 p-1.5 rounded text-white"><Map size={20} /></div>
-                <h1 className="font-bold text-lg text-slate-800 tracking-tight">InnoPAM <span className="font-normal text-slate-500 text-sm hidden sm:inline">| 실감정사영상 생성 플랫폼</span></h1>
+                <img src="/siqms_mark.png" alt="SIQMS" className="w-[64px] h-[64px] object-contain" />
+                <h1 className="font-bold text-lg text-slate-800 tracking-tight">
+                    공간정보품질관리원 <span className="font-normal text-slate-500">| AI 기반 품질검증 지원 시스템 - 실감정사영상 생성 플랫폼</span>
+                </h1>
             </div>
             <div className="flex items-center gap-4">
                 <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-full relative">

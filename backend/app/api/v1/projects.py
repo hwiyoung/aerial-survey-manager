@@ -516,6 +516,7 @@ async def upload_eo_data(
     # Handle common aliases or variations
     if "WGS84" in source_crs or source_crs == "EPSG:4326":
         transformer = None
+        source_crs = "EPSG:4326"
     else:
         try:
             # always_xy=True: input is (x, y) [long/east, lat/north], output is (long, lat)
@@ -532,13 +533,16 @@ async def upload_eo_data(
     errors = []
     reference_rows = []
     reference_keys = set()
+    reference_crs = source_crs
 
     try:
         for row in parsed_rows:
             row_name = os.path.basename(row.image_name)
             # Transform if needed
-            x_val = row.x
-            y_val = row.y
+            original_x = row.x
+            original_y = row.y
+            x_val = original_x
+            y_val = original_y
             crs_val = source_crs
             if transformer:
                 try:
@@ -549,12 +553,6 @@ async def upload_eo_data(
                 except Exception as e:
                     errors.append(f"Transform error for {row_name}: {e}")
                     continue
-
-            # Collect reference rows (dedup by name)
-            row_key = row_name.lower()
-            if row_key not in reference_keys:
-                reference_rows.append((row_name, x_val, y_val, row.z, row.omega, row.phi, row.kappa))
-                reference_keys.add(row_key)
 
             # Matching logic
             image = image_map.get(row_name)
@@ -586,6 +584,12 @@ async def upload_eo_data(
                 crs=crs_val
             )
             eo_objects[image.id] = eo
+
+            # Collect reference rows only for matched images (dedup by name)
+            row_key = row_name.lower()
+            if row_key not in reference_keys:
+                reference_rows.append((row_name, original_x, original_y, row.z, row.omega, row.phi, row.kappa))
+                reference_keys.add(row_key)
             
             # Update image location (Point geometry)
             # Use string representation for GeoAlchemy2 to handle easily
@@ -625,6 +629,12 @@ async def upload_eo_data(
                 if region:
                     project.region = region
 
+        if matched_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"EO 파일의 이미지명이 업로드된 이미지와 일치하지 않습니다. (matched 0/{len(parsed_rows)})"
+            )
+
         # Save normalized EO reference file to local processing path for Metashape
         if reference_rows:
             try:
@@ -634,6 +644,8 @@ async def upload_eo_data(
                 reference_dir.mkdir(parents=True, exist_ok=True)
                 reference_path = reference_dir / "metadata.txt"
                 with open(reference_path, "w", encoding="utf-8") as f:
+                    if reference_crs:
+                        f.write(f"# CRS {reference_crs}\n")
                     for name, x_val, y_val, z_val, omega, phi, kappa in reference_rows:
                         f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
                 print(f"EO Upload: Saved reference file at {reference_path}")

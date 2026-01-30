@@ -377,6 +377,7 @@ class MetashapeEngine(ProcessingEngine):
         import sys
         import os
         import json
+        import shutil
         
         if progress_callback:
             await progress_callback(0, "엔진 초기화 중...")
@@ -396,6 +397,16 @@ class MetashapeEngine(ProcessingEngine):
                     logger.warning(f"Activation stderr: {act_result.stderr.strip()}")
 
             # 2. 본 작업 수행 (기존 로직)
+            # 이전 실행에서 남은 Metashape 프로젝트가 있으면 읽기 전용 상태로 열릴 수 있으므로 정리
+            project_psx = output_dir / "project.psx"
+            project_files = output_dir / "project.files"
+            if project_psx.exists():
+                logger.info(f"Cleaning existing Metashape project: {project_psx}")
+                project_psx.unlink()
+            if project_files.exists():
+                logger.info(f"Cleaning existing Metashape project folder: {project_files}")
+                shutil.rmtree(project_files, ignore_errors=True)
+
             image_files = [str(f) for f in input_dir.glob("*") if f.suffix.lower() in [".jpg", ".jpeg", ".tif", ".tiff"]]
             if not image_files:
                 raise RuntimeError("처리할 이미지가 없습니다.")
@@ -409,10 +420,19 @@ class MetashapeEngine(ProcessingEngine):
                 ("export_orthomosaic.py", "결과물 내보내기 (Export Orthomosaic)"),
             ]
             
-            process_mode = options.get("gsd", "Normal")
+            process_mode = options.get("process_mode") or options.get("gsd", "Normal")
             if process_mode not in ["Preview", "Normal", "High"]:
                 process_mode = "Normal"
+            logger.info(f"[Metashape] process_mode={process_mode} gsd={options.get('gsd')} output_crs={options.get('output_crs')}")
             output_epsg = options.get("output_crs", "4326")
+
+            def _truncate(text: str, limit: int = 4000) -> str:
+                if text is None:
+                    return ""
+                text = text.strip()
+                if len(text) <= limit:
+                    return text
+                return text[:limit] + "\n... (truncated)"
             
             for i, (script_name, message) in enumerate(steps):
                 if progress_callback:
@@ -438,13 +458,28 @@ class MetashapeEngine(ProcessingEngine):
                 reference_path = options.get("reference_path")
                 if reference_path:
                     cmd.extend(["--reference_path", str(reference_path)])
-                
+
+                if script_name == "align_photos.py":
+                    metadata_path = input_dir / "metadata.txt"
+                    logger.info(f"[Metashape] EO metadata path: {metadata_path} (exists={metadata_path.exists()})")
+                    if reference_path:
+                        logger.info(f"[Metashape] EO reference_path option: {reference_path}")
+
                 logger.info(f"🚀 [DEBUG_v5] Running Metashape step: {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True)
+
+                if result.stdout:
+                    logger.info(f"[Metashape:{script_name}] stdout:\n{_truncate(result.stdout)}")
+                if result.stderr:
+                    logger.warning(f"[Metashape:{script_name}] stderr:\n{_truncate(result.stderr)}")
                 
                 if result.returncode != 0:
                     logger.error(f"Metashape step {script_name} failed: {result.stderr}")
                     raise RuntimeError(f"Metashape 처리 실패 ({script_name}): {result.stderr}")
+
+                if script_name == "align_photos.py":
+                    normalized_reference = output_dir / "reference_normalized.txt"
+                    logger.info(f"[Metashape] reference_normalized.txt exists={normalized_reference.exists()} path={normalized_reference}")
                     
             # Result check
             result_tif = output_dir / "result.tif"

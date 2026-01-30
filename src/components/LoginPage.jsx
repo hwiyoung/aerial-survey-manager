@@ -2,7 +2,7 @@
  * Login Page Component
  */
 import React, { useState } from 'react';
-import { Map, User, Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
+import { User, Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function LoginPage() {
@@ -44,11 +44,10 @@ export default function LoginPage() {
             <div className="w-full max-w-md">
                 {/* Logo */}
                 <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4 shadow-lg shadow-blue-600/30">
-                        <Map className="w-8 h-8 text-white" />
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-white/10 rounded-2xl mb-4 shadow-lg shadow-blue-600/30">
+                        <img src="/siqms_mark.png" alt="SIQMS" className="w-[90px] h-[90px] object-contain" />
                     </div>
-                    <h1 className="text-2xl font-bold text-white">InnoPAM</h1>
-                    <p className="text-blue-200 mt-1">실감정사영상 생성 플랫폼</p>
+                    <h1 className="text-2xl font-bold text-white">실감정사영상 생성 플랫폼</h1>
                 </div>
 
                 {/* Form Card */}

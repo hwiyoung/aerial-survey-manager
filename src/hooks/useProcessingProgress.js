@@ -13,6 +13,7 @@ export function useProcessingProgress(projectId) {
     const [status, setStatus] = useState('idle'); // idle, connecting, queued, processing, complete, error
     const [message, setMessage] = useState('');
     const [isConnected, setIsConnected] = useState(false);
+    const [reconnectKey, setReconnectKey] = useState(0);
 
     const wsRef = useRef(null);
     const pingIntervalRef = useRef(null);
@@ -40,6 +41,9 @@ export function useProcessingProgress(projectId) {
                     if (data.status === 'completed') {
                         setStatus('complete');
                         setProgress(100);
+                    } else if (data.status === 'cancelled') {
+                        setStatus('cancelled');
+                        setProgress(0);
                     } else if (data.status === 'error' || data.status === 'failed') {
                         setStatus('error');
                     } else if (data.status === 'queued') {
@@ -95,6 +99,9 @@ export function useProcessingProgress(projectId) {
                         if (data.status === 'completed') {
                             setStatus('complete');
                             setProgress(100);
+                        } else if (data.status === 'cancelled') {
+                            setStatus('cancelled');
+                            setProgress(0);
                         } else if (data.status === 'error' || data.status === 'failed') {
                             setStatus('error');
                         } else if (data.status === 'queued') {
@@ -142,7 +149,7 @@ export function useProcessingProgress(projectId) {
                 wsRef.current = null;
             }
         };
-    }, [projectId]);
+    }, [projectId, reconnectKey]);
 
     // Manual reconnect function
     const reconnect = useCallback(() => {
@@ -150,6 +157,7 @@ export function useProcessingProgress(projectId) {
             wsRef.current.close();
         }
         setStatus('connecting');
+        setReconnectKey(prev => prev + 1);
     }, []);
 
     return {

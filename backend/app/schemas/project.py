@@ -156,6 +156,7 @@ class ProcessingOptions(BaseModel):
     gsd: float = 5.0  # cm/pixel
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
+    process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
 
 
 class ProcessingJobResponse(BaseModel):

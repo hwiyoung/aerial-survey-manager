@@ -56,3 +56,11 @@ Metashape 엔진이 로컬에 저장하는 라이선스 파일(`.lic`)을 영구
   ```json
   {"status":"processing","progress":42,"message":"이미지 정렬 (Align Photos)","updated_at":"..."}
   ```
+
+## Known Issue: 취소 후 재시작 오류
+
+- 동일 프로젝트에서 **처리 중단 직후 재시작**할 경우 Metashape 파이프라인에서 `Empty DEM` 등의 오류가 발생할 수 있습니다.
+- 이 경우 EO 파일명 매칭 실패/metadata.txt 불일치 가능성이 높으므로, 아래를 우선 확인하세요:
+  - `/data/processing/{project_id}/images/metadata.txt`의 이미지 파일명과 실제 이미지 파일명이 일치하는지
+  - `worker-metashape` 로그에서 `reference_normalized.txt exists=True` 여부
+  - 필요 시 EO 재업로드 또는 프로젝트 재생성

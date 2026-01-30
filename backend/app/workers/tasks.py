@@ -1,7 +1,7 @@
 """Celery application and async tasks."""
 import os
-    import hashlib
-    import json
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -131,7 +131,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             db.commit()
             
             # Setup directories
-            base_dir = Path(f"/data/processing/{project_id}")
+            base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id)
             input_dir = base_dir / "images"
             output_dir = base_dir / "output"
             input_dir.mkdir(parents=True, exist_ok=True)

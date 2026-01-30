@@ -204,6 +204,11 @@ function Dashboard() {
   }, []);
 
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
+  const [viewMode, setViewMode] = useState(initialViewMode);
+  const [processingProject, setProcessingProject] = useState(null);
+  const activeProjectId = viewMode === 'processing'
+    ? (processingProject?.id || selectedProjectId)
+    : selectedProjectId;
 
   // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
   // 로고 클릭 시 전체 대시보드를 보여주기 위해 자동 선택 비활성화
@@ -215,13 +220,13 @@ function Dashboard() {
 
   // Fetch images when project is selected
   useEffect(() => {
-    if (!selectedProjectId) {
+    if (!activeProjectId) {
       setProjectImages([]);
       return;
     }
 
     setLoadingImages(true);
-    api.getProjectImages(selectedProjectId)
+    api.getProjectImages(activeProjectId)
       .then(images => {
         // Normalize logic
         if (images.length === 0) {
@@ -283,7 +288,7 @@ function Dashboard() {
         setProjectImages([]);
       })
       .finally(() => setLoadingImages(false));
-  }, [selectedProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
+  }, [activeProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -293,8 +298,17 @@ function Dashboard() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [showInspector, setShowInspector] = useState(false); // Inspector only opens on double-click
 
-  const [viewMode, setViewMode] = useState(initialViewMode);
-  const [processingProject, setProcessingProject] = useState(null);
+  const processingViewProject = useMemo(() => {
+    if (!processingProject) return null;
+    const fromList = projects.find(p => p.id === processingProject.id);
+    if (!fromList) return processingProject;
+    return {
+      ...processingProject,
+      ...fromList,
+      images: processingProject.images || fromList.images || projectImages
+    };
+  }, [processingProject, projects, projectImages]);
+
 
   // Set processingProject when viewMode is processing and project is loaded
   useEffect(() => {
@@ -556,15 +570,17 @@ function Dashboard() {
             // We don't alert here anymore to avoid disruption,
             // the UI will show "completed" state.
 
-            // 썸네일 생성을 위해 지연 후 이미지 목록 새로고침 (3초 후, 8초 후)
-            // 썸네일 생성은 Celery 백그라운드 작업으로 처리되므로 약간의 지연 필요
-            const refreshThumbnails = async (delay) => {
-              await new Promise(resolve => setTimeout(resolve, delay));
-              setImageRefreshKey(prev => prev + 1);
-              console.log(`Thumbnail refresh triggered after ${delay}ms`);
-            };
-            refreshThumbnails(3000);  // 3초 후 첫 번째 새로고침
-            refreshThumbnails(8000);  // 8초 후 두 번째 새로고침
+            // 썸네일 생성은 Celery 백그라운드 작업으로 처리되므로
+            // 업로드 완료 후 일정 시간 동안 주기적으로 갱신
+            const attempts = 8;
+            const intervalMs = 4000;
+            for (let i = 1; i <= attempts; i += 1) {
+              const delay = i * intervalMs;
+              setTimeout(() => {
+                setImageRefreshKey(prev => prev + 1);
+                console.log(`Thumbnail refresh triggered after ${delay}ms`);
+              }, delay);
+            }
           },
           onError: (idx, name, err) => {
             console.error(`Failed ${name}`, err);
@@ -616,6 +632,7 @@ function Dashboard() {
       gsd: options.gsd || 5.0,
       output_crs: options.output_crs || 'EPSG:5186',
       output_format: options.output_format || 'GeoTiff',
+      process_mode: options.process_mode || 'Normal',
     };
 
     try {
@@ -625,6 +642,7 @@ function Dashboard() {
 
       // 업로드 패널 자동 숨김 (처리 시작 시)
       setActiveUploads([]);
+      setProcessingProject(prev => prev ? ({ ...prev, status: '대기', progress: 0 }) : prev);
 
       // Stay on processing page to show progress
       // The ProcessingSidebar will show progress via WebSocket connection
@@ -702,10 +720,18 @@ function Dashboard() {
         {viewMode === 'processing' ? (
           <ProcessingSidebar
             width={sidebarWidth}
-            project={projects.find(p => p.id === processingProject?.id) || processingProject}
+            project={processingViewProject}
             activeUploads={activeUploads}
             onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); refreshProjects(); }}
             onStartProcessing={handleStartProcessing}
+            onEoReloaded={async () => {
+              await refreshProjects();
+              setImageRefreshKey(prev => prev + 1);
+            }}
+            onCancelled={async () => {
+              await refreshProjects();
+              setProcessingProject(prev => prev ? ({ ...prev, status: '취소', progress: 0 }) : prev);
+            }}
             onComplete={async () => {
               console.log('onComplete called - refreshing data'); // 디버그용
               // 프로젝트 목록 갱신

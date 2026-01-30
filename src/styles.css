@@ -49,16 +49,36 @@
 .leaflet-tile-pane,
 .leaflet-overlay-pane,
 .leaflet-shadow-pane,
-.leaflet-marker-pane,
-.leaflet-tooltip-pane,
-.leaflet-popup-pane {
+.leaflet-marker-pane {
   z-index: 1 !important;
+}
+
+.leaflet-tooltip-pane {
+  z-index: 1000 !important;
+}
+
+.leaflet-popup-pane {
+  z-index: 1001 !important;
+  pointer-events: auto;
+}
+
+.leaflet-popup {
+  pointer-events: auto;
 }
 
 .leaflet-control-container,
 .leaflet-control-zoom,
 .leaflet-control {
   z-index: 10 !important;
+}
+
+/* Project tooltip priority: keep project footprints above regions */
+.leaflet-region-boundary-pane {
+  z-index: 2 !important;
+}
+
+.leaflet-project-footprint-pane {
+  z-index: 3 !important;
 }
 
 /* Ensure map wrapper doesn't break out of stacking context */

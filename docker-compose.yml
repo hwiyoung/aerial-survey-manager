@@ -47,7 +47,7 @@ services:
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
     volumes:
       - ./backend:/app
-      - ./data/processing:/data/processing
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
     depends_on:
       db:
         condition: service_healthy
@@ -96,10 +96,10 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
-      - HOST_DATA_PATH=${PWD}/data/processing
+      - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
     volumes:
       - ./backend/app:/app/app
-      - ./data/processing:/data/processing
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
@@ -127,7 +127,7 @@ services:
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
     volumes:
       - ./backend/app:/app/app
-      - ./data/processing:/data/processing
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
     depends_on:
       - redis
       - db
@@ -163,7 +163,7 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./engines/metashape:/app/engines/metashape
-      - ./data/processing:/data/processing
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
       - metashape-license:/var/tmp/agisoft/licensing
     depends_on:
       - redis

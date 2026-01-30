@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Loader2, Camera, Layers, X } from 'lucide-react';
-import { TiTilerOrthoLayer, RegionBoundaryLayer } from '../Dashboard/FootprintMap';
+import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
 
 function FitBounds({ images }) {
     const map = useMap();
@@ -53,6 +53,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                 style={{ height: '100%', width: '100%', background: '#f1f5f9' }}
                 zoomControl={false}
             >
+                <MapPanes />
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

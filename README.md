@@ -66,6 +66,19 @@ docker-compose up -d
 docker-compose ps
 ```
 
+### Data directory (processing cache)
+
+기본 데이터 저장 경로는 **호스트의 `./data/processing` → 컨테이너의 `/data/processing`** 입니다.  
+다른 위치로 변경하려면 아래처럼 환경변수를 지정한 뒤 `docker-compose`를 실행하세요.
+
+```bash
+export PROCESSING_DATA_PATH=/your/fast/disk/aerial-data/processing
+docker-compose up -d
+```
+
+> ODM 엔진은 `HOST_DATA_PATH`를 사용해 호스트 경로를 참조합니다.  
+> `docker-compose.yml`에서 `PROCESSING_DATA_PATH`를 설정하면 자동으로 반영됩니다.
+
 ### Access Points
 
 | Service | URL | Description |
@@ -240,13 +253,14 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] **이미지 중복 방지**: 같은 파일명 업로드 시 Image 레코드 중복 생성 방지 (2026-01-29)
 - [x] **브라우저 히스토리**: popstate 이벤트 리스너로 뒤로가기 버튼 지원 (2026-01-29)
 
-## ⚠️ Known Issues (2026-01-29)
+## ⚠️ Known Issues (2026-01-30)
 
 ### 지도 및 상호작용
 - **권역 툴팁 우선순위**: 권역(Region)과 프로젝트(Footprint) 중첩 시 바운딩박스 호버에도 권역 툴팁이 표시되는 경우 있음 (CSS + 이벤트 제어로 개선 중)
 
 ### 시스템
 - **COG Loading**: MinIO presigned URL 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
+- **처리 중단 후 재시작 오류**: 동일 프로젝트에서 처리 중단 후 곧바로 재시작할 때 Metashape 단계에서 오류(예: `Empty DEM`)가 발생할 수 있음. EO 파일명 매칭/metadata.txt 상태를 확인하고, 필요 시 EO 재업로드 또는 프로젝트 재생성을 권장.
 
 실제 데이터를 사용하여 플랫폼을 테스트하는 방법은 다음과 같습니다.
 
@@ -270,6 +284,7 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 4. **EO 데이터 파일 업로드**
    - 이미지 업로드 후, 구성 파일(EO) 업로드 섹션에 `.csv` 파일을 선택합니다.
    - 컬럼 매핑 정보가 기본값과 다른 경우 설정 창에서 수정할 수 있습니다.
+   - **이미지 파일명과 EO 파일명은 반드시 일치해야 합니다.** (매칭 0건인 경우 업로드가 실패하도록 방지됨)
 
 5. **정사영상 생성 시작**
    - '처리 시작' 버튼을 클릭합니다.

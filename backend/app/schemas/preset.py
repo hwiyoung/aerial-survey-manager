@@ -9,6 +9,7 @@ class PresetOptionsSchema(BaseModel):
     """Processing options that can be saved in a preset."""
     engine: str = "odm"  # odm, external
     gsd: float = 5.0  # cm/pixel
+    process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
 

@@ -1,5 +1,6 @@
 import Metashape
 import os
+import re
 from common_args import parse_arguments, print_debug_info
 from common_utils import activate_metashape_license, progress_callback, change_task_status_in_ortho
 
@@ -204,6 +205,23 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
             return None, matched, skipped
         return out_path, matched, skipped
 
+    def _extract_epsg_from_reference(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for _ in range(20):
+                    line = f.readline()
+                    if not line:
+                        break
+                    text = line.strip()
+                    if not text:
+                        continue
+                    match = re.search(r"EPSG[:\s]*([0-9]+)", text.upper())
+                    if match:
+                        return match.group(1)
+        except Exception:
+            return None
+        return None
+
     name_map, stem_map = _build_image_maps(input_images)
     env_reference = os.getenv("EO_REFERENCE_PATH") or os.getenv("METASHAPE_REFERENCE_PATH")
     search_dirs = [image_folder]
@@ -215,10 +233,21 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
         pass
     if output_path:
         search_dirs.append(output_path)
+    print(f"🔎 EO reference search dirs: {search_dirs}")
+    if env_reference:
+        print(f"🔎 EO reference explicit path: {env_reference}")
     geom_reference, geom_delim, geom_score = _select_reference_file(
         search_dirs, name_map, stem_map, explicit_path=(reference_path or env_reference)
     )
+    reference_epsg = None
     if geom_reference and geom_score > 0:
+        print(f"ℹ️ EO reference candidate selected: {geom_reference} (score {geom_score})")
+        reference_epsg = _extract_epsg_from_reference(geom_reference)
+        if reference_epsg:
+            print(f"ℹ️ EO reference EPSG detected: {reference_epsg}")
+        if reference_epsg and reference_epsg != str(input_epsg):
+            chunk.crs = Metashape.CoordinateSystem(f"EPSG::{reference_epsg}")
+            print(f"ℹ️ Coordinate system updated from reference: EPSG::{reference_epsg}")
         normalized_path, matched_count, skipped_count = _normalize_reference_file(
             geom_reference, geom_delim, name_map, stem_map, output_path
         )
@@ -233,7 +262,10 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
         else:
             print("⚠️ EO reference found but no matching rows. Skipping importReference.")
     else:
-        print("ℹ️ No EO reference file found. Skipping importReference.")
+        if geom_reference:
+            print(f"⚠️ EO reference found but score was {geom_score}. Skipping importReference.")
+        else:
+            print("ℹ️ No EO reference file found. Skipping importReference.")
         
 
     

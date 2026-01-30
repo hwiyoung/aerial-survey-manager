@@ -4,7 +4,18 @@ from common_utils import progress_callback, change_task_status_in_ortho
 import os
 import requests
 
-def build_point_cloud( output_path, run_id,reai_task_id):
+
+def _normalize_epsg(epsg_value):
+    if not epsg_value:
+        return None
+    value = str(epsg_value).strip()
+    if value.upper().startswith("EPSG::"):
+        value = value.split("::", 1)[1]
+    elif value.upper().startswith("EPSG:"):
+        value = value.split(":", 1)[1]
+    return value if value else None
+
+def build_point_cloud(output_path, run_id, reai_task_id, output_epsg=None):
     """
     Generate an orthophoto and other outputs with progress tracking and refined seamlines.
     
@@ -24,12 +35,44 @@ def build_point_cloud( output_path, run_id,reai_task_id):
         print("🛠 Build Point Cloud...")
         task_name = "Build Point Cloud"
         chunk = doc.chunk
+        try:
+            print(f"ℹ️ Chunk CRS: {chunk.crs}")
+        except Exception:
+            print("ℹ️ Chunk CRS: (unavailable)")
         chunk.buildPointCloud(
             progress=progress_callback_wrapper
         )
         doc.save(output_path + '/project.psx')
 
-        chunk.exportPointCloud(path=os.path.join(output_path,"point_cloud.zip"),source_data = Metashape.DataSource.PointCloudData,format=Metashape.PointCloudFormat.PointCloudFormatCesium,crs=Metashape.CoordinateSystem("EPSG::4326"))
+        export_epsg = _normalize_epsg(output_epsg)
+        print(f"ℹ️ Point cloud export target EPSG: {export_epsg}")
+        export_crs = Metashape.CoordinateSystem(f"EPSG::{export_epsg}") if export_epsg else None
+        export_ok = False
+        try:
+            if export_crs:
+                chunk.exportPointCloud(
+                    path=os.path.join(output_path, "point_cloud.zip"),
+                    source_data=Metashape.DataSource.PointCloudData,
+                    format=Metashape.PointCloudFormat.PointCloudFormatCesium,
+                    crs=export_crs
+                )
+                export_ok = True
+            else:
+                raise RuntimeError("No export CRS provided")
+        except Exception:
+            print("⚠️ Point cloud export with output CRS failed. Retrying without CRS transformation.")
+            try:
+                # Export without CRS to avoid datum transformation failures
+                chunk.exportPointCloud(
+                    path=os.path.join(output_path, "point_cloud.zip"),
+                    source_data=Metashape.DataSource.PointCloudData,
+                    format=Metashape.PointCloudFormat.PointCloudFormatCesium
+                )
+                export_ok = True
+            except Exception as export_error:
+                print(f"⚠️ Point cloud export skipped due to error: {export_error}")
+        if not export_ok:
+            print("⚠️ Point cloud export was skipped. Continuing pipeline.")
         progress_callback_wrapper(100)
         print("\n✅ Point cloud built successfully.")
 
@@ -64,7 +107,7 @@ def main():
     print_debug_info(args, input_images)
 
     # build_depth_maps 함수 실행
-    build_point_cloud(args.output_path, args.run_id, args.reai_task_id)
+    build_point_cloud(args.output_path, args.run_id, args.reai_task_id, args.output_epsg)
 
 if __name__ == "__main__":
     main()
