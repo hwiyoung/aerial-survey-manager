@@ -54,6 +54,11 @@ def parse_arguments():
         required=False, 
         default="5186",
     )
+    parser.add_argument(
+        "--reference_path",
+        required=False,
+        help="Optional path to EO reference file (.txt/.csv) or a directory containing it."
+    )
 
 
 

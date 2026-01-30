@@ -43,3 +43,16 @@ Metashape 엔진이 로컬에 저장하는 라이선스 파일(`.lic`)을 영구
    ```bash
    docker exec worker-metashape python3 /app/engines/metashape/dags/metashape/deactivate.py
    ```
+
+---
+
+## 처리 진행 상태 캐시 (운영/디버깅)
+
+처리 화면 재진입 시 마지막 단계 메시지와 진행률을 즉시 복구하기 위해,
+워커가 처리 상태를 파일로 캐시합니다.
+
+- 경로: `/data/processing/{project_id}/processing_status.json`
+- 예시 내용:
+  ```json
+  {"status":"processing","progress":42,"message":"이미지 정렬 (Align Photos)","updated_at":"..."}
+  ```

@@ -325,6 +325,25 @@ function Dashboard() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [refreshProjects]);
 
+  // Periodic refresh while processing is active (dashboard auto-update)
+  useEffect(() => {
+    const hasActiveProcessing = projects.some(p =>
+      p.status === 'processing' ||
+      p.status === 'queued' ||
+      p.status === 'running' ||
+      p.status === '진행중' ||
+      p.status === '대기'
+    );
+
+    if (!hasActiveProcessing) return;
+
+    const intervalId = setInterval(() => {
+      refreshProjects();
+    }, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [projects, refreshProjects]);
+
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
 
@@ -609,7 +628,7 @@ function Dashboard() {
 
       // Stay on processing page to show progress
       // The ProcessingSidebar will show progress via WebSocket connection
-      alert('처리가 시작되었습니다. 진행률은 이 화면에서 확인할 수 있습니다.\n\nODM 처리는 이미지 수에 따라 몇 시간이 걸릴 수 있습니다.');
+      alert('처리가 시작되었습니다. 진행률은 이 화면에서 확인할 수 있습니다.\n\n처리 시간은 이미지 수에 따라 오래 걸릴 수 있습니다.');
 
     } catch (err) {
       console.error('Failed to start processing:', err);

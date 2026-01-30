@@ -1,6 +1,7 @@
 """Celery application and async tasks."""
 import os
-import hashlib
+    import hashlib
+    import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -143,11 +144,30 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 Image.upload_status == "completed",
             ).all()
             
+            status_file = base_dir / "processing_status.json"
+
+            def write_status_file(progress, message, status_value="processing"):
+                try:
+                    payload = {
+                        "status": status_value,
+                        "progress": progress,
+                        "message": message,
+                        "updated_at": datetime.utcnow().isoformat()
+                    }
+                    with open(status_file, "w", encoding="utf-8") as f:
+                        json.dump(payload, f)
+                except Exception:
+                    pass
+
             def update_progress(progress, message=""):
                 """Update progress in database, Celery state, and broadcast via WebSocket."""
+                current = job.progress or 0
+                if progress < current:
+                    progress = current
                 job.progress = progress
                 project.progress = progress
                 db.commit()
+                write_status_file(progress, message, status_value="processing")
                 self.update_state(
                     state="PROGRESS",
                     meta={"progress": progress, "message": message}
@@ -289,6 +309,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             project.ortho_path = result_object_name  # Store ortho path in project
             project.ortho_size = file_size
             db.commit()
+            write_status_file(100, "Processing completed successfully", status_value="completed")
 
             # Broadcast completion via WebSocket AFTER all DB updates
             try:
@@ -334,6 +355,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             project.status = "error"
             project.error_message = user_friendly_error  # Also save to project for UI display
             db.commit()
+            write_status_file(0, user_friendly_error, status_value="error")
             
             # Broadcast error via WebSocket
             try:

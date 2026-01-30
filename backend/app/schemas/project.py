@@ -168,6 +168,7 @@ class ProcessingJobResponse(BaseModel):
     output_format: str
     status: str
     progress: int
+    message: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
@@ -237,4 +238,3 @@ class RegionalStatsResponse(BaseModel):
     """Regional statistics response."""
     total: int
     data: List[RegionalStats]
-

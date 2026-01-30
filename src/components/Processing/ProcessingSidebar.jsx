@@ -28,6 +28,12 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
     const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected } = useProcessingProgress(
         project?.id || null  // Use project.id for WebSocket connection
     );
+    const fallbackProgress = (wsStatus === 'connecting' && (project?.status === 'processing' || project?.status === '진행중'))
+        ? (project?.progress ?? 0)
+        : wsProgress;
+    const fallbackMessage =
+        wsMessage ||
+        (wsStatus === 'queued' ? '대기 중...' : (wsStatus === 'processing' ? '처리 진행 중...' : (wsStatus === 'connecting' ? '연결 중...' : '')));
 
     // Load presets on mount
     useEffect(() => {
@@ -178,16 +184,16 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                 <Loader2 size={14} className="animate-spin" />
                                 {wsStatus === 'connecting' ? '연결 중...' : '처리 진행 중'}
                             </span>
-                            <span className="font-bold text-blue-600">{(wsStatus === 'complete' || wsStatus === 'completed') ? 100 : wsProgress}%</span>
+                            <span className="font-bold text-blue-600">{(wsStatus === 'complete' || wsStatus === 'completed') ? 100 : fallbackProgress}%</span>
                         </div>
                         <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
                             <div
                                 className="h-full bg-blue-600 transition-all duration-500 ease-out"
-                                style={{ width: `${(wsStatus === 'complete' || wsStatus === 'completed') ? 100 : wsProgress}%` }}
+                                style={{ width: `${(wsStatus === 'complete' || wsStatus === 'completed') ? 100 : fallbackProgress}%` }}
                             />
                         </div>
-                        {wsMessage && (
-                            <p className="text-xs text-blue-600 mt-1 truncate font-medium">{(wsStatus === 'complete' || wsStatus === 'completed') ? '처리 완료' : wsMessage}</p>
+                        {fallbackMessage && (
+                            <p className="text-xs text-blue-600 mt-1 truncate font-medium">{(wsStatus === 'complete' || wsStatus === 'completed') ? '처리 완료' : fallbackMessage}</p>
                         )}
 
                         {/* Stop Button - Moved here for visibility */}

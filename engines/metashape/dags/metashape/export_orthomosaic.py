@@ -57,22 +57,23 @@ def export_orthomosaic(output_path, run_id,output_tiff_name,reai_task_id, input_
     print(f"Cloud Optimized GeoTIFF saved to {output_cog}")
 
 
-    # 3. 심볼릭 링크 생성
+    # 3. 심볼릭 링크 생성 (필요 시에만)
     doc = Metashape.Document()
     doc.open(output_path + '/project.psx')
     chunk = doc.chunk
      
-    gsd_m = chunk.orthomosaic.resolution
-    gsd_cm = round(gsd_m * 100, 2)
-    gsd_cm_str = f"{gsd_cm:.2f}".replace('.', '_')
-    link_name = f"{output_tiff_name}_{gsd_cm_str}cm.tif"
+    if os.getenv("EXPORT_GSD_COPY", "false").lower() in {"1", "true", "yes"}:
+        gsd_m = chunk.orthomosaic.resolution
+        gsd_cm = round(gsd_m * 100, 2)
+        gsd_cm_str = f"{gsd_cm:.2f}".replace('.', '_')
+        link_name = f"{output_tiff_name}_{gsd_cm_str}cm.tif"
 
-    src = input_raster_dem
-    uploads_base = output_path.replace('.outputs/true-ortho', '.uploads/data')
-    uploads_base = os.path.dirname(uploads_base)  # 아이디값 폴더 제거
-    dst = os.path.join(uploads_base, link_name)
-    shutil.copy2(src, dst)
-    print(f"✅ 파일 복사됨: {dst} ← {src}")
+        src = input_raster_dem
+        uploads_base = output_path.replace('.outputs/true-ortho', '.uploads/data')
+        uploads_base = os.path.dirname(uploads_base)  # 아이디값 폴더 제거
+        dst = os.path.join(uploads_base, link_name)
+        shutil.copy2(src, dst)
+        print(f"✅ 파일 복사됨: {dst} ← {src}")
 
     # try:
     #     if os.path.islink(dst) or os.path.exists(dst):

@@ -116,6 +116,7 @@ class ODMEngine(ProcessingEngine):
         # Collect all output and monitor progress
         all_output = []
         current_progress = 0
+        last_progress = 0
         
         async for line in process.stdout:
             line_str = line.decode().strip()
@@ -166,9 +167,12 @@ class ODMEngine(ProcessingEngine):
             
             # Ensure progress is capped and integer
             final_progress = min(99, int(current_progress))
-            
-            if progress_callback and final_progress > 0:
+            if final_progress < last_progress:
+                final_progress = last_progress
+
+            if progress_callback and final_progress > 0 and final_progress != last_progress:
                 await progress_callback(final_progress, line_str)
+            last_progress = final_progress
         
         await process.wait()
         
@@ -431,6 +435,9 @@ class MetashapeEngine(ProcessingEngine):
                     "--output_epsg", output_epsg,
                     "--reai_task_id", project_id
                 ]
+                reference_path = options.get("reference_path")
+                if reference_path:
+                    cmd.extend(["--reference_path", str(reference_path)])
                 
                 logger.info(f"🚀 [DEBUG_v5] Running Metashape step: {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True)

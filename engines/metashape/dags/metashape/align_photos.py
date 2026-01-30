@@ -4,7 +4,7 @@ from common_args import parse_arguments, print_debug_info
 from common_utils import activate_metashape_license, progress_callback, change_task_status_in_ortho
 
 
-def align_photos(input_images, image_folder, output_path, run_id, process_mode="Normal", input_epsg="4326"):
+def align_photos(input_images, image_folder, output_path, run_id, process_mode="Normal", input_epsg="4326", reference_path=None):
     """
     Generate an orthophoto and other outputs with progress tracking and refined seamlines.
     
@@ -64,9 +64,176 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
 
 
     # Step 2-1 : importReference
-    geom_reference = os.path.join(image_folder,"metadata.txt")
-    if os.path.isfile(geom_reference):
-        chunk.importReference(path=geom_reference,format=Metashape.ReferenceFormatCSV, delimiter=" ",columns="nxyzabc")
+    def _build_image_maps(images):
+        file_names = [os.path.basename(p) for p in images]
+        name_map = {}
+        stem_map = {}
+        for name in file_names:
+            lower = name.lower()
+            if lower not in name_map:
+                name_map[lower] = name
+            stem = os.path.splitext(lower)[0]
+            if stem not in stem_map:
+                stem_map[stem] = name
+        return name_map, stem_map
+
+    def _detect_delimiter(sample_line, path):
+        if path.lower().endswith(".csv"):
+            return ","
+        if "," in sample_line and sample_line.count(",") >= sample_line.count(" "):
+            return ","
+        return None  # whitespace
+
+    def _score_reference_file(path, name_map, stem_map):
+        score = 0
+        delimiter = None
+        lines_checked = 0
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    raw = line.strip()
+                    if not raw or raw.startswith("#"):
+                        continue
+                    if delimiter is None:
+                        delimiter = _detect_delimiter(raw, path)
+                    parts = raw.split(",") if delimiter == "," else raw.split()
+                    if not parts:
+                        continue
+                    token = os.path.basename(parts[0].strip())
+                    lower = token.lower()
+                    if lower in name_map:
+                        score += 1
+                    else:
+                        stem = os.path.splitext(lower)[0]
+                        if stem in stem_map:
+                            score += 1
+                    lines_checked += 1
+                    if lines_checked >= 200:
+                        break
+        except Exception:
+            return 0, None
+        return score, delimiter
+
+    def _select_reference_file(folders, name_map, stem_map, explicit_path=None):
+        candidates = []
+        if explicit_path:
+            if os.path.isdir(explicit_path):
+                for entry in os.scandir(explicit_path):
+                    if not entry.is_file():
+                        continue
+                    lower = entry.name.lower()
+                    if lower.endswith(".txt") or lower.endswith(".csv"):
+                        candidates.append(entry.path)
+            elif os.path.isfile(explicit_path):
+                candidates.append(explicit_path)
+
+        for folder in folders:
+            if not folder or not os.path.isdir(folder):
+                continue
+            meta = os.path.join(folder, "metadata.txt")
+            if os.path.isfile(meta):
+                candidates.append(meta)
+            for entry in os.scandir(folder):
+                if not entry.is_file():
+                    continue
+                if entry.path == meta:
+                    continue
+                lower = entry.name.lower()
+                if lower.endswith(".txt") or lower.endswith(".csv"):
+                    candidates.append(entry.path)
+
+        best_path = None
+        best_score = 0
+        best_delim = None
+        for path in candidates:
+            score, delim = _score_reference_file(path, name_map, stem_map)
+            if score > best_score:
+                best_score = score
+                best_path = path
+                best_delim = delim
+        return best_path, best_delim, best_score
+
+    def _looks_like_header(parts):
+        if not parts:
+            return True
+        token = parts[0].strip().lower()
+        if token in {"image", "image_name", "filename", "file", "photo", "id"}:
+            return True
+        try:
+            float(parts[1])
+            float(parts[2])
+            float(parts[3])
+        except Exception:
+            return True
+        return False
+
+    def _normalize_reference_file(src_path, delimiter, name_map, stem_map, out_dir):
+        out_path = os.path.join(out_dir, "reference_normalized.txt")
+        matched = 0
+        skipped = 0
+        with open(src_path, "r", encoding="utf-8", errors="ignore") as f, open(out_path, "w", encoding="utf-8") as out:
+            for line in f:
+                raw = line.strip()
+                if not raw or raw.startswith("#"):
+                    continue
+                parts = raw.split(",") if delimiter == "," else raw.split()
+                if len(parts) < 7:
+                    skipped += 1
+                    continue
+                if _looks_like_header(parts):
+                    continue
+                token = os.path.basename(parts[0].strip())
+                lower = token.lower()
+                actual = name_map.get(lower)
+                if not actual:
+                    stem = os.path.splitext(lower)[0]
+                    actual = stem_map.get(stem)
+                if not actual:
+                    skipped += 1
+                    continue
+                try:
+                    float(parts[1])
+                    float(parts[2])
+                    float(parts[3])
+                except Exception:
+                    skipped += 1
+                    continue
+                out.write(f"{actual} {parts[1]} {parts[2]} {parts[3]} {parts[4]} {parts[5]} {parts[6]}\n")
+                matched += 1
+        if matched == 0:
+            return None, matched, skipped
+        return out_path, matched, skipped
+
+    name_map, stem_map = _build_image_maps(input_images)
+    env_reference = os.getenv("EO_REFERENCE_PATH") or os.getenv("METASHAPE_REFERENCE_PATH")
+    search_dirs = [image_folder]
+    try:
+        image_parent = os.path.dirname(image_folder)
+        if image_parent and image_parent != image_folder:
+            search_dirs.append(image_parent)
+    except Exception:
+        pass
+    if output_path:
+        search_dirs.append(output_path)
+    geom_reference, geom_delim, geom_score = _select_reference_file(
+        search_dirs, name_map, stem_map, explicit_path=(reference_path or env_reference)
+    )
+    if geom_reference and geom_score > 0:
+        normalized_path, matched_count, skipped_count = _normalize_reference_file(
+            geom_reference, geom_delim, name_map, stem_map, output_path
+        )
+        if normalized_path:
+            print(f"ℹ️ Using EO reference: {geom_reference} (matched {matched_count}, skipped {skipped_count})")
+            chunk.importReference(
+                path=normalized_path,
+                format=Metashape.ReferenceFormatCSV,
+                delimiter=" ",
+                columns="nxyzabc"
+            )
+        else:
+            print("⚠️ EO reference found but no matching rows. Skipping importReference.")
+    else:
+        print("ℹ️ No EO reference file found. Skipping importReference.")
         
 
     
@@ -128,7 +295,15 @@ def main():
     print_debug_info(args, input_images)
 
     # align_photos 함수 실행
-    align_photos(input_images, args.image_folder, args.output_path, args.run_id, args.process_mode, args.input_epsg)
+    align_photos(
+        input_images,
+        args.image_folder,
+        args.output_path,
+        args.run_id,
+        args.process_mode,
+        args.input_epsg,
+        args.reference_path
+    )
 
 if __name__ == "__main__":
     main()

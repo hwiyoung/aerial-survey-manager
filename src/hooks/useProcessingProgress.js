@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import api from '../api/client';
 
 /**
  * Custom hook for real-time processing progress via WebSocket
@@ -9,7 +10,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
  */
 export function useProcessingProgress(projectId) {
     const [progress, setProgress] = useState(0);
-    const [status, setStatus] = useState('idle'); // idle, connecting, processing, complete, error
+    const [status, setStatus] = useState('idle'); // idle, connecting, queued, processing, complete, error
     const [message, setMessage] = useState('');
     const [isConnected, setIsConnected] = useState(false);
 
@@ -24,6 +25,34 @@ export function useProcessingProgress(projectId) {
             setIsConnected(false);
             return;
         }
+
+        // Fetch latest status once on entry to avoid "connecting" stall
+        let cancelled = false;
+        const fetchInitialStatus = async () => {
+            try {
+                const data = await api.getProcessingStatus(projectId);
+                if (cancelled) return;
+
+                if (data.progress !== undefined) {
+                    setProgress(data.progress);
+                }
+                if (data.status) {
+                    if (data.status === 'completed') {
+                        setStatus('complete');
+                        setProgress(100);
+                    } else if (data.status === 'error' || data.status === 'failed') {
+                        setStatus('error');
+                    } else if (data.status === 'queued') {
+                        setStatus('queued');
+                    } else if (data.status === 'processing' || data.status === 'running') {
+                        setStatus('processing');
+                    }
+                }
+            } catch (e) {
+                // Ignore initial status fetch errors
+            }
+        };
+        fetchInitialStatus();
 
         // Construct WebSocket URL using current origin (nginx proxy handles routing)
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -68,6 +97,8 @@ export function useProcessingProgress(projectId) {
                             setProgress(100);
                         } else if (data.status === 'error' || data.status === 'failed') {
                             setStatus('error');
+                        } else if (data.status === 'queued') {
+                            setStatus('queued');
                         } else {
                             setStatus('processing');
                         }
@@ -101,6 +132,7 @@ export function useProcessingProgress(projectId) {
 
         // Cleanup on unmount or projectId change
         return () => {
+            cancelled = true;
             if (pingIntervalRef.current) {
                 clearInterval(pingIntervalRef.current);
                 pingIntervalRef.current = null;

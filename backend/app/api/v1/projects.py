@@ -526,37 +526,20 @@ async def upload_eo_data(
             logger.warning(f"Failed to create transformer for {source_crs}: {e}")
             transformer = None
 
-    # Prepare EO records
+    # Prepare EO records + reference file rows
     eo_objects = {}
     matched_count = 0
     errors = []
+    reference_rows = []
+    reference_keys = set()
 
     try:
         for row in parsed_rows:
-            # Matching logic
-            image = image_map.get(row.image_name)
-            if not image:
-                 for fname, img_obj in image_map.items():
-                     if fname.lower() == row.image_name.lower():
-                         image = img_obj
-                         break
-            if not image:
-                row_stem = os.path.splitext(row.image_name)[0].lower()
-                image = image_stem_map.get(row_stem)
-
-            if not image:
-                errors.append(f"Image not found for filename: {row.image_name}")
-                continue
-            
-            # Skip if we already processed this image in this file
-            if image.id in eo_objects:
-                continue
-                
+            row_name = os.path.basename(row.image_name)
+            # Transform if needed
             x_val = row.x
             y_val = row.y
             crs_val = source_crs
-            
-            # Transform if needed
             if transformer:
                 try:
                     lon, lat = transformer.transform(row.x, row.y)
@@ -564,9 +547,34 @@ async def upload_eo_data(
                     y_val = lat
                     crs_val = target_crs
                 except Exception as e:
-                    errors.append(f"Transform error for {row.image_name}: {e}")
+                    errors.append(f"Transform error for {row_name}: {e}")
                     continue
 
+            # Collect reference rows (dedup by name)
+            row_key = row_name.lower()
+            if row_key not in reference_keys:
+                reference_rows.append((row_name, x_val, y_val, row.z, row.omega, row.phi, row.kappa))
+                reference_keys.add(row_key)
+
+            # Matching logic
+            image = image_map.get(row_name)
+            if not image:
+                 for fname, img_obj in image_map.items():
+                     if fname.lower() == row_name.lower():
+                         image = img_obj
+                         break
+            if not image:
+                row_stem = os.path.splitext(row_name)[0].lower()
+                image = image_stem_map.get(row_stem)
+
+            if not image:
+                errors.append(f"Image not found for filename: {row_name}")
+                continue
+            
+            # Skip if we already processed this image in this file
+            if image.id in eo_objects:
+                continue
+                
             eo = ExteriorOrientation(
                 image_id=image.id,
                 x=x_val,
@@ -616,6 +624,21 @@ async def upload_eo_data(
                 region = get_region_for_point(center_lon, center_lat)
                 if region:
                     project.region = region
+
+        # Save normalized EO reference file to local processing path for Metashape
+        if reference_rows:
+            try:
+                from app.config import get_settings
+                settings = get_settings()
+                reference_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id) / "images"
+                reference_dir.mkdir(parents=True, exist_ok=True)
+                reference_path = reference_dir / "metadata.txt"
+                with open(reference_path, "w", encoding="utf-8") as f:
+                    for name, x_val, y_val, z_val, omega, phi, kappa in reference_rows:
+                        f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
+                print(f"EO Upload: Saved reference file at {reference_path}")
+            except Exception as e:
+                logger.warning(f"EO Upload: Failed to save reference file: {e}")
 
         await db.commit()
     except Exception as e:
@@ -730,4 +753,3 @@ async def get_regional_stats(
     ]
     
     return RegionalStatsResponse(total=total, data=stats_list)
-

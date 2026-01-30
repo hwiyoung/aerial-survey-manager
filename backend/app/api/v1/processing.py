@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSoc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import json
+from pathlib import Path
 
 from app.database import get_db
 from app.models.user import User
@@ -12,6 +13,19 @@ from app.schemas.project import ProcessingOptions, ProcessingJobResponse
 from app.auth.jwt import get_current_user, PermissionChecker
 
 router = APIRouter(prefix="/processing", tags=["Processing"])
+
+
+def _read_processing_status_file(project_id: str) -> dict:
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+        status_path = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id) / "processing_status.json"
+        if status_path.exists():
+            with open(status_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -164,7 +178,11 @@ async def get_processing_status(
             detail="No processing job found for this project",
         )
     
-    return ProcessingJobResponse.model_validate(job)
+    status_payload = _read_processing_status_file(project_id)
+    response = ProcessingJobResponse.model_validate(job)
+    if status_payload.get("message"):
+        response.message = status_payload.get("message")
+    return response
 
 
 @router.post("/projects/{project_id}/cancel")
@@ -235,7 +253,14 @@ async def list_processing_jobs(
     result = await db.execute(query.limit(50))
     jobs = result.scalars().all()
     
-    return [ProcessingJobResponse.model_validate(job) for job in jobs]
+    responses = []
+    for job in jobs:
+        status_payload = _read_processing_status_file(job.project_id)
+        response = ProcessingJobResponse.model_validate(job)
+        if status_payload.get("message"):
+            response.message = status_payload.get("message")
+        responses.append(response)
+    return responses
 
 
 # WebSocket endpoint for real-time status updates
@@ -243,6 +268,7 @@ async def list_processing_jobs(
 async def websocket_status(
     websocket: WebSocket,
     project_id: str,
+    db: AsyncSession = Depends(get_db),
 ):
     """
     WebSocket endpoint for real-time processing status updates.
@@ -250,6 +276,25 @@ async def websocket_status(
     Clients connect to this endpoint to receive live progress updates.
     """
     await manager.connect(project_id, websocket)
+    # Send latest known status immediately on connect
+    try:
+        result = await db.execute(
+            select(ProcessingJob)
+            .where(ProcessingJob.project_id == project_id)
+            .order_by(ProcessingJob.started_at.desc().nullsfirst())
+        )
+        job = result.scalar_one_or_none()
+        if job:
+            status_payload = _read_processing_status_file(project_id)
+            await websocket.send_json({
+                "project_id": project_id,
+                "status": job.status,
+                "progress": job.progress,
+                "message": status_payload.get("message") or (job.error_message if job.status in ("error", "failed") else None),
+                "type": "progress" if job.status == "processing" else job.status,
+            })
+    except Exception:
+        pass
     try:
         while True:
             # Keep connection alive, actual updates come from Celery worker
