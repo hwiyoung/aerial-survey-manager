@@ -234,7 +234,7 @@ services:
       - "9002:9000"
       - "9003:9001"  # Console UI
     volumes:
-      - minio_data:/data
+      - ${MINIO_DATA_PATH:-./data/minio}:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -320,5 +320,4 @@ networks:
 volumes:
   pgdata:
   redis_data:
-  minio_data:
   metashape-license:

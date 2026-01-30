@@ -374,8 +374,17 @@ async def delete_project(
             detail="Project not found",
         )
     
+    # Get all image original_paths before deletion (for MinIO cleanup)
+    image_result = await db.execute(
+        select(Image.original_path).where(
+            Image.project_id == project_id,
+            Image.original_path.isnot(None)
+        )
+    )
+    original_paths = [row[0] for row in image_result.fetchall()]
+
     await db.delete(project)
-    
+
     # Clean up local processing data
     import shutil
     from app.config import get_settings
@@ -386,11 +395,22 @@ async def delete_project(
             shutil.rmtree(local_path)
         except Exception as e:
             print(f"Failed to delete local project data {local_path}: {e}")
-            
+
     # Clean up MinIO storage
     try:
         from app.services.storage import StorageService
         storage = StorageService()
+
+        # Delete original uploaded images (stored in uploads/ by TUS)
+        for path in original_paths:
+            try:
+                storage.delete_object(path)
+                # Also delete .info file created by TUS
+                storage.delete_object(f"{path}.info")
+            except Exception as e:
+                print(f"Failed to delete uploaded file {path}: {e}")
+
+        # Delete project folder (thumbnails, ortho results, etc.)
         storage.delete_recursive(f"projects/{project_id}/")
     except Exception as e:
         print(f"Failed to delete MinIO project data for {project_id}: {e}")

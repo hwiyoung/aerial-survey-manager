@@ -171,17 +171,26 @@ aerial-survey-manager/
 # Database
 POSTGRES_PASSWORD=your-secure-password
 
-# JWT Authentication  
+# JWT Authentication
 JWT_SECRET_KEY=your-super-secret-jwt-key
 
 # MinIO Storage
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=your-secure-minio-password
+MINIO_PUBLIC_ENDPOINT=192.168.10.203:9002  # 브라우저에서 접근 가능한 주소
+
+# Storage Paths (대용량 드라이브에 설정 권장)
+PROCESSING_DATA_PATH=/path/to/large/disk/processing  # 처리 데이터 경로
+MINIO_DATA_PATH=/path/to/large/disk/minio            # MinIO 저장소 경로
 
 # External Processing Engine (Optional)
 EXTERNAL_ENGINE_URL=https://external-engine.example.com
 EXTERNAL_ENGINE_API_KEY=your-api-key
 ```
+
+> ⚠️ **중요**: `MINIO_DATA_PATH`는 반드시 **충분한 여유 공간이 있는 디스크**에 설정하세요.
+> MinIO는 디스크 여유 공간이 임계치(기본 10%) 이하로 떨어지면 **HTTP 507 (Storage Full)** 오류를 반환하며, 이 경우 모든 업로드가 실패합니다.
+> 상세 내용은 [docs/ADMIN_GUIDE.md](./docs/ADMIN_GUIDE.md#minio-저장소-관리)를 참조하세요.
 
 ## 📋 Implementation Roadmap
 
@@ -253,7 +262,7 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - [x] **이미지 중복 방지**: 같은 파일명 업로드 시 Image 레코드 중복 생성 방지 (2026-01-29)
 - [x] **브라우저 히스토리**: popstate 이벤트 리스너로 뒤로가기 버튼 지원 (2026-01-29)
 
-## ⚠️ Known Issues (2026-01-30)
+## ⚠️ Known Issues (2026-01-31)
 
 ### 지도 및 상호작용
 - **권역 툴팁 우선순위**: 권역(Region)과 프로젝트(Footprint) 중첩 시 바운딩박스 호버에도 권역 툴팁이 표시되는 경우 있음 (CSS + 이벤트 제어로 개선 중)
@@ -261,6 +270,13 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 ### 시스템
 - **COG Loading**: MinIO presigned URL 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
 - **처리 중단 후 재시작 오류**: 동일 프로젝트에서 처리 중단 후 곧바로 재시작할 때 Metashape 단계에서 오류(예: `Empty DEM`)가 발생할 수 있음. EO 파일명 매칭/metadata.txt 상태를 확인하고, 필요 시 EO 재업로드 또는 프로젝트 재생성을 권장.
+
+### 저장소 (2026-01-31 추가)
+- **MinIO 디스크 용량 부족 시 업로드 실패**: MinIO가 설치된 디스크의 여유 공간이 임계치(기본 10%) 이하로 떨어지면 **HTTP 507 (Storage Full)** 오류와 함께 모든 업로드가 중단됩니다.
+  - **증상**: TUS 로그에 `XMinioStorageFull: Storage backend has reached its minimum free drive threshold` 에러 발생
+  - **해결**: `.env`의 `MINIO_DATA_PATH`를 충분한 용량의 드라이브로 설정 (최소 1TB 이상 권장)
+  - **긴급 대응**: 실패한 업로드 파일 정리 (`mc rm --recursive --force local/aerial-survey/uploads/`)
+  - 상세 내용은 [docs/ADMIN_GUIDE.md](./docs/ADMIN_GUIDE.md#minio-저장소-관리) 참조
 
 실제 데이터를 사용하여 플랫폼을 테스트하는 방법은 다음과 같습니다.
 
