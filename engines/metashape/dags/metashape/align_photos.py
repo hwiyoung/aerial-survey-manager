@@ -222,6 +222,7 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
             return None
         return None
 
+    # EO Reference 파일 탐색 및 적용
     name_map, stem_map = _build_image_maps(input_images)
     env_reference = os.getenv("EO_REFERENCE_PATH") or os.getenv("METASHAPE_REFERENCE_PATH")
     search_dirs = [image_folder]
@@ -233,26 +234,20 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
         pass
     if output_path:
         search_dirs.append(output_path)
-    print(f"🔎 EO reference search dirs: {search_dirs}")
-    if env_reference:
-        print(f"🔎 EO reference explicit path: {env_reference}")
+
     geom_reference, geom_delim, geom_score = _select_reference_file(
         search_dirs, name_map, stem_map, explicit_path=(reference_path or env_reference)
     )
     reference_epsg = None
     if geom_reference and geom_score > 0:
-        print(f"ℹ️ EO reference candidate selected: {geom_reference} (score {geom_score})")
         reference_epsg = _extract_epsg_from_reference(geom_reference)
-        if reference_epsg:
-            print(f"ℹ️ EO reference EPSG detected: {reference_epsg}")
         if reference_epsg and reference_epsg != str(input_epsg):
             chunk.crs = Metashape.CoordinateSystem(f"EPSG::{reference_epsg}")
-            print(f"ℹ️ Coordinate system updated from reference: EPSG::{reference_epsg}")
-        normalized_path, matched_count, skipped_count = _normalize_reference_file(
+        normalized_path, matched_count, _ = _normalize_reference_file(
             geom_reference, geom_delim, name_map, stem_map, output_path
         )
         if normalized_path:
-            print(f"ℹ️ Using EO reference: {geom_reference} (matched {matched_count}, skipped {skipped_count})")
+            print(f"📋 EO reference 적용: {matched_count}개 매칭 (EPSG:{reference_epsg or input_epsg})")
             chunk.importReference(
                 path=normalized_path,
                 format=Metashape.ReferenceFormatCSV,
@@ -260,12 +255,9 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
                 columns="nxyzabc"
             )
         else:
-            print("⚠️ EO reference found but no matching rows. Skipping importReference.")
+            print("⚠️ EO reference 매칭 실패")
     else:
-        if geom_reference:
-            print(f"⚠️ EO reference found but score was {geom_score}. Skipping importReference.")
-        else:
-            print("ℹ️ No EO reference file found. Skipping importReference.")
+        print("ℹ️ EO reference 파일 없음 (EXIF GPS 사용)")
         
 
     
@@ -274,46 +266,44 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
     for camera in chunk.cameras:
         if camera.reference and camera.reference.rotation is not None:
             camera.reference.rotation_enabled = True
-        
-
-    # sensor = chunk.sensors[0]
-    
-    # calib = Metashape.Calibration()
-    # calib.width = 11310
-    # calib.height = 17310
-    # calib.f = 16750                # focal length in pixels
-    # calib.cx = 11310 / 2           # 중심점 (픽셀)
-    # calib.cy = 17310 / 2
-    
-    # sensor.user_calib = calib
-    # sensor.calibration = calib
-    # sensor.fixed = True
 
     # --- Step 3: Align Photos ---
     try:
         print("🛠 Aligning photos...")
         task_name = "Align Photos"
         chunk.matchPhotos(
-            downscale=mp_downscale, 
-            keypoint_limit = 40000, 
-            tiepoint_limit = 4000, 
-            generic_preselection = True, 
-            reference_preselection = True, 
+            downscale=mp_downscale,
+            keypoint_limit=40000,
+            tiepoint_limit=4000,
+            generic_preselection=True,
+            reference_preselection=True,
             progress=progress_callback_wrapper
         )
-        # doc.save()
         chunk.alignCameras(adaptive_fitting=True)
         doc.save(output_path + '/project.psx')
-         
+
+        # Alignment 결과 로그 출력
+        total_cameras = len(chunk.cameras)
+        aligned_cameras = len([c for c in chunk.cameras if c.transform])
+        unaligned_cameras = total_cameras - aligned_cameras
+        alignment_ratio = aligned_cameras / total_cameras * 100 if total_cameras > 0 else 0
+
+        print(f"\n📊 Alignment 결과: {aligned_cameras}/{total_cameras} 카메라 정렬됨 ({alignment_ratio:.1f}%)")
+
+        if unaligned_cameras > 0:
+            unaligned_labels = [c.label for c in chunk.cameras if not c.transform]
+            print(f"⚠️ 정렬 실패 카메라 ({unaligned_cameras}개):")
+            # 최대 20개까지만 출력
+            for label in unaligned_labels[:20]:
+                print(f"   - {label}")
+            if unaligned_cameras > 20:
+                print(f"   ... 외 {unaligned_cameras - 20}개")
+
         progress_callback_wrapper(99.9)
-        print("\n✅ Cameras aligned successfully.")
+        print("✅ Cameras aligned successfully.")
     except Exception as e:
-        change_task_status_in_ortho(run_id,"Fail")
+        change_task_status_in_ortho(run_id, "Fail")
         progress_callback_wrapper(1000)
-        if Metashape.app.activated:
-            print("✅ Metashape is activated and fully functional.")
-        else:
-            print("❌ Metashape is running in Demo mode.")
         print(f"❌ Camera alignment failed: {e}")
         raise RuntimeError(f"Task failed due to: {e}") from e
 

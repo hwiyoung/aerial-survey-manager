@@ -32,17 +32,18 @@ def build_point_cloud(output_path, run_id, reai_task_id, output_epsg=None):
     doc = Metashape.Document()
     doc.open(output_path + '/project.psx')
     try:
-        print("🛠 Build Point Cloud...")
+        print("🛠 Building point cloud...")
         task_name = "Build Point Cloud"
         chunk = doc.chunk
-        try:
-            print(f"ℹ️ Chunk CRS: {chunk.crs}")
-        except Exception:
-            print("ℹ️ Chunk CRS: (unavailable)")
         chunk.buildPointCloud(
             progress=progress_callback_wrapper
         )
         doc.save(output_path + '/project.psx')
+
+        # Point Cloud 결과 요약
+        if chunk.point_cloud:
+            point_count = len(chunk.point_cloud.points)
+            print(f"📊 Point cloud: {point_count:,} points generated")
 
         export_epsg = _normalize_epsg(output_epsg)
         print(f"ℹ️ Point cloud export target EPSG: {export_epsg}")
@@ -72,25 +73,17 @@ def build_point_cloud(output_path, run_id, reai_task_id, output_epsg=None):
             except Exception as export_error:
                 print(f"⚠️ Point cloud export skipped due to error: {export_error}")
         if not export_ok:
-            print("⚠️ Point cloud export was skipped. Continuing pipeline.")
+            print("⚠️ Point cloud export skipped.")
         progress_callback_wrapper(100)
-        print("\n✅ Point cloud built successfully.")
+        print("✅ Point cloud built successfully.")
 
-
+        # API 콜백 (실패해도 무시)
         try:
-            # BACKEND_URL 가져오기
-            backend_url_ortho = os.getenv("BACKEND_URL_ORTHO","http://api:8000/api/v1/processing")
-            # API 호출 추가
+            backend_url_ortho = os.getenv("BACKEND_URL_ORTHO", "http://api:8000/api/v1/processing")
             api_url = f"{backend_url_ortho}/tasks/{reai_task_id}/point_cloud"
-            response = requests.get(api_url, timeout=5)
-
-            if response.status_code == 200:
-                progress_callback_wrapper(100)        
-                print("API call successful")
-            else:
-                print(f"⚠️ API call returned status code: {response.status_code} (Endpoint might be missing)")
-        except Exception as api_e:
-            print(f"⚠️ API callback failed (non-critical): {api_e}")
+            requests.get(api_url, timeout=5)
+        except Exception:
+            pass  # Non-critical
     except Exception as e:
         change_task_status_in_ortho(run_id,"Fail")
         progress_callback_wrapper(1000)

@@ -38,10 +38,20 @@ def build_dem(output_path, run_id, input_epsg="4326"):
         compression.tiff_big = True
         compression.tiff_overviews = True
         compression.tiff_tiled = True
-        chunk.exportRaster(path=os.path.join(output_path, "dem.tif"),source_data=Metashape.DataSource.ElevationData, projection=proj,image_compression=compression)
-        
+        chunk.exportRaster(
+            path=os.path.join(output_path, "dem.tif"),
+            source_data=Metashape.DataSource.ElevationData,
+            projection=proj,
+            image_compression=compression
+        )
+
+        # DEM 결과 요약
+        if chunk.elevation:
+            dem_res = chunk.elevation.resolution
+            print(f"📊 DEM resolution: {dem_res:.4f}m")
+
         progress_callback_wrapper(99.9)
-        print("\n✅ DEM built successfully.")
+        print("✅ DEM built successfully.")
     except Exception as e:
         change_task_status_in_ortho(run_id,"Fail")
         progress_callback_wrapper(1000)

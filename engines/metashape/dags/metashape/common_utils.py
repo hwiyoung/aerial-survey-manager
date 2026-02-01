@@ -7,12 +7,15 @@ import Metashape
 # 파일 접근을 동기화하기 위한 Lock 객체
 lock = Lock()
 
+_last_logged_progress = {}
+
 def progress_callback(value, task_name, output_path):
     """
     작업 진행 상태를 status.json 파일에 기록하는 함수.
+    로그는 10% 단위로만 출력하여 로그 양을 줄임.
     """
     status_file = os.path.join(output_path, "status.json")
-    
+
     with lock:  # 파일 접근을 동기화
         if os.path.exists(status_file):
             with open(status_file, "r") as f:
@@ -28,11 +31,16 @@ def progress_callback(value, task_name, output_path):
                 "Build DEM": 0,
                 "Build Orthomosaic": 0
             }
-        status[task_name] = round(value, 2)  # 소수점 두 번째 자리로 제한
+        status[task_name] = round(value, 2)
         with open(status_file, "w") as f:
             json.dump(status, f)
 
-    print(f"\r{task_name} Progress: {value:.2f}% completed", end="")
+    # 10% 단위로만 로그 출력 (로그 양 감소)
+    current_10pct = int(value // 10) * 10
+    last_logged = _last_logged_progress.get(task_name, -1)
+    if current_10pct > last_logged and current_10pct <= 100:
+        _last_logged_progress[task_name] = current_10pct
+        print(f"   {task_name}: {current_10pct}%")
 
 def find_files(folder, types):
     """
@@ -139,56 +147,33 @@ def activate_metashape_license():
         return
 
     # 2. 라이선스 미활성화 상태인 경우 활성화 프로세스 시작
-    print(f"🔑 Metashape 라이선스 활성화를 시작합니다... (Key: {license_key[:5]}***)", flush=True)
-    
-    # [참고] 라이선스 파일 경로 확인 (디버깅용)
-    possible_paths = [
-        "/var/tmp/agisoft/licensing",
-        "/var/lib/Agisoft/Metashape",
-        "/root/.local/share/Agisoft/Metashape"
-    ]
-    for p in possible_paths:
-        if os.path.exists(p):
-            print(f"📂 경로 확인: {p}", flush=True)
-            try:
-                files = os.listdir(p)
-                if files: print(f"   내부 파일: {files}", flush=True)
-            except: pass
-            
+    print(f"🔑 Metashape 라이선스 활성화 중...", flush=True)
+
     try:
-        # 3. 기존에 엉킨 세션이 있을 수 있으므로 비활성화를 먼저 시도 (권장사항)
+        # 기존 세션 정리 후 활성화
         try:
             Metashape.License().deactivate()
         except:
             pass
-            
-        # 4. 라이선스 활성화 실행
-        print("📣 Metashape.License().activate() 호출 중...", flush=True)
+
         Metashape.License().activate(license_key)
-        
-        # 5. 최종 활성화 확인
-        final_valid = False
-        try: final_valid = Metashape.License().valid
-        except: pass
-        
-        final_app_act = False
-        try: final_app_act = Metashape.app.activated
-        except: pass
+
+        # 최종 활성화 확인
+        final_valid = getattr(Metashape.License(), 'valid', False)
+        final_app_act = getattr(Metashape.app, 'activated', False)
 
         if final_valid or final_app_act:
-            print("✅ Metashape 라이선스 활성화 최종 성공", flush=True)
+            print("✅ Metashape 라이선스 활성화 성공", flush=True)
         else:
-            print("❌ Metashape 라이선스 활성화 실패 (활성화 후 상태가 여전히 False)", flush=True)
+            print("❌ Metashape 라이선스 활성화 실패", flush=True)
 
     except Exception as e:
         if "already" in str(e).lower():
-            print(f"ℹ️ 라이선스가 이미 활성화되어 있습니다 (Exception): {e}", flush=True)
+            print("ℹ️ 라이선스가 이미 활성화되어 있습니다.", flush=True)
         elif "not available" in str(e).lower():
-            print(f"⚠️ 라이선스 가용 수량 부족! (다른 곳에서 비활성화가 필요할 수 있습니다): {e}", flush=True)
+            print(f"⚠️ 라이선스 가용 수량 부족: {e}", flush=True)
         else:
-            print(f"⚠️ 라이선스 활성화 중 예외 발생: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
+            print(f"⚠️ 라이선스 활성화 실패: {e}", flush=True)
 
 def deactivate_metashape_license():
     """

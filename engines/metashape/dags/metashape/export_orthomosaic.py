@@ -3,44 +3,17 @@ from osgeo import gdal
 import os
 import Metashape
 from common_utils import progress_callback, check_success, change_task_status_in_ortho, notify_result_in_ortho
-import requests
 import shutil
 
-def export_orthomosaic(output_path, run_id,output_tiff_name,reai_task_id, input_epsg="4326"):
+def export_orthomosaic(output_path, run_id, output_tiff_name, reai_task_id, input_epsg="4326"):
 
     def progress_callback_wrapper(value):
         progress_callback(value, "Build Orthomosaic", output_path)
 
-
     input_raster_dem = os.path.join(output_path, "result.tif")
     output_cog = os.path.join(output_path, "result_cog.tif")
 
-    try:
-        thumbnail_name = "result.tif".replace('.tif', '_thumbnail.png')
-        thumbnail_path = os.path.join(output_path, 'outputs', thumbnail_name)
-        ds = gdal.Open(input_raster_dem)
-        if ds is None:
-            raise FileNotFoundError(f"파일을 열 수 없습니다: {input_raster_dem}")
-
-        # 썸네일 크기 설정
-        # thumbnail_size = (256, 256)
-
-        # 썸네일 생성
-        gdal.Translate(
-            thumbnail_path,
-            ds,
-            format='PNG',
-            width=256,
-            height=256
-        )
-
-        ds = None
-    except Exception as e:
-        print(f"썸네일 생성 중 오류 발생: {e}")
-        thumbnail_path = None
-
-
-    print("Running gdal_translate...")
+    print("🛠 Converting to Cloud Optimized GeoTIFF (COG)...")
     translate_options = gdal.TranslateOptions(
         format="COG",
         creationOptions=[
@@ -75,72 +48,35 @@ def export_orthomosaic(output_path, run_id,output_tiff_name,reai_task_id, input_
         shutil.copy2(src, dst)
         print(f"✅ 파일 복사됨: {dst} ← {src}")
 
-    # try:
-    #     if os.path.islink(dst) or os.path.exists(dst):
-    #         os.remove(dst)
-    #     os.link(src, dst)
-    #     print(f"✅ 심볼릭 링크 생성됨: {dst} → {src}")
-    # except OSError as e:
-    #     print(f"❌ 심볼릭 링크 생성 실패: {e}")
-
-
-    # 3-1. 작업 상태 알림
+    # 작업 상태 알림
     if check_success(output_path):
-        change_task_status_in_ortho(run_id,"Success")
-        notify_result_in_ortho(reai_task_id,"정사영상 생성에 성공했습니다.")
+        change_task_status_in_ortho(run_id, "Success")
+        notify_result_in_ortho(reai_task_id, "정사영상 생성에 성공했습니다.")
     else:
-        change_task_status_in_ortho(run_id,"Fail")
-        notify_result_in_ortho(reai_task_id,"정상영상 생성에 실패했습니다.")
+        change_task_status_in_ortho(run_id, "Fail")
+        notify_result_in_ortho(reai_task_id, "정사영상 생성에 실패했습니다.")
 
-    # 4. Resource DB에 저장
-    # backend_url_cd = os.getenv("BACKEND_URL_CD","http://localhost:3034")
-    # API 호출 추가
-    # api_url = f"{backend_url_cd}/resources"
+    progress_callback_wrapper(100)
 
-    # drone_makes = {"DJI", "Parrot", "Yuneec", "Autel Robotics", "senseFly"}
-    # # 첫 번째 카메라의 'Make' 정보 확인
-    # first_camera = chunk.cameras[0]
-    # make = first_camera.photo.meta["Exif/Make"].strip() if "Exif/Make" in first_camera.photo.meta else ""
-
-    # 드론 제조사에 해당하지 않으면 EulerAnglesOPK 설정
-    # if not make or make not in drone_makes:
-    #     platform = "항공"
-    # else:
-    #     platform = "드론"
-
-    # payload 준비
-    # payload = {
-    #     # todo 드론인지 항공인지 구분 필요
-    #     "file_name": "orthophoto.tif",
-    #     "path": f".outputs/true-ortho/{reai_task_id}",
-    #     "type": "image",
-    #     "belongs_to": "true-ortho",
-    #     "display_name": link_name,
-    #     "crs": f"{input_epsg}",
-    #     "platform": platform,
-    #     "full_path": f".outputs/true-ortho/{reai_task_id}",
-    # }
-    # response = requests.post(api_url, json=payload)
-
-
-
-    # if response.status_code == 201:
-    #     progress_callback_wrapper(100)        
-    #     print("API call successful")
-    # else:
-    #     print(f"API call failed with status code {response.status_code}")
-    #     print(f"Response: {response.text}")
-
-
-
-    progress_callback_wrapper(100)  
-    # 5. 프로젝트 파일 삭제
-    folder_path = os.path.join(output_path,"project.files")
+    # 5. 프로젝트 파일 조건부 삭제 (문제 발생 시 디버깅을 위해 보존)
+    folder_path = os.path.join(output_path, "project.files")
     if os.path.exists(folder_path):
-        shutil.rmtree(folder_path) 
-        print(f"폴더 '{folder_path}' 및 내부 모든 파일/폴더가 삭제되었습니다.")
+        # Alignment 비율 확인
+        total_cameras = len(chunk.cameras)
+        aligned_cameras = len([c for c in chunk.cameras if c.transform])
+        alignment_ratio = aligned_cameras / total_cameras if total_cameras > 0 else 0
+
+        # 95% 이상 정렬되고 처리 성공 시에만 삭제
+        should_delete = check_success(output_path) and alignment_ratio >= 0.95
+
+        if should_delete:
+            shutil.rmtree(folder_path)
+            print(f"✅ 프로젝트 파일 삭제됨: {folder_path}")
+        else:
+            print(f"⚠️ 프로젝트 파일 보존됨 (디버깅용): {folder_path}")
+            print(f"   - Alignment 비율: {aligned_cameras}/{total_cameras} ({alignment_ratio*100:.1f}%)")
     else:
-        print(f"폴더 '{folder_path}'가 존재하지 않습니다.")
+        print(f"ℹ️ 프로젝트 파일 없음: {folder_path}")
     
 
 def main():

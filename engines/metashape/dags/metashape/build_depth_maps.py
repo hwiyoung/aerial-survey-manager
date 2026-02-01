@@ -30,7 +30,7 @@ def build_depth_maps( output_path, run_id, process_mode="Normal"):
     doc = Metashape.Document()
     doc.open(output_path + '/project.psx')
     try:
-        print("🛠 Building depth maps...")
+        print(f"🛠 Building depth maps... (quality: {process_mode})")
         task_name = "Build Depth Maps"
         chunk = doc.chunk
         chunk.buildDepthMaps(
@@ -43,7 +43,7 @@ def build_depth_maps( output_path, run_id, process_mode="Normal"):
         )
         doc.save(output_path + '/project.psx')
         progress_callback_wrapper(100)
-        print("\n✅ Depth maps built successfully.")
+        print(f"✅ Depth maps built successfully.")
     except Exception as e:
         change_task_status_in_ortho(run_id,"Fail")
         progress_callback_wrapper(1000)

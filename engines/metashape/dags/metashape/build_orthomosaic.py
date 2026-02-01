@@ -42,11 +42,20 @@ def build_orthomosaic( output_path, run_id, input_epsg="4326", ):
 
         
 
-        chunk.exportRaster(path=os.path.join(output_path, "result.tif"),source_data=Metashape.DataSource.OrthomosaicData, projection=proj,image_compression=compression)
+        chunk.exportRaster(
+            path=os.path.join(output_path, "result.tif"),
+            source_data=Metashape.DataSource.OrthomosaicData,
+            projection=proj,
+            image_compression=compression
+        )
 
+        # Orthomosaic 결과 요약
+        if chunk.orthomosaic:
+            ortho_res = chunk.orthomosaic.resolution
+            print(f"📊 Orthomosaic GSD: {ortho_res*100:.2f}cm")
 
         progress_callback_wrapper(99.9)
-        print("\n✅ Orthomosaic generated successfully.")
+        print("✅ Orthomosaic generated successfully.")
     
     except Exception as e:
         change_task_status_in_ortho(run_id,"Fail")
