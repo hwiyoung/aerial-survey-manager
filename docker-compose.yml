@@ -3,6 +3,20 @@
 
 version: '3.8'
 
+# 공통 로그 설정 (디스크 용량 관리)
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# 처리 워커용 로그 설정 (디버깅 중요 - 더 큰 용량)
+x-logging-worker: &worker-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # === Frontend (React) ===
   frontend:
@@ -25,6 +39,7 @@ services:
       - api
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === Backend API (FastAPI) ===
   api:
@@ -57,6 +72,7 @@ services:
         condition: service_started
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === tus Upload Server (Resumable Uploads) ===
   tusd:
@@ -81,6 +97,7 @@ services:
       - minio
     networks:
       - aerial-network
+    logging: *worker-logging
 
   # === Celery Worker - ODM Queue ===
   worker-odm:
@@ -108,6 +125,7 @@ services:
     restart: always
     networks:
       - aerial-network
+    logging: *worker-logging
 
   # === Celery Worker - External API Queue ===
   worker-external:
@@ -133,6 +151,7 @@ services:
       - db
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === Celery Worker - Metashape Queue ===
   worker-metashape:
@@ -174,6 +193,7 @@ services:
         aliases:
           - worker-metashape
     mac_address: "02:42:AC:17:00:64"  # Static MAC for stable Machine ID
+    logging: *worker-logging
 
   # === Celery Beat (Scheduler) ===
   celery-beat:
@@ -191,6 +211,7 @@ services:
       - redis
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === PostgreSQL + PostGIS ===
   db:
@@ -211,6 +232,7 @@ services:
       retries: 5
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === Redis ===
   redis:
@@ -222,6 +244,7 @@ services:
       - redis_data:/data
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === MinIO (S3-compatible Storage) ===
   minio:
@@ -242,6 +265,7 @@ services:
       retries: 3
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === MinIO Bucket Init ===
   minio-init:
@@ -275,6 +299,7 @@ services:
       - minio
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === Nginx Reverse Proxy ===
   nginx:
@@ -292,6 +317,7 @@ services:
       - titiler
     networks:
       - aerial-network
+    logging: *default-logging
 
   # === Flower (Celery Monitoring) ===
   flower:
@@ -309,6 +335,7 @@ services:
       - redis
     networks:
       - aerial-network
+    logging: *default-logging
 
 networks:
   aerial-network:

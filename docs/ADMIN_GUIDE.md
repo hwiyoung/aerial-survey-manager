@@ -135,6 +135,86 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 
 ---
 
+## 📝 Docker 로그 관리
+
+### 1. 로그 로테이션 설정
+
+모든 컨테이너에 로그 로테이션이 설정되어 있습니다 (`docker-compose.yml`):
+
+```yaml
+# 기본 설정 (대부분의 서비스)
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"   # 로그 파일당 최대 10MB
+    max-file: "3"     # 최대 3개 파일 유지 (총 30MB)
+
+# 처리 워커용 설정 (디버깅 중요)
+x-logging-worker: &worker-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"   # 로그 파일당 최대 50MB
+    max-file: "5"     # 최대 5개 파일 유지 (총 250MB)
+```
+
+| 서비스 유형 | 로그 설정 | 최대 용량 | 적용 대상 |
+|------------|---------|----------|---------|
+| 기본 | `*default-logging` | 30MB | frontend, api, celery-beat, db, redis, minio, nginx, flower |
+| 처리 워커 | `*worker-logging` | 250MB | worker-metashape, worker-odm, tusd |
+
+> 💡 **팁**: 처리 워커는 이미지 처리 시 상세한 로그를 남기므로, 오류 분석을 위해 더 큰 로그 용량을 확보합니다.
+
+### 2. 로그 확인 명령어
+
+```bash
+# 특정 컨테이너 로그 보기
+docker logs aerial-survey-manager-api-1 --tail 100
+
+# 실시간 로그 스트리밍
+docker logs -f aerial-survey-manager-worker-metashape-1
+
+# 로그 파일 크기 확인
+du -sh /var/lib/docker/containers/*/
+```
+
+### 3. 수동 로그 정리
+
+```bash
+# 특정 컨테이너 로그 비우기 (컨테이너 실행 중에도 가능)
+sudo truncate -s 0 $(docker inspect --format='{{.LogPath}}' aerial-survey-manager-api-1)
+
+# 모든 컨테이너 로그 비우기
+docker ps -q | xargs -I {} sh -c 'sudo truncate -s 0 $(docker inspect --format="{{.LogPath}}" {})'
+```
+
+### 4. Docker 시스템 정리
+
+```bash
+# 미사용 이미지, 컨테이너, 볼륨 정리
+docker system prune -f
+
+# 더 공격적인 정리 (미사용 볼륨 포함)
+docker system prune -af --volumes
+
+# Docker 사용량 확인
+docker system df
+```
+
+### 5. 자동 정리 크론잡 (선택사항)
+
+```bash
+# /etc/cron.weekly/docker-cleanup 파일 생성
+#!/bin/bash
+docker system prune -f
+```
+
+> 💡 **팁**: 로그 로테이션 설정이 적용되려면 컨테이너를 재생성해야 합니다:
+> ```bash
+> docker compose down && docker compose up -d
+> ```
+
+---
+
 ## 🔑 Metashape Licensing Management
 
 `worker-metashape` 컨테이너의 라이선스 관리 전략에 대한 상세 기술 문서입니다.
