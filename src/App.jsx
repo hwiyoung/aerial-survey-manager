@@ -213,25 +213,24 @@ function Dashboard() {
   // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
   // 로고 클릭 시 전체 대시보드를 보여주기 위해 자동 선택 비활성화
   const [projectImages, setProjectImages] = useState([]); // Store fetched images
-  // 업로드 진행 상태 (프론트엔드 업로더가 활성화된 동안만 유효)
+  // 업로드 진행 상태 (글로벌 업로드: 화면 전환해도 유지)
   const [activeUploads, setActiveUploads] = useState([]);
   const [uploaderController, setUploaderController] = useState(null);
-  // 업로드 상태를 ref로도 추적 (popstate 핸들러에서 사용)
-  const uploaderControllerRef = useRef(null);
-  useEffect(() => { uploaderControllerRef.current = uploaderController; }, [uploaderController]);
-  const activeUploadsRef = useRef([]);
-  useEffect(() => { activeUploadsRef.current = activeUploads; }, [activeUploads]);
   const [loadingImages, setLoadingImages] = useState(false);
   const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
 
-  // 처리 옵션 설정 화면을 벗어나면 백엔드 기반 업로드 패널 숨김
-  // (프론트엔드 업로더가 활성화된 경우는 유지)
+  // 글로벌 업로드: 프론트엔드 업로더가 활성화된 경우 화면 전환해도 업로드 유지
+  // 백엔드 기반 synthetic 업로드만 처리 화면을 벗어날 때 클리어
   useEffect(() => {
     if (viewMode !== 'processing' && !uploaderController) {
       // 프론트엔드 업로더가 없는 경우에만 클리어 (백엔드 기반 synthetic 업로드)
-      setActiveUploads([]);
+      // 실제 업로드 중인 경우는 유지
+      const hasRealUploads = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+      if (!hasRealUploads) {
+        setActiveUploads([]);
+      }
     }
-  }, [viewMode, uploaderController]);
+  }, [viewMode, uploaderController, activeUploads]);
 
   // 처리 옵션 설정 화면에서 해당 프로젝트의 업로드 진행 상태를 UploadProgressPanel에 표시
   useEffect(() => {
@@ -381,31 +380,16 @@ function Dashboard() {
   }, [initialViewMode, initialProjectId, projects, projectImages, processingProject]);
 
   // 브라우저 뒤로가기/앞으로가기 처리
+  // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (업로드 중단하지 않음)
   useEffect(() => {
     const handlePopState = (event) => {
-      // 업로드 중이면 경고 표시 (ref 사용)
-      const hasActiveUpload = activeUploadsRef.current.some(u => u.status === 'uploading' || u.status === 'waiting');
-      if (hasActiveUpload) {
-        if (!window.confirm('업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.\n\n정말 이동하시겠습니까?')) {
-          // 취소 시 히스토리 복원 (뒤로가기 취소)
-          window.history.pushState({ viewMode: 'processing' }, '', window.location.href);
-          return;
-        }
-        // 업로드 중단
-        uploaderControllerRef.current?.abortAll();
-        setUploaderController(null);
-        setActiveUploads([]);
-      }
-
-      // 뒤로가기 시 대시보드로 복귀
+      // 뒤로가기 시 대시보드로 복귀 (업로드는 계속 진행)
       setViewMode('dashboard');
       setProcessingProject(null);
       setSelectedProjectId(null);
       setShowInspector(false);
       setHighlightProjectId(null);
-      // 업로드 패널 숨김 (뒤로가기 시 항상 숨김)
-      setActiveUploads([]);
-      setUploaderController(null);
+      // 업로드는 유지 (글로벌 업로드)
       refreshProjects();
     };
 
@@ -813,18 +797,7 @@ function Dashboard() {
         }
       `}</style>
       <Header onLogoClick={() => {
-        // 업로드 중이면 경고 표시
-        const hasActiveUpload = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
-        if (hasActiveUpload) {
-          if (!window.confirm('업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.\n\n정말 이동하시겠습니까?')) {
-            return;
-          }
-          // 업로드 중단
-          uploaderController?.abortAll();
-          setUploaderController(null);
-          setActiveUploads([]);
-        }
-
+        // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
         // 상태 기반 네비게이션으로 대시보드 복귀
         setViewMode('dashboard');
         setProcessingProject(null);
@@ -834,10 +807,7 @@ function Dashboard() {
         setActiveGroupId(null);
         setSearchTerm('');
         setRegionFilter('ALL');
-        // 업로드 패널 숨김 (백엔드 기반인 경우)
-        if (!uploaderController) {
-          setActiveUploads([]);
-        }
+        // 업로드는 유지 (글로벌 업로드)
         refreshProjects();
         window.history.pushState({}, '', window.location.pathname);
       }} />
@@ -848,24 +818,10 @@ function Dashboard() {
             project={processingViewProject}
             activeUploads={activeUploads}
             onCancel={() => {
-              // 업로드 중이면 경고 표시
-              const hasActiveUpload = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
-              if (hasActiveUpload) {
-                if (!window.confirm('업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.\n\n정말 이동하시겠습니까?')) {
-                  return;
-                }
-                // 업로드 중단
-                uploaderController?.abortAll();
-                setUploaderController(null);
-                setActiveUploads([]);
-              }
-
+              // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
               setViewMode('dashboard');
               setProcessingProject(null);
-              // 처리 옵션 화면을 나갈 때 업로드 패널도 숨김 (백엔드 기반인 경우)
-              if (!uploaderController) {
-                setActiveUploads([]);
-              }
+              // 업로드는 유지 (글로벌 업로드)
               refreshProjects();
             }}
             onStartProcessing={handleStartProcessing}
@@ -1112,8 +1068,8 @@ function Dashboard() {
           </div>
         </div>
       )}
-      {/* Upload Progress Overlay - 처리 옵션 화면이거나 실제 업로드 중일 때만 표시 */}
-      {(viewMode === 'processing' || uploaderController) && (
+      {/* Upload Progress Overlay - 글로벌 업로드: 업로드가 있으면 항상 표시 */}
+      {activeUploads.length > 0 && (
         <UploadProgressPanel
           uploads={activeUploads}
           onAbortAll={() => {
@@ -1124,8 +1080,20 @@ function Dashboard() {
             }
           }}
           onRestore={() => {
-            setUploaderController(null);
-            setActiveUploads([]);
+            // 업로드가 완료된 경우에만 패널 닫기 허용
+            const hasActiveUpload = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+            if (hasActiveUpload) {
+              // 업로드 중이면 숨기기만 하고 업로드는 계속 (최소화 기능)
+              // 현재는 간단히 닫기만 구현
+              if (window.confirm('업로드가 진행 중입니다. 패널을 닫으면 업로드가 취소됩니다.\n\n계속하시겠습니까?')) {
+                uploaderController?.abortAll();
+                setUploaderController(null);
+                setActiveUploads([]);
+              }
+            } else {
+              setUploaderController(null);
+              setActiveUploads([]);
+            }
           }}
         />
       )}
