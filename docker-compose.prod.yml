@@ -1,0 +1,306 @@
+# ============================================================
+# Aerial Survey Manager - Production Docker Compose
+# 외부 기관 배포용
+# ============================================================
+#
+# 사용법: docker compose -f docker-compose.prod.yml up -d
+#
+# 개발용과 차이점:
+# - 소스 코드 마운트 제거 (이미지에 내장)
+# - 보안 강화 (내부 포트 노출 제한)
+# - 프로덕션용 nginx 설정 사용
+# - restart: always 설정
+#
+
+version: '3.8'
+
+# 공통 로그 설정
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-logging-worker: &worker-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  # ============================================================
+  # Frontend (React)
+  # ============================================================
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_URL=
+        - VITE_TUS_URL=/files/
+    restart: always
+    environment:
+      - VITE_API_URL=
+      - VITE_TUS_URL=/files/
+    # 프로덕션: 소스 마운트 제거, 빌드된 이미지 사용
+    depends_on:
+      - api
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Backend API (FastAPI)
+  # ============================================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
+      - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+    volumes:
+      # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Celery Worker - Metashape (GPU)
+  # ============================================================
+  worker-metashape:
+    build:
+      context: .
+      dockerfile: engines/metashape/Dockerfile
+    working_dir: /app
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-metashape@%h
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - METASHAPE_LICENSE_KEY=${METASHAPE_LICENSE_KEY:-}
+      - PROJECT_ID=${PROJECT_ID:-unknown}
+      - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
+      - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
+    volumes:
+      # 프로덕션: 소스 마운트 제거
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - metashape-license:/var/tmp/agisoft/licensing
+    depends_on:
+      - redis
+      - db
+      - minio
+    networks:
+      aerial-network:
+        aliases:
+          - worker-metashape
+    mac_address: "02:42:AC:17:00:64"
+    logging: *worker-logging
+
+  # ============================================================
+  # Celery Beat (Scheduler)
+  # ============================================================
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks beat --loglevel=info
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+    depends_on:
+      - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # PostgreSQL + PostGIS
+  # ============================================================
+  db:
+    image: postgis/postgis:15-3.3
+    restart: always
+    environment:
+      - POSTGRES_DB=aerial_survey
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # 프로덕션: 외부 포트 노출 제거 (보안)
+    # ports:
+    #   - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Redis
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    restart: always
+    # 프로덕션: 외부 포트 노출 제거
+    # ports:
+    #   - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # MinIO (S3-compatible Storage)
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    restart: always
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_API_CORS_ALLOW_ORIGIN=*
+    # 프로덕션: 외부 포트 노출 제거 (nginx를 통해 접근)
+    # 관리자 콘솔만 로컬 접근 허용
+    ports:
+      - "127.0.0.1:9003:9001"  # Console - localhost만 접근 가능
+    volumes:
+      - ${MINIO_DATA_PATH:-./data/minio}:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # MinIO Bucket Init
+  # ============================================================
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set myminio http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin}
+        mc mb --ignore-existing myminio/aerial-survey
+        mc anonymous set download myminio/aerial-survey/public
+        echo "MinIO bucket initialized successfully"
+    environment:
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    networks:
+      - aerial-network
+
+  # ============================================================
+  # TiTiler (COG Tile Server)
+  # ============================================================
+  titiler:
+    image: ghcr.io/developmentseed/titiler:0.18.0
+    restart: always
+    environment:
+      - TITILER_API_CORS_ORIGINS=*
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - AWS_S3_ENDPOINT=minio:9000
+      - AWS_VIRTUAL_HOSTING=FALSE
+      - AWS_HTTPS=NO
+      - AWS_NO_SIGN_REQUEST=NO
+    depends_on:
+      - minio
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Nginx Reverse Proxy (Production)
+  # ============================================================
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "${WEB_PORT:-8081}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - api
+      - titiler
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Flower (Celery Monitoring) - 관리자 전용
+  # ============================================================
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks flower --port=5555
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    # 프로덕션: localhost만 접근 가능
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+networks:
+  aerial-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
+
+volumes:
+  pgdata:
+  redis_data:
+  metashape-license:

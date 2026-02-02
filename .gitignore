@@ -52,4 +52,14 @@ data/
 pgdata/
 redis_data/
 minio_data/
-docs/ADMIN_GUIDE.md
+
+# Release packages
+releases/
+
+# SSL certificates
+ssl/*.pem
+ssl/*.crt
+ssl/*.key
+
+# Logs collection
+logs_*/
