@@ -74,6 +74,7 @@ x-logging-worker: &worker-logging
 services:
   frontend:
     image: ${IMAGE_PREFIX}:frontend-${VERSION}
+    pull_policy: never
     restart: always
     depends_on:
       - api
@@ -83,6 +84,7 @@ services:
 
   api:
     image: ${IMAGE_PREFIX}:api-${VERSION}
+    pull_policy: never
     restart: always
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
@@ -110,6 +112,7 @@ services:
 
   worker-metashape:
     image: ${IMAGE_PREFIX}:worker-metashape-${VERSION}
+    pull_policy: never
     restart: always
     deploy:
       resources:
@@ -146,6 +149,7 @@ services:
 
   celery-beat:
     image: ${IMAGE_PREFIX}:celery-beat-${VERSION}
+    pull_policy: never
     command: celery -A app.workers.tasks beat --loglevel=info
     restart: always
     environment:
@@ -262,6 +266,7 @@ services:
 
   flower:
     image: ${IMAGE_PREFIX}:flower-${VERSION}
+    pull_policy: never
     command: celery -A app.workers.tasks flower --port=5555
     restart: always
     environment:
