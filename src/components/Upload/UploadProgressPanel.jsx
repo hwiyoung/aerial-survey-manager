@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { UploadCloud, CheckCircle2, AlertTriangle, Loader2, X } from 'lucide-react';
 
 export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) {
+    const hasNotified = useRef(false);
+
     if (!uploads || uploads.length === 0) return null;
 
     const completedCount = uploads.filter(u => u.status === 'completed').length;
@@ -9,13 +11,57 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
     const isAllDone = completedCount + errorCount === uploads.length;
     const totalProgress = uploads.reduce((acc, u) => acc + (u.progress || 0), 0) / uploads.length;
 
+    // 업로드 완료 시 실패한 이미지가 있으면 알림 표시
+    useEffect(() => {
+        if (isAllDone && !hasNotified.current) {
+            hasNotified.current = true;
+            if (errorCount > 0) {
+                // 약간의 지연 후 알림 표시 (UI 업데이트 완료 후)
+                setTimeout(() => {
+                    alert(
+                        `업로드가 완료되었습니다.\n\n` +
+                        `✅ 성공: ${completedCount}개\n` +
+                        `❌ 실패: ${errorCount}개\n\n` +
+                        `실패한 이미지는 처리에서 제외됩니다.\n` +
+                        `${completedCount}개의 이미지만으로 처리를 진행할 수 있습니다.`
+                    );
+                }, 500);
+            }
+        }
+    }, [isAllDone, errorCount, completedCount]);
+
+    // uploads가 리셋되면 알림 상태도 리셋
+    useEffect(() => {
+        if (uploads.length === 0) {
+            hasNotified.current = false;
+        }
+    }, [uploads.length]);
+
+    const hasErrors = errorCount > 0;
+    const headerBgClass = isAllDone
+        ? (hasErrors ? "bg-amber-600" : "bg-green-600")
+        : "bg-slate-900";
+
     return (
         <div className="fixed bottom-6 right-6 z-[2000] w-96 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden animate-in slide-in-from-bottom-5">
-            <div className="bg-slate-900 px-4 py-3 flex items-center justify-between">
+            <div className={`${headerBgClass} px-4 py-3 flex items-center justify-between`}>
                 <div className="flex items-center gap-2 text-white">
-                    <UploadCloud size={18} className={isAllDone ? "text-green-400" : "animate-pulse text-blue-400"} />
+                    {isAllDone ? (
+                        hasErrors ? (
+                            <AlertTriangle size={18} className="text-white" />
+                        ) : (
+                            <CheckCircle2 size={18} className="text-white" />
+                        )
+                    ) : (
+                        <UploadCloud size={18} className="animate-pulse text-blue-400" />
+                    )}
                     <span className="font-bold text-sm">
-                        {isAllDone ? '업로드 완료' : `이미지 업로드 중 (${completedCount}/${uploads.length})`}
+                        {isAllDone
+                            ? (hasErrors
+                                ? `업로드 완료 (${errorCount}개 실패)`
+                                : `업로드 완료 (${completedCount}개)`)
+                            : `이미지 업로드 중 (${completedCount}/${uploads.length})`
+                        }
                     </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -32,6 +78,18 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
                     </button>
                 </div>
             </div>
+
+            {/* 업로드 완료 후 에러가 있으면 요약 표시 */}
+            {isAllDone && hasErrors && (
+                <div className="bg-amber-50 px-4 py-2 border-b border-amber-200">
+                    <div className="text-xs text-amber-800">
+                        <span className="font-semibold">⚠️ {errorCount}개 이미지 업로드 실패</span>
+                        <p className="mt-1 text-amber-700">
+                            실패한 이미지는 처리에서 제외됩니다.
+                        </p>
+                    </div>
+                </div>
+            )}
 
             <div className="max-h-64 overflow-y-auto p-2 bg-slate-50">
                 {uploads.map((upload, idx) => (

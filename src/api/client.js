@@ -69,8 +69,15 @@ class ApiClient {
         }
 
         if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || `Request failed: ${response.status}`);
+            const errorData = await response.json().catch(() => ({}));
+            const error = new Error(
+                typeof errorData.detail === 'string'
+                    ? errorData.detail
+                    : errorData.detail?.message || `Request failed: ${response.status}`
+            );
+            error.status = response.status;
+            error.data = errorData.detail;
+            throw error;
         }
 
         if (response.status === 204) {
@@ -187,8 +194,11 @@ class ApiClient {
     }
 
     // --- Processing ---
-    async startProcessing(projectId, options) {
-        return this.request(`/processing/projects/${projectId}/start`, {
+    async startProcessing(projectId, options, force = false) {
+        const url = force
+            ? `/processing/projects/${projectId}/start?force=true`
+            : `/processing/projects/${projectId}/start`;
+        return this.request(url, {
             method: 'POST',
             body: JSON.stringify(options),
         });

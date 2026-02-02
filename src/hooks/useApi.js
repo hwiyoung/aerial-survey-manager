@@ -164,9 +164,9 @@ export function useProcessingStatus(projectId) {
         };
     }, [projectId]);
 
-    const startProcessing = useCallback(async (options) => {
+    const startProcessing = useCallback(async (options, force = false) => {
         try {
-            const job = await api.startProcessing(projectId, options);
+            const job = await api.startProcessing(projectId, options, force);
             setStatus(job);
             return job;
         } catch (err) {

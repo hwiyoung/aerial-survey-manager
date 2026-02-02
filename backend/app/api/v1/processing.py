@@ -57,13 +57,17 @@ manager = ConnectionManager()
 async def start_processing(
     project_id: UUID,
     options: ProcessingOptions,
+    force: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Start orthophoto generation processing.
-    
+
     Submits a job to the selected processing engine (ODM or external).
+
+    Args:
+        force: If True, proceed with only completed images even if some uploads are incomplete/failed.
     """
     # Check permission
     permission_checker = PermissionChecker("edit")
@@ -81,7 +85,83 @@ async def start_processing(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-    
+
+    # Check image upload status before processing
+    from app.models.project import Image
+    from sqlalchemy import func
+    from datetime import datetime, timedelta
+
+    image_status_result = await db.execute(
+        select(
+            Image.upload_status,
+            func.count(Image.id).label("count")
+        )
+        .where(Image.project_id == project_id)
+        .group_by(Image.upload_status)
+    )
+    status_counts = {row.upload_status: row.count for row in image_status_result}
+
+    completed_count = status_counts.get("completed", 0)
+    uploading_count = status_counts.get("uploading", 0)
+    failed_count = status_counts.get("failed", 0)
+
+    if completed_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="업로드 완료된 이미지가 없습니다. 이미지를 먼저 업로드해주세요.",
+        )
+
+    # 문제 있는 이미지 처리 로직
+    incomplete_count = 0
+    incomplete_reason = ""
+
+    if uploading_count > 0:
+        # 오래된 uploading 이미지 확인 (1시간 이상)
+        stale_threshold = datetime.utcnow() - timedelta(hours=1)
+        stale_result = await db.execute(
+            select(func.count(Image.id)).where(
+                Image.project_id == project_id,
+                Image.upload_status == "uploading",
+                Image.created_at < stale_threshold,
+            )
+        )
+        stale_count = stale_result.scalar() or 0
+        recent_count = uploading_count - stale_count
+
+        if recent_count > 0:
+            # 최근 업로드 중인 이미지가 있음 - 무조건 대기 필요
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"현재 업로드 중인 이미지가 {uploading_count}개 있습니다. "
+                       f"업로드가 완료된 후 다시 시도해주세요. "
+                       f"업로드 중 브라우저를 닫거나 페이지를 이동하면 업로드가 중단될 수 있습니다.",
+            )
+        elif stale_count > 0:
+            # 모두 오래된 이미지 - 업로드 중단으로 판단, 사용자 확인 후 진행 가능
+            incomplete_count += stale_count
+            incomplete_reason = f"업로드가 중단된 이미지 {stale_count}개"
+
+    if failed_count > 0:
+        if incomplete_reason:
+            incomplete_reason += f", 업로드 실패 이미지 {failed_count}개"
+        else:
+            incomplete_reason = f"업로드 실패한 이미지 {failed_count}개"
+        incomplete_count += failed_count
+
+    # 문제가 있는 이미지가 있고, force가 아닌 경우 확인 요청
+    if incomplete_count > 0 and not force:
+        total_images = completed_count + incomplete_count
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "incomplete_uploads",
+                "message": f"전체 {total_images}개 이미지 중 {incomplete_reason}가 있습니다.",
+                "completed_count": completed_count,
+                "incomplete_count": incomplete_count,
+                "confirm_message": f"완료된 {completed_count}개 이미지만으로 처리를 진행하시겠습니까?",
+            },
+        )
+
     # Check if there's already a running job
     result = await db.execute(
         select(ProcessingJob).where(

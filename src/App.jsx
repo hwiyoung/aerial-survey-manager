@@ -621,7 +621,7 @@ function Dashboard() {
     }
   };
 
-  const handleStartProcessing = async (options = {}) => {
+  const handleStartProcessing = async (options = {}, force = false) => {
     if (!processingProject) return;
 
     const projectId = processingProject.id;
@@ -637,7 +637,7 @@ function Dashboard() {
 
     try {
       // Start processing via API
-      const result = await api.startProcessing(projectId, processingOptions);
+      const result = await api.startProcessing(projectId, processingOptions, force);
       console.log('Processing started:', result);
 
       // 업로드 패널 자동 숨김 (처리 시작 시)
@@ -650,6 +650,23 @@ function Dashboard() {
 
     } catch (err) {
       console.error('Failed to start processing:', err);
+
+      // 불완전한 업로드가 있는 경우 사용자에게 확인 요청
+      if (err.status === 409 && err.data?.type === 'incomplete_uploads') {
+        const { message, confirm_message, completed_count, incomplete_count } = err.data;
+        const shouldProceed = window.confirm(
+          `${message}\n\n${confirm_message}\n\n` +
+          `[확인]을 누르면 완료된 ${completed_count}개 이미지만으로 처리를 시작합니다.\n` +
+          `[취소]를 누르면 처리를 중단합니다.`
+        );
+
+        if (shouldProceed) {
+          // force=true로 다시 시도
+          return handleStartProcessing(options, true);
+        }
+        return;
+      }
+
       alert('처리 시작 실패: ' + err.message);
       return;
     }
