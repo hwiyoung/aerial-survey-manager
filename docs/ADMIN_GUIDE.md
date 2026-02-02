@@ -416,3 +416,112 @@ Metashape 워커 로그는 10% 단위로만 출력됩니다:
    Align Photos: 20%
    ...
 ```
+
+---
+
+## 🚀 S3 Multipart Upload (2026-02-02)
+
+### 1. 아키텍처 개요
+
+TUS 프로토콜 대신 S3 Multipart Upload를 사용하여 업로드 성능을 개선했습니다.
+
+```
+기존 (TUS):     Browser → nginx → TUS → MinIO (15-20 MB/s)
+변경 (S3):      Browser → nginx(/storage/) → MinIO (80-100 MB/s 목표)
+                       ↑
+                 Presigned URLs (백엔드에서 발급)
+```
+
+### 2. 핵심 설정: MINIO_PUBLIC_ENDPOINT
+
+**가장 중요한 설정**입니다. 이 값은 브라우저에서 접속하는 nginx 주소와 **정확히 동일**해야 합니다.
+
+```bash
+# .env 파일
+# 브라우저가 http://192.168.10.203:8081 로 접속한다면:
+MINIO_PUBLIC_ENDPOINT=192.168.10.203:8081
+```
+
+#### 왜 중요한가?
+- Presigned URL의 호스트가 이 값으로 생성됨
+- 프론트엔드와 다른 포트/호스트면 **CORS 오류** 발생
+- Same-origin이어야 preflight 없이 빠른 업로드 가능
+
+#### 설정 변경 후
+```bash
+# API 컨테이너 재생성 필요 (restart가 아닌 up -d)
+docker-compose up -d api
+```
+
+### 3. nginx 설정
+
+`/storage/` 경로가 MinIO로 프록시됩니다:
+
+```nginx
+location /storage/ {
+    # CORS 헤더 (cross-origin 상황 대비)
+    add_header 'Access-Control-Allow-Origin' '*' always;
+    add_header 'Access-Control-Expose-Headers' 'ETag' always;
+
+    rewrite ^/storage/(.*) /$1 break;
+    proxy_pass http://minio;
+
+    # 중요: Host 헤더는 presigned URL 서명과 일치해야 함
+    proxy_set_header Host minio:9000;
+}
+```
+
+### 4. 업로드 흐름
+
+1. **초기화** (`POST /api/v1/upload/projects/{id}/multipart/init`)
+   - Image 레코드 생성/업데이트
+   - S3 multipart upload 시작
+   - 각 파트별 presigned URL 발급
+
+2. **파트 업로드** (브라우저 → nginx → MinIO)
+   - 10MB 단위 파트 병렬 업로드
+   - 파일당 4개 파트 동시 업로드
+   - 6개 파일 동시 업로드
+
+3. **완료** (`POST /api/v1/upload/projects/{id}/multipart/complete`)
+   - S3 multipart upload 완료
+   - Image 레코드 상태 업데이트
+   - 썸네일 생성 태스크 트리거
+
+### 5. 트러블슈팅
+
+#### 증상: CORS Failed / NS_ERROR_NET_RESET
+```
+원인: MINIO_PUBLIC_ENDPOINT가 브라우저 접속 주소와 불일치
+해결: .env에서 MINIO_PUBLIC_ENDPOINT를 브라우저 주소와 동일하게 설정
+     → docker-compose up -d api
+```
+
+#### 증상: 403 SignatureDoesNotMatch
+```
+원인: nginx의 Host 헤더가 presigned URL 서명과 불일치
+해결: nginx.conf에서 proxy_set_header Host minio:9000; 확인
+     → docker-compose restart nginx
+```
+
+#### 증상: 업로드 속도가 여전히 느림 (20MB/s)
+```
+원인: CORS preflight 요청이 발생 중
+확인: 브라우저 Network 탭에서 OPTIONS 요청 확인
+해결: MINIO_PUBLIC_ENDPOINT가 same-origin인지 확인
+```
+
+### 6. 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `backend/app/services/s3_multipart.py` | S3 multipart 서비스 (boto3) |
+| `backend/app/api/v1/upload.py` | Multipart API 엔드포인트 |
+| `src/services/s3Upload.js` | 프론트엔드 S3 업로더 |
+| `nginx.conf` | `/storage/` 프록시 설정 |
+
+### 7. TUS 서비스 (레거시)
+
+TUS 서비스(tusd)는 docker-compose.yml에서 주석 처리되어 있습니다.
+기존 TUS로 업로드된 이미지는 `uploads/{upload_id}/` 경로에 저장되어 있으며,
+새 S3 multipart로 업로드된 이미지는 `images/{project_id}/` 경로에 저장됩니다.

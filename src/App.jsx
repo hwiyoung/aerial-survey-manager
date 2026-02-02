@@ -13,7 +13,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useProjects, useProcessingStatus } from './hooks/useApi';
 import LoginPage from './components/LoginPage';
 import api from './api/client';
-import ResumableUploader from './services/upload';
+import S3MultipartUploader from './services/s3Upload';
 import { useProcessingProgress } from './hooks/useProcessingProgress';
 
 // Modularized Components
@@ -649,9 +649,11 @@ function Dashboard() {
           [projectId]: initialUploads
         }));
 
-        const uploader = new ResumableUploader(api.token);
+        const uploader = new S3MultipartUploader(api.token);
         const controller = uploader.uploadFiles(files, projectId, {
-          concurrency: 5,
+          concurrency: 6,
+          partConcurrency: 4,
+          partSize: 10 * 1024 * 1024, // 10MB parts
           onFileProgress: (idx, name, progress) => {
             setUploadsByProject(prev => {
               const projectUploads = prev[projectId] || [];
@@ -661,8 +663,8 @@ function Dashboard() {
                   ...next[idx],
                   progress: progress.percentage,
                   status: 'uploading',
-                  speed: ResumableUploader.formatSpeed(progress.speed),
-                  eta: ResumableUploader.formatETA(progress.eta)
+                  speed: S3MultipartUploader.formatSpeed(progress.speed),
+                  eta: S3MultipartUploader.formatETA(progress.eta)
                 };
               }
               return { ...prev, [projectId]: next };

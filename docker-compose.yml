@@ -58,7 +58,7 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-      - TUS_ENDPOINT=http://tusd:1080/files/
+      # - TUS_ENDPOINT=http://tusd:1080/files/  # Disabled - using S3 Multipart Upload
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
     volumes:
       - ./backend:/app
@@ -75,29 +75,30 @@ services:
     logging: *default-logging
 
   # === tus Upload Server (Resumable Uploads) ===
-  tusd:
-    image: tusproject/tusd:latest
-    command: >
-      -s3-bucket aerial-survey
-      -s3-endpoint http://minio:9000
-      -s3-object-prefix uploads/
-      -s3-part-size 524288000
-      -hooks-http http://api:8000/api/v1/upload/hooks
-      -hooks-enabled-events pre-create,post-finish,post-terminate
-      -max-size 0
-      -behind-proxy
-      -base-path /files/
-    environment:
-      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
-      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - AWS_REGION=us-east-1
-    ports:
-      - "1081:8080"
-    depends_on:
-      - minio
-    networks:
-      - aerial-network
-    logging: *worker-logging
+  # === TUS Server (DISABLED - replaced by S3 Multipart Upload) ===
+  # tusd:
+  #   image: tusproject/tusd:latest
+  #   command: >
+  #     -s3-bucket aerial-survey
+  #     -s3-endpoint http://minio:9000
+  #     -s3-object-prefix uploads/
+  #     -s3-part-size 524288000
+  #     -hooks-http http://api:8000/api/v1/upload/hooks
+  #     -hooks-enabled-events pre-create,post-finish,post-terminate
+  #     -max-size 0
+  #     -behind-proxy
+  #     -base-path /files/
+  #   environment:
+  #     - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+  #     - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+  #     - AWS_REGION=us-east-1
+  #   ports:
+  #     - "1081:8080"
+  #   depends_on:
+  #     - minio
+  #   networks:
+  #     - aerial-network
+  #   logging: *worker-logging
 
   # === Celery Worker - ODM Queue ===
   worker-odm:
@@ -253,6 +254,8 @@ services:
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      # CORS settings for direct browser uploads (S3 Multipart)
+      - MINIO_API_CORS_ALLOW_ORIGIN=*
     ports:
       - "9002:9000"
       - "9003:9001"  # Console UI
@@ -313,7 +316,6 @@ services:
     depends_on:
       - frontend
       - api
-      - tusd
       - titiler
     networks:
       - aerial-network

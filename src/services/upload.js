@@ -36,7 +36,7 @@ export class ResumableUploader {
         const upload = new tus.Upload(file, {
             endpoint: TUS_URL,
             retryDelays: [0, 1000, 3000, 5000, 10000, 30000, 60000], // Extended for TB-scale stability
-            chunkSize: 20 * 1024 * 1024, // Optimized for large files (20MB)
+            chunkSize: 100 * 1024 * 1024, // Increased for better throughput (100MB)
             // parallelUploads disabled to ensure proper post-finish events with metadata
 
             metadata: {
