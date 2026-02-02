@@ -33,7 +33,7 @@ import DashboardView from './components/Dashboard/DashboardView';
 
 
 // --- 1. CONSTANTS ---
-const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
+const REGIONS = ['경기 권역', '충청 권역', '강원 권역', '전라 권역', '경상 권역'];
 const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
 
 // Status mapping for display

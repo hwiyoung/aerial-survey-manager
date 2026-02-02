@@ -418,11 +418,22 @@ async def delete_project(
         storage = StorageService()
 
         # Delete original uploaded images (stored in uploads/ by TUS)
+        # TUS stores files as folders with chunks, so use delete_recursive
         for path in original_paths:
             try:
-                storage.delete_object(path)
-                # Also delete .info file created by TUS
-                storage.delete_object(f"{path}.info")
+                # Delete the upload folder/file (TUS may create folder structure)
+                storage.delete_recursive(f"{path}/")
+                # Also try direct object deletion for single-file uploads
+                try:
+                    storage.delete_object(path)
+                except Exception:
+                    pass
+                # Delete .info metadata folder/file created by TUS
+                storage.delete_recursive(f"{path}.info/")
+                try:
+                    storage.delete_object(f"{path}.info")
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"Failed to delete uploaded file {path}: {e}")
 

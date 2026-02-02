@@ -4,23 +4,23 @@ from typing import Optional
 # Each region is defined by a bounding box [min_lon, min_lat, max_lon, max_lat]
 KOREA_REGIONS = {
     "gyeonggi": {
-        "name": "경기권역",
+        "name": "경기 권역",
         "bbox": [126.3, 36.9, 127.9, 38.0]
     },
     "chungcheong": {
-        "name": "충청권역",
+        "name": "충청 권역",
         "bbox": [126.3, 35.9, 128.0, 36.9]
     },
     "gangwon": {
-        "name": "강원권역",
+        "name": "강원 권역",
         "bbox": [127.9, 37.0, 129.5, 38.5]
     },
     "jeolla": {
-        "name": "전라권역",
+        "name": "전라 권역",
         "bbox": [126.0, 34.0, 127.5, 36.0]
     },
     "gyeongsang": {
-        "name": "경상권역",
+        "name": "경상 권역",
         "bbox": [127.5, 34.5, 130.0, 37.0]
     }
 }

@@ -119,19 +119,64 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 
 > 💡 **팁**: 항공 이미지 1장당 약 50~200MB, 프로젝트당 수백~수천 장을 업로드하므로, 여유롭게 TB 단위 스토리지를 확보하는 것이 좋습니다.
 
-### 7. 프로젝트 삭제 시 스토리지 정리 (2026-01-31)
+### 7. 프로젝트 삭제 시 스토리지 정리 (2026-02-02 업데이트)
 
 프로젝트 삭제 시 다음 데이터가 자동으로 삭제됩니다:
 
 | 경로 | 설명 |
 |------|------|
-| `uploads/{upload_id}` | TUS로 업로드된 원본 이미지 |
-| `uploads/{upload_id}.info` | TUS 메타데이터 파일 |
+| `images/{project_id}/` | S3 Multipart로 업로드된 원본 이미지 |
+| `uploads/{upload_id}/` | TUS로 업로드된 원본 이미지 (레거시, 재귀 삭제) |
+| `uploads/{upload_id}.info/` | TUS 메타데이터 파일 (재귀 삭제) |
 | `projects/{project_id}/thumbnails/` | 생성된 썸네일 |
 | `projects/{project_id}/ortho/` | 정사영상 결과물 |
 | `/data/processing/{project_id}/` | 로컬 처리 캐시 |
 
-> ⚠️ **주의**: 2026-01-31 이전 버전에서는 `uploads/` 경로의 원본 이미지가 삭제되지 않아 스토리지가 누적되는 버그가 있었습니다. 해당 버전을 사용 중이라면 수동으로 정리하거나 최신 버전으로 업데이트하세요.
+> ⚠️ **주의**: 2026-02-02 이전 버전에서는 TUS 청크 파일이 폴더 구조로 저장된 경우 완전히 삭제되지 않는 버그가 있었습니다. 최신 버전에서는 `delete_recursive()`를 사용하여 폴더 내 모든 파일을 삭제합니다.
+
+### 8. 고아 파일 정리 스크립트 (2026-02-02)
+
+DB에 연결되지 않은 고아 파일들을 정리하는 스크립트입니다.
+
+#### 사용법
+
+```bash
+# 로컬 processing 폴더만 정리
+docker compose exec api python scripts/cleanup_orphaned_data.py
+
+# MinIO uploads 폴더도 정리 (dry-run: 삭제 대상만 확인)
+docker compose exec api python scripts/cleanup_orphaned_data.py --minio
+
+# MinIO uploads 폴더 실제 삭제
+docker compose exec api python scripts/cleanup_orphaned_data.py --minio --execute
+```
+
+#### 정리 대상
+
+| 경로 | 조건 | 설명 |
+|------|------|------|
+| `/data/processing/{uuid}/` | DB에 해당 프로젝트 없음 | 삭제된 프로젝트의 로컬 캐시 |
+| `uploads/{hash}` | DB Image.original_path에 없음 | 실패/취소된 TUS 업로드 임시 파일 |
+| `uploads/{hash}.info` | 위와 동일 | TUS 메타데이터 파일 |
+
+#### 안전 장치
+
+- **dry-run 기본**: `--minio`만 사용하면 삭제 대상만 출력하고 실제 삭제하지 않음
+- **DB 연동 확인**: `Image.original_path`에 등록된 파일은 삭제하지 않음
+- **현재 이미지 경로**: `images/{project_id}/` 경로는 정리 대상이 아님
+
+#### 예시 출력
+
+```
+=== Cleaning up MinIO uploads ===
+Found 50 image paths in DB.
+Found 243 objects in MinIO uploads/
+Found 243 orphaned upload bases.
+  [DRY] Would delete: uploads/0046dd8f5c5bf879757e2d899c4d73da (2 objects, 1074.1 MB)
+  ...
+Dry run finished. Would delete 243 upload groups (100.70 GB).
+Run with --execute to actually delete these files.
+```
 
 ---
 
