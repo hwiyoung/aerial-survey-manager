@@ -68,7 +68,7 @@ check_requirements() {
         log_info "NVIDIA Driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
 
         # NVIDIA Container Toolkit 확인
-        if ! docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi &> /dev/null; then
+        if ! docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &> /dev/null; then
             log_error "NVIDIA Container Toolkit이 제대로 설정되지 않았습니다."
             echo "설치 방법은 docs/DEPLOYMENT_GUIDE.md를 참조하세요."
             exit 1
@@ -199,8 +199,11 @@ setup_nginx() {
     # 도메인 읽기
     domain=$(grep "^DOMAIN=" .env | cut -d'=' -f2)
 
-    if [ -f nginx.prod.conf ]; then
-        # server_name 업데이트
+    # nginx.conf 또는 nginx.prod.conf 업데이트
+    if [ -f nginx.conf ]; then
+        sed -i "s|server_name .*;|server_name $domain;|" nginx.conf
+        log_info "nginx.conf 도메인 설정 완료: $domain"
+    elif [ -f nginx.prod.conf ]; then
         sed -i "s|server_name .*;|server_name $domain;|" nginx.prod.conf
         log_info "nginx.prod.conf 도메인 설정 완료: $domain"
     fi
@@ -259,15 +262,30 @@ setup_ssl() {
 
 # Docker 이미지 빌드 및 서비스 시작
 start_services() {
-    log_info "Docker 이미지 빌드 중... (최초 실행 시 시간이 소요됩니다)"
-
     # 프로덕션 compose 파일 사용
     compose_file="docker-compose.yml"
     if [ -f "docker-compose.prod.yml" ]; then
         compose_file="docker-compose.prod.yml"
     fi
 
-    docker compose -f "$compose_file" build
+    # 배포 패키지인지 확인 (images 디렉토리 존재)
+    if [ -d "images" ]; then
+        # 배포 패키지: 이미지 로드 확인
+        log_info "배포 패키지 감지됨"
+
+        # 이미지가 로드되었는지 확인
+        if ! docker images | grep -q "aerial-survey-manager"; then
+            log_warn "Docker 이미지가 로드되지 않았습니다."
+            log_info "이미지 로드 중..."
+            ./load-images.sh
+        else
+            log_info "Docker 이미지: 로드됨"
+        fi
+    else
+        # 소스 코드: 이미지 빌드
+        log_info "Docker 이미지 빌드 중... (최초 실행 시 시간이 소요됩니다)"
+        docker compose -f "$compose_file" build
+    fi
 
     log_info "서비스 시작 중..."
     docker compose -f "$compose_file" up -d

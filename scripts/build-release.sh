@@ -2,6 +2,7 @@
 #
 # Aerial Survey Manager - 배포 패키지 빌드 스크립트
 # 외부 기관 배포용 패키지를 생성합니다.
+# 소스 코드 없이 Docker 이미지만 배포합니다.
 #
 
 set -e
@@ -9,6 +10,7 @@ set -e
 # 색상 정의
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # 스크립트 위치로 이동
@@ -17,6 +19,7 @@ cd "$(dirname "$0")/.."
 VERSION=${1:-$(date +%Y%m%d)}
 RELEASE_NAME="aerial-survey-manager-${VERSION}"
 RELEASE_DIR="./releases/${RELEASE_NAME}"
+IMAGE_PREFIX="aerial-survey-manager"
 
 echo -e "${BLUE}=============================================="
 echo "     Aerial Survey Manager Release Builder"
@@ -35,11 +38,259 @@ echo "1. Docker 이미지 빌드 중..."
 # 프로덕션 이미지 빌드
 docker compose -f docker-compose.prod.yml build
 
+# 이미지 태깅 (버전 포함)
 echo ""
-echo "2. 배포 파일 복사 중..."
+echo "2. 이미지 태깅 중..."
+docker tag ${IMAGE_PREFIX}-frontend:latest ${IMAGE_PREFIX}:frontend-${VERSION}
+docker tag ${IMAGE_PREFIX}-api:latest ${IMAGE_PREFIX}:api-${VERSION}
+docker tag ${IMAGE_PREFIX}-worker-metashape:latest ${IMAGE_PREFIX}:worker-metashape-${VERSION}
+docker tag ${IMAGE_PREFIX}-celery-beat:latest ${IMAGE_PREFIX}:celery-beat-${VERSION}
+docker tag ${IMAGE_PREFIX}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
+
+echo ""
+echo "3. 배포용 docker-compose.yml 생성 중..."
+
+# 배포용 docker-compose.yml 생성 (build 대신 image 사용)
+cat > "$RELEASE_DIR/docker-compose.yml" << EOF
+# ============================================================
+# Aerial Survey Manager - 배포용 Docker Compose
+# Version: ${VERSION}
+# 주의: 이 파일은 빌드된 이미지를 사용합니다.
+#       먼저 ./load-images.sh를 실행하세요.
+# ============================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-logging-worker: &worker-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  frontend:
+    image: ${IMAGE_PREFIX}:frontend-${VERSION}
+    restart: always
+    depends_on:
+      - api
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  api:
+    image: ${IMAGE_PREFIX}:api-${VERSION}
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - JWT_SECRET_KEY=\${JWT_SECRET_KEY:-change-this-in-production}
+      - EXTERNAL_ENGINE_URL=\${EXTERNAL_ENGINE_URL:-}
+      - EXTERNAL_ENGINE_API_KEY=\${EXTERNAL_ENGINE_API_KEY:-}
+      - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+    volumes:
+      - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  worker-metashape:
+    image: ${IMAGE_PREFIX}:worker-metashape-${VERSION}
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - METASHAPE_LICENSE_KEY=\${METASHAPE_LICENSE_KEY:-}
+      - PROJECT_ID=\${PROJECT_ID:-unknown}
+      - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
+      - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
+    volumes:
+      - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - metashape-license:/var/tmp/agisoft/licensing
+    depends_on:
+      - redis
+      - db
+      - minio
+    networks:
+      aerial-network:
+        aliases:
+          - worker-metashape
+    mac_address: "02:42:AC:17:00:64"
+    logging: *worker-logging
+
+  celery-beat:
+    image: ${IMAGE_PREFIX}:celery-beat-${VERSION}
+    command: celery -A app.workers.tasks beat --loglevel=info
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+    depends_on:
+      - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  db:
+    image: postgis/postgis:15-3.3
+    restart: always
+    environment:
+      - POSTGRES_DB=aerial_survey
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=\${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    restart: always
+    environment:
+      - MINIO_ROOT_USER=\${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=\${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_API_CORS_ALLOW_ORIGIN=*
+    ports:
+      - "127.0.0.1:9003:9001"
+    volumes:
+      - \${MINIO_DATA_PATH:-./data/minio}:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set myminio http://minio:9000 \$\${MINIO_ACCESS_KEY:-minioadmin} \$\${MINIO_SECRET_KEY:-minioadmin}
+        mc mb --ignore-existing myminio/aerial-survey
+        mc anonymous set download myminio/aerial-survey/public
+        echo "MinIO bucket initialized successfully"
+    environment:
+      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
+    networks:
+      - aerial-network
+
+  titiler:
+    image: ghcr.io/developmentseed/titiler:0.18.0
+    restart: always
+    environment:
+      - TITILER_API_CORS_ORIGINS=*
+      - AWS_ACCESS_KEY_ID=\${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=\${MINIO_SECRET_KEY:-minioadmin}
+      - AWS_S3_ENDPOINT=minio:9000
+      - AWS_VIRTUAL_HOSTING=FALSE
+      - AWS_HTTPS=NO
+      - AWS_NO_SIGN_REQUEST=NO
+    depends_on:
+      - minio
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "\${WEB_PORT:-8081}:80"
+      - "\${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - api
+      - titiler
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  flower:
+    image: ${IMAGE_PREFIX}:flower-${VERSION}
+    command: celery -A app.workers.tasks flower --port=5555
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+networks:
+  aerial-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
+
+volumes:
+  pgdata:
+  redis_data:
+  metashape-license:
+EOF
+
+echo ""
+echo "4. 기타 배포 파일 복사 중..."
 
 # 필수 파일 복사
-cp docker-compose.prod.yml "$RELEASE_DIR/docker-compose.yml"
 cp .env.production.example "$RELEASE_DIR/.env.example"
 cp nginx.prod.conf "$RELEASE_DIR/nginx.conf"
 cp init.sql "$RELEASE_DIR/"
@@ -52,7 +303,7 @@ mkdir -p "$RELEASE_DIR/docs"
 cp docs/DEPLOYMENT_GUIDE.md "$RELEASE_DIR/docs/"
 cp docs/ADMIN_GUIDE.md "$RELEASE_DIR/docs/" 2>/dev/null || true
 
-# ssl 디렉토리 생성 (빈 디렉토리)
+# ssl 디렉토리 생성
 mkdir -p "$RELEASE_DIR/ssl"
 touch "$RELEASE_DIR/ssl/.gitkeep"
 
@@ -63,78 +314,107 @@ touch "$RELEASE_DIR/data/processing/.gitkeep"
 touch "$RELEASE_DIR/data/minio/.gitkeep"
 
 echo ""
-echo "3. Docker 이미지 저장 중... (시간이 소요됩니다)"
+echo "5. Docker 이미지 저장 중... (시간이 소요됩니다)"
 
-# 이미지 이름 목록
-IMAGES=(
-    "aerial-survey-manager-frontend"
-    "aerial-survey-manager-api"
-    "aerial-survey-manager-worker-metashape"
-    "aerial-survey-manager-celery-beat"
-    "aerial-survey-manager-flower"
-)
-
-# 이미지 저장
 mkdir -p "$RELEASE_DIR/images"
-for img in "${IMAGES[@]}"; do
-    if docker images --format "{{.Repository}}" | grep -q "$img"; then
-        echo "  - $img 저장 중..."
-        docker save "$img:latest" | gzip > "$RELEASE_DIR/images/${img}.tar.gz"
-    fi
-done
 
-# 외부 이미지 (선택적)
+# 커스텀 이미지 저장
+echo "  - frontend 저장 중..."
+docker save ${IMAGE_PREFIX}:frontend-${VERSION} | gzip > "$RELEASE_DIR/images/frontend.tar.gz"
+
+echo "  - api 저장 중..."
+docker save ${IMAGE_PREFIX}:api-${VERSION} | gzip > "$RELEASE_DIR/images/api.tar.gz"
+
+echo "  - worker-metashape 저장 중..."
+docker save ${IMAGE_PREFIX}:worker-metashape-${VERSION} | gzip > "$RELEASE_DIR/images/worker-metashape.tar.gz"
+
+echo "  - celery-beat 저장 중..."
+docker save ${IMAGE_PREFIX}:celery-beat-${VERSION} | gzip > "$RELEASE_DIR/images/celery-beat.tar.gz"
+
+echo "  - flower 저장 중..."
+docker save ${IMAGE_PREFIX}:flower-${VERSION} | gzip > "$RELEASE_DIR/images/flower.tar.gz"
+
+# 외부 이미지 저장
 echo "  - 외부 이미지 저장 중..."
+docker pull postgis/postgis:15-3.3 2>/dev/null || true
+docker pull redis:7-alpine 2>/dev/null || true
+docker pull minio/minio:latest 2>/dev/null || true
+docker pull minio/mc:latest 2>/dev/null || true
+docker pull nginx:alpine 2>/dev/null || true
+docker pull ghcr.io/developmentseed/titiler:0.18.0 2>/dev/null || true
+
 docker save postgis/postgis:15-3.3 | gzip > "$RELEASE_DIR/images/postgis.tar.gz" 2>/dev/null || true
 docker save redis:7-alpine | gzip > "$RELEASE_DIR/images/redis.tar.gz" 2>/dev/null || true
 docker save minio/minio:latest | gzip > "$RELEASE_DIR/images/minio.tar.gz" 2>/dev/null || true
+docker save minio/mc:latest | gzip > "$RELEASE_DIR/images/minio-mc.tar.gz" 2>/dev/null || true
 docker save nginx:alpine | gzip > "$RELEASE_DIR/images/nginx.tar.gz" 2>/dev/null || true
+docker save ghcr.io/developmentseed/titiler:0.18.0 | gzip > "$RELEASE_DIR/images/titiler.tar.gz" 2>/dev/null || true
 
 echo ""
-echo "4. 이미지 로드 스크립트 생성 중..."
+echo "6. 이미지 로드 스크립트 생성 중..."
 
 cat > "$RELEASE_DIR/load-images.sh" << 'EOF'
 #!/bin/bash
+#
 # Docker 이미지 로드 스크립트
+#
 
 set -e
 cd "$(dirname "$0")"
 
-echo "Docker 이미지를 로드합니다..."
+echo "=============================================="
+echo "     Docker 이미지 로드"
+echo "=============================================="
+echo ""
+
+if [ ! -d "images" ]; then
+    echo "ERROR: images 디렉토리를 찾을 수 없습니다."
+    exit 1
+fi
+
+total=$(ls -1 images/*.tar.gz 2>/dev/null | wc -l)
+current=0
 
 for img in images/*.tar.gz; do
     if [ -f "$img" ]; then
-        echo "Loading: $img"
+        ((current++))
+        echo "[$current/$total] Loading: $(basename $img)"
         gunzip -c "$img" | docker load
     fi
 done
 
-echo "완료!"
+echo ""
+echo "=============================================="
+echo "     이미지 로드 완료!"
+echo "=============================================="
+echo ""
+echo "다음 단계: ./scripts/install.sh"
 EOF
 chmod +x "$RELEASE_DIR/load-images.sh"
 
 echo ""
-echo "5. README 생성 중..."
+echo "7. README 생성 중..."
 
 cat > "$RELEASE_DIR/README.txt" << EOF
 ============================================================
 Aerial Survey Manager - 정사영상 생성 플랫폼
-Version: $VERSION
+Version: ${VERSION}
 ============================================================
 
 설치 방법:
 -----------
-1. Docker 이미지 로드:
+1. Docker 이미지 로드 (필수!):
    ./load-images.sh
 
-2. 환경 설정:
-   cp .env.example .env
-   # .env 파일을 편집하여 설정
+2. 설치 스크립트 실행:
+   ./scripts/install.sh
 
-3. 서비스 시작:
+   또는 수동 설치:
+   cp .env.example .env
+   # .env 파일 편집
    docker compose up -d
 
-4. 접속:
+3. 접속:
    http://your-server:8081
 
 상세 가이드:
@@ -147,7 +427,7 @@ docs/DEPLOYMENT_GUIDE.md 참조
 EOF
 
 echo ""
-echo "6. 패키지 압축 중..."
+echo "8. 패키지 압축 중..."
 
 cd releases
 tar -czvf "${RELEASE_NAME}.tar.gz" "$RELEASE_NAME"
@@ -160,4 +440,9 @@ echo "==============================================${NC}"
 echo ""
 echo "배포 패키지: releases/${RELEASE_NAME}.tar.gz"
 echo ""
-echo "이 파일을 외부 기관에 전달하세요."
+echo -e "${YELLOW}설치 순서:${NC}"
+echo "  1. tar -xzf ${RELEASE_NAME}.tar.gz"
+echo "  2. cd ${RELEASE_NAME}"
+echo "  3. ./load-images.sh"
+echo "  4. ./scripts/install.sh"
+echo ""

@@ -76,7 +76,7 @@ sudo systemctl restart docker
 
 # 확인
 nvidia-smi
-docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 ```
 
 ### 3. 저장소 경로 준비
@@ -334,7 +334,7 @@ docker compose exec worker-metashape nvidia-smi
 nvidia-smi
 
 # Docker에서 GPU 접근 확인
-docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 
 # Container Toolkit 재설치
 sudo apt-get install --reinstall nvidia-container-toolkit

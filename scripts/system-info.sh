@@ -43,7 +43,7 @@ echo ""
 
 echo "[NVIDIA Container Toolkit]"
 echo "--------------------------"
-if docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi &> /dev/null; then
+if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &> /dev/null; then
     echo "Status: Working"
 else
     echo "Status: Not working or not installed"
