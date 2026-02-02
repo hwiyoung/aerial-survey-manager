@@ -155,7 +155,7 @@ class CameraModelResponse(CameraModelBase):
 # --- Processing Job Schemas ---
 class ProcessingOptions(BaseModel):
     """Processing options schema."""
-    engine: str = "odm"  # odm, metashape, external
+    engine: str = "metashape"  # metashape only (odm, external disabled)
     gsd: float = 5.0  # cm/pixel
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"

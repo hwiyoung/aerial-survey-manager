@@ -19,9 +19,9 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
     const [rawEoData, setRawEoData] = useState('');
     const eoInputRef = useRef(null);
 
-    // Processing options state
+    // Processing options state (Metashape only)
     const [options, setOptions] = useState({
-        engine: 'metashape',
+        engine: 'metashape',  // Fixed to metashape
         gsd: 5.0,
         output_crs: 'EPSG:5186',
         process_mode: 'Normal',
@@ -153,7 +153,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         const preset = allPresets.find(p => p.id === presetId);
         if (preset?.options) {
             setOptions({
-                engine: preset.options.engine || 'odm',
+                engine: 'metashape',  // Always use metashape
                 gsd: preset.options.gsd || 5.0,
                 output_crs: preset.options.output_crs || 'EPSG:5186',
                 process_mode: preset.options.process_mode || 'Normal',
@@ -172,7 +172,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
             setSelectedPresetId(defaultPreset.id);
             if (defaultPreset.options) {
                 setOptions({
-                    engine: defaultPreset.options.engine || 'odm',
+                    engine: 'metashape',  // Always use metashape
                     gsd: defaultPreset.options.gsd || 5.0,
                     output_crs: defaultPreset.options.output_crs || 'EPSG:5186',
                     process_mode: defaultPreset.options.process_mode || 'Normal',
@@ -452,57 +452,23 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                         </div>
                     </div>
 
-                    {/* Processing Parameters */}
+                    {/* Advanced Options */}
                     <div className="space-y-4 pt-2">
-                        <div className="space-y-2">
-                            <label className="block text-xs text-slate-500 font-medium ml-1">처리 엔진 (Engine)</label>
-                            <div className="grid grid-cols-2 gap-2">
-                                <button
-                                    onClick={() => setOptions(prev => ({ ...prev, engine: 'odm' }))}
-                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${options.engine === 'odm' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
-                                >
-                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${options.engine === 'odm' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                        <span className="text-[10px] font-bold">ODM</span>
-                                    </div>
-                                    <div className="text-left">
-                                        <div className="text-xs font-bold">오픈소스 엔진</div>
-                                        <div className="text-[9px] opacity-70">General Purpose</div>
-                                    </div>
-                                </button>
-
-                                <button
-                                    onClick={() => setOptions(prev => ({ ...prev, engine: 'metashape' }))}
-                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${options.engine === 'metashape' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'}`}
-                                >
-                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${options.engine === 'metashape' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                        <span className="text-[10px] font-bold">MS</span>
-                                    </div>
-                                    <div className="text-left">
-                                        <div className="text-xs font-bold">Metashape</div>
-                                        <div className="text-[9px] opacity-70">High Precision</div>
-                                    </div>
-                                </button>
-                            </div>
+                        <div className="space-y-2 pt-2 border-t border-slate-100">
+                            <label className="block text-xs text-slate-500 font-medium ml-1">고급 옵션 (Advanced)</label>
+                            <label className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors">
+                                <input
+                                    type="checkbox"
+                                    checked={options.build_point_cloud}
+                                    onChange={(e) => setOptions(prev => ({ ...prev, build_point_cloud: e.target.checked }))}
+                                    className="w-4 h-4 text-purple-600 rounded border-slate-300 focus:ring-purple-500"
+                                />
+                                <div className="flex-1">
+                                    <span className="text-sm font-medium text-slate-700">Point Cloud 생성</span>
+                                    <p className="text-[10px] text-slate-500 mt-0.5">3D Tiles (Cesium) 출력 시 필요. 정사영상만 필요할 경우 비활성화 권장</p>
+                                </div>
+                            </label>
                         </div>
-
-                        {/* Advanced Options - Only for Metashape */}
-                        {options.engine === 'metashape' && (
-                            <div className="space-y-2 pt-4 border-t border-slate-100">
-                                <label className="block text-xs text-slate-500 font-medium ml-1">고급 옵션 (Advanced)</label>
-                                <label className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors">
-                                    <input
-                                        type="checkbox"
-                                        checked={options.build_point_cloud}
-                                        onChange={(e) => setOptions(prev => ({ ...prev, build_point_cloud: e.target.checked }))}
-                                        className="w-4 h-4 text-purple-600 rounded border-slate-300 focus:ring-purple-500"
-                                    />
-                                    <div className="flex-1">
-                                        <span className="text-sm font-medium text-slate-700">Point Cloud 생성</span>
-                                        <p className="text-[10px] text-slate-500 mt-0.5">3D Tiles (Cesium) 출력 시 필요. 정사영상만 필요할 경우 비활성화 권장</p>
-                                    </div>
-                                </label>
-                            </div>
-                        )}
                     </div>
                 </div>
             </div>

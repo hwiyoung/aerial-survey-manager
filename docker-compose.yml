@@ -100,59 +100,59 @@ services:
   #     - aerial-network
   #   logging: *worker-logging
 
-  # === Celery Worker - ODM Queue ===
-  worker-odm:
-    build:
-      context: .
-      dockerfile: engines/odm/Dockerfile
-    command: celery -A app.workers.tasks worker -Q odm --loglevel=info --concurrency=2
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
-      - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
-    volumes:
-      - ./backend/app:/app/app
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - redis
-      - db
-      - minio
-    restart: always
-    networks:
-      - aerial-network
-    logging: *worker-logging
+  # === Celery Worker - ODM Queue (DISABLED - using Metashape only) ===
+  # worker-odm:
+  #   build:
+  #     context: .
+  #     dockerfile: engines/odm/Dockerfile
+  #   command: celery -A app.workers.tasks worker -Q odm --loglevel=info --concurrency=2
+  #   environment:
+  #     - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+  #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+  #     - MINIO_BUCKET=aerial-survey
+  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+  #     - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
+  #   volumes:
+  #     - ./backend/app:/app/app
+  #     - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   depends_on:
+  #     - redis
+  #     - db
+  #     - minio
+  #   restart: always
+  #   networks:
+  #     - aerial-network
+  #   logging: *worker-logging
 
-  # === Celery Worker - External API Queue ===
-  worker-external:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q external --loglevel=info --concurrency=4
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
-      - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
-      - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-    volumes:
-      - ./backend/app:/app/app
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-    depends_on:
-      - redis
-      - db
-    networks:
-      - aerial-network
-    logging: *default-logging
+  # === Celery Worker - External API Queue (DISABLED - using Metashape only) ===
+  # worker-external:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   command: celery -A app.workers.tasks worker -Q external --loglevel=info --concurrency=4
+  #   environment:
+  #     - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+  #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+  #     - MINIO_BUCKET=aerial-survey
+  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+  #     - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
+  #     - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
+  #   volumes:
+  #     - ./backend/app:/app/app
+  #     - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+  #   depends_on:
+  #     - redis
+  #     - db
+  #   networks:
+  #     - aerial-network
+  #   logging: *default-logging
 
   # === Celery Worker - Metashape Queue ===
   worker-metashape:
@@ -276,13 +276,16 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set myminio http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin};
-      mc mb --ignore-existing myminio/aerial-survey;
-      mc anonymous set download myminio/aerial-survey/public;
-      exit 0;
-      "
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set myminio http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin}
+        mc mb --ignore-existing myminio/aerial-survey
+        mc anonymous set download myminio/aerial-survey/public
+        echo "MinIO bucket initialized successfully"
+    environment:
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
     networks:
       - aerial-network
 
@@ -292,12 +295,13 @@ services:
     environment:
       # CORS - allow all origins for development
       - TITILER_API_CORS_ORIGINS=*
-      # MinIO/S3 configuration
+      # MinIO/S3 configuration for GDAL /vsis3/
       - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - AWS_S3_ENDPOINT=http://minio:9000
-      - AWS_VIRTUAL_HOSTING=false
-      - AWS_HTTPS=false
+      - AWS_S3_ENDPOINT=minio:9000
+      - AWS_VIRTUAL_HOSTING=FALSE
+      - AWS_HTTPS=NO
+      - AWS_NO_SIGN_REQUEST=NO
     depends_on:
       - minio
     networks:

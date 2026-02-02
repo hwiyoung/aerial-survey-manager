@@ -525,3 +525,138 @@ location /storage/ {
 TUS 서비스(tusd)는 docker-compose.yml에서 주석 처리되어 있습니다.
 기존 TUS로 업로드된 이미지는 `uploads/{upload_id}/` 경로에 저장되어 있으며,
 새 S3 multipart로 업로드된 이미지는 `images/{project_id}/` 경로에 저장됩니다.
+
+---
+
+## 📷 카메라 모델 관리 (2026-02-02)
+
+### 1. 카메라 모델 시드 스크립트
+
+`data/io.csv` 파일에서 카메라 모델을 데이터베이스에 등록할 수 있습니다.
+
+```bash
+# 기본 실행 (기존 데이터 유지, 새 데이터만 추가)
+docker compose exec api python /app/scripts/seed_camera_models.py -f /app/io.csv
+
+# 기존 데이터 모두 삭제 후 새로 등록
+docker compose exec api python /app/scripts/seed_camera_models.py -f /app/io.csv --clear
+```
+
+### 2. io.csv 파일 형식
+
+io.csv는 다음 형식의 카메라 정보를 포함합니다:
+
+```
+$CAMERA
+,$CAMERA_NAME:,DMC-III,
+,$LENS_SN:,회사1,회사2,
+,$FOCAL_LENGTH:,92.0,
+,$SENSOR_SIZE:,17216,14656,
+,$PIXEL_SIZE:,5.6,
+$END_CAMERA
+```
+
+### 3. 파싱 규칙
+
+- `$CAMERA_NAME`: 카메라 모델명 (고유 키로 사용)
+- `$FOCAL_LENGTH`: 초점거리 (mm)
+- `$SENSOR_SIZE`: 센서 크기 (가로 픽셀, 세로 픽셀)
+- `$PIXEL_SIZE`: 픽셀 크기 (µm)
+- 센서 물리 크기(mm)는 `픽셀수 × 픽셀크기 / 1000`으로 자동 계산
+
+### 4. 중복 처리
+
+- 동일한 `$CAMERA_NAME`을 가진 카메라는 한 번만 등록됩니다
+- `--clear` 옵션 사용 시 기존 **모든** 카메라 모델이 삭제됩니다 (커스텀 포함)
+
+---
+
+## ⚙️ 처리 엔진 설정 (2026-02-02)
+
+### 1. Metashape 전용 모드
+
+현재 시스템은 **Metashape만 지원**하도록 설정되어 있습니다.
+
+- ODM, External 엔진은 `docker-compose.yml`에서 주석 처리됨
+- 프론트엔드 처리 옵션에서 엔진 선택 UI 제거됨
+- 기본 엔진: `metashape`
+
+### 2. 비활성화된 서비스
+
+```yaml
+# docker-compose.yml에서 주석 처리된 서비스:
+# - worker-odm: OpenDroneMap 처리 워커
+# - worker-external: 외부 API 처리 워커
+# - tusd: TUS 업로드 서버 (S3 Multipart로 대체)
+```
+
+### 3. 다른 엔진 활성화 방법
+
+ODM 또는 외부 엔진을 다시 활성화하려면:
+
+1. `docker-compose.yml`에서 해당 서비스 주석 해제
+2. `src/components/Processing/ProcessingSidebar.jsx`에서 엔진 선택 UI 복원
+3. `backend/app/schemas/project.py`에서 engine 기본값 수정
+4. 컨테이너 재빌드: `docker compose up -d --build`
+
+---
+
+## 🗺️ TiTiler COG 타일 서버 (2026-02-02)
+
+### 1. S3 접근 설정
+
+TiTiler가 MinIO의 COG 파일에 접근하려면 GDAL S3 환경 변수가 올바르게 설정되어야 합니다.
+
+```yaml
+# docker-compose.yml - titiler 서비스
+environment:
+  - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+  - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+  - AWS_S3_ENDPOINT=minio:9000        # http:// 없이 호스트:포트만
+  - AWS_VIRTUAL_HOSTING=FALSE         # path-style 접근
+  - AWS_HTTPS=NO                      # MinIO는 HTTP 사용
+  - AWS_NO_SIGN_REQUEST=NO            # 인증 사용
+```
+
+### 2. COG URL 형식
+
+백엔드에서 프론트엔드로 S3 URL 형식을 반환합니다:
+
+```
+s3://aerial-survey/projects/{project_id}/ortho/result_cog.tif
+```
+
+### 3. 타일 요청 흐름
+
+```
+브라우저 → /titiler/cog/tiles/{z}/{x}/{y}.png?url=s3://...
+         → nginx (CORS 헤더 추가)
+         → TiTiler (GDAL /vsis3/)
+         → MinIO (S3 프로토콜)
+```
+
+### 4. 트러블슈팅
+
+#### 증상: TiTiler 500 에러 (`does not exist in the file system`)
+```
+원인: GDAL이 MinIO S3에 접근하지 못함
+확인: docker compose exec titiler env | grep AWS
+해결: docker-compose.yml의 titiler 환경변수 확인 후 컨테이너 재생성
+     → docker compose up -d titiler --force-recreate
+```
+
+#### 증상: 정사영상이 지도에 표시되지 않음
+```
+원인: COG URL이 presigned HTTP URL로 반환됨 (S3 URL이어야 함)
+확인: 브라우저 Network 탭에서 /cog-url 응답 확인
+해결: backend/app/api/v1/download.py의 get_cog_url() 함수 확인
+```
+
+### 5. 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `docker-compose.yml` | TiTiler 환경변수 설정 |
+| `nginx.conf` | `/titiler/` 프록시 및 CORS |
+| `backend/app/api/v1/download.py` | COG URL 반환 API |
+| `src/components/Dashboard/FootprintMap.jsx` | TiTiler 타일 레이어 |

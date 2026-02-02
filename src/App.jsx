@@ -748,13 +748,14 @@ function Dashboard() {
 
     const projectId = processingProject.id;
 
-    // Use provided options or defaults
+    // Use provided options or defaults (Metashape only)
     const processingOptions = {
-      engine: options.engine || 'odm',
+      engine: 'metashape',  // Fixed to metashape
       gsd: options.gsd || 5.0,
       output_crs: options.output_crs || 'EPSG:5186',
       output_format: options.output_format || 'GeoTiff',
       process_mode: options.process_mode || 'Normal',
+      build_point_cloud: options.build_point_cloud || false,
     };
 
     try {

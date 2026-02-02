@@ -268,9 +268,10 @@ async def get_cog_url(
         storage = StorageService()
         if storage.object_exists(project.ortho_path):
             file_size = storage.get_object_size(project.ortho_path)
-            presigned_url = storage.get_presigned_url(project.ortho_path, expires=3600)
+            # Return S3 URL for TiTiler (GDAL /vsis3/ access)
+            s3_url = f"s3://{storage.bucket}/{project.ortho_path}"
             return {
-                "url": presigned_url,
+                "url": s3_url,
                 "local": False,
                 "file_size": file_size,
                 "project_id": str(project_id),
@@ -307,23 +308,23 @@ async def get_cog_url(
             "project_id": str(project_id),
         }
     
-    # For MinIO files, generate presigned URL
+    # For MinIO files, return S3 URL for TiTiler
     storage = StorageService()
     object_name = file_path  # Assuming result_path is the MinIO object name
-    
+
     if not storage.object_exists(object_name):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Result file not found in storage",
         )
-    
+
     file_size = storage.get_object_size(object_name)
-    
-    # Generate presigned URL valid for 1 hour
-    presigned_url = storage.get_presigned_url(object_name, expires=3600)
-    
+
+    # Return S3 URL for TiTiler (GDAL /vsis3/ access)
+    s3_url = f"s3://{storage.bucket}/{object_name}"
+
     return {
-        "url": presigned_url,
+        "url": s3_url,
         "local": False,
         "file_size": file_size,
         "project_id": str(project_id),

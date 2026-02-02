@@ -152,7 +152,7 @@ class ProcessingJob(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
     )
-    engine: Mapped[str] = mapped_column(String(20), default="odm")  # odm, external
+    engine: Mapped[str] = mapped_column(String(20), default="metashape")  # metashape only
     gsd: Mapped[float] = mapped_column(Float, default=5.0)  # cm/pixel
     output_crs: Mapped[str] = mapped_column(String(50), default="EPSG:5186")
     output_format: Mapped[str] = mapped_column(String(20), default="GeoTiff")
