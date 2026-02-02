@@ -316,6 +316,30 @@ run_healthcheck() {
     fi
 }
 
+# 네트워크 고정 IP 설정
+setup_network() {
+    echo ""
+    echo -e "${YELLOW}=== 네트워크 설정 ===${NC}"
+    echo "서버의 위치를 옮기거나 안정적인 접속을 위해 고정 IP를 설정할 수 있습니다."
+    echo ""
+    read -p "고정 IP를 설정하시겠습니까? (y/N): " setup_static_ip
+
+    if [[ "$setup_static_ip" =~ ^[Yy]$ ]]; then
+        if [ -f "scripts/configure-network.sh" ]; then
+            bash scripts/configure-network.sh
+        else
+            log_warn "네트워크 설정 스크립트를 찾을 수 없습니다."
+            log_info "수동 설정은 docs/DEPLOYMENT_GUIDE.md를 참조하세요."
+        fi
+    else
+        log_info "네트워크 설정을 건너뜁니다."
+        echo ""
+        echo -e "${YELLOW}나중에 설정하려면:${NC}"
+        echo "  ./scripts/configure-network.sh"
+        echo ""
+    fi
+}
+
 # 설치 완료 메시지
 print_completion() {
     domain=$(grep "^DOMAIN=" .env | cut -d'=' -f2)
@@ -345,6 +369,7 @@ print_completion() {
     echo "  로그 확인: docker compose logs -f"
     echo "  서비스 재시작: docker compose restart"
     echo "  서비스 중지: docker compose down"
+    echo "  네트워크 설정: ./scripts/configure-network.sh"
     echo ""
 }
 
@@ -361,6 +386,7 @@ main() {
     setup_ssl
     start_services
     run_healthcheck
+    setup_network
     print_completion
 }
 
