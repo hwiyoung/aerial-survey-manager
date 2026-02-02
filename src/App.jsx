@@ -213,10 +213,67 @@ function Dashboard() {
   // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
   // 로고 클릭 시 전체 대시보드를 보여주기 위해 자동 선택 비활성화
   const [projectImages, setProjectImages] = useState([]); // Store fetched images
-  const [activeUploads, setActiveUploads] = useState([]); // Tracking upload progress
+  // 업로드 진행 상태 (프론트엔드 업로더가 활성화된 동안만 유효)
+  const [activeUploads, setActiveUploads] = useState([]);
   const [uploaderController, setUploaderController] = useState(null);
+  // 업로드 상태를 ref로도 추적 (popstate 핸들러에서 사용)
+  const uploaderControllerRef = useRef(null);
+  useEffect(() => { uploaderControllerRef.current = uploaderController; }, [uploaderController]);
+  const activeUploadsRef = useRef([]);
+  useEffect(() => { activeUploadsRef.current = activeUploads; }, [activeUploads]);
   const [loadingImages, setLoadingImages] = useState(false);
   const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
+
+  // 처리 옵션 설정 화면을 벗어나면 백엔드 기반 업로드 패널 숨김
+  // (프론트엔드 업로더가 활성화된 경우는 유지)
+  useEffect(() => {
+    if (viewMode !== 'processing' && !uploaderController) {
+      // 프론트엔드 업로더가 없는 경우에만 클리어 (백엔드 기반 synthetic 업로드)
+      setActiveUploads([]);
+    }
+  }, [viewMode, uploaderController]);
+
+  // 처리 옵션 설정 화면에서 해당 프로젝트의 업로드 진행 상태를 UploadProgressPanel에 표시
+  useEffect(() => {
+    // 처리 옵션 설정 화면이 아니면 백엔드 기반 업로드 표시 안함
+    if (viewMode !== 'processing') return;
+
+    // 프론트엔드에서 이미 업로드 중이면 스킵
+    const hasActiveUploads = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+    if (hasActiveUploads) return;
+
+    // 현재 처리 옵션 설정 중인 프로젝트 찾기
+    const currentProjectId = processingProject?.id || selectedProjectId;
+    const currentProject = projects.find(p => p.id === currentProjectId);
+
+    // 해당 프로젝트가 업로드 진행 중이 아니면 스킵
+    if (!currentProject?.upload_in_progress) return;
+
+    // 백엔드 데이터로 activeUploads 생성
+    api.getProjectImages(currentProjectId)
+      .then(images => {
+        if (images.length === 0) return;
+
+        // 이미지를 업로드 상태별로 분류하여 activeUploads 형태로 변환
+        const syntheticUploads = images.map(img => ({
+          name: img.filename,
+          projectId: currentProjectId,
+          projectTitle: currentProject.title,
+          status: img.upload_status === 'completed' ? 'completed' :
+                  img.upload_status === 'uploading' ? 'uploading' : 'waiting',
+          progress: img.upload_status === 'completed' ? 100 : 0,
+        }));
+
+        // 업로드 중인 것이 있을 때만 표시
+        const hasUploading = syntheticUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+        if (hasUploading) {
+          setActiveUploads(syntheticUploads);
+        }
+      })
+      .catch(err => {
+        console.warn('Failed to fetch upload status from backend:', err);
+      });
+  }, [viewMode, processingProject, selectedProjectId, projects, activeUploads]);
 
   // Fetch images when project is selected
   useEffect(() => {
@@ -326,18 +383,51 @@ function Dashboard() {
   // 브라우저 뒤로가기/앞으로가기 처리
   useEffect(() => {
     const handlePopState = (event) => {
+      // 업로드 중이면 경고 표시 (ref 사용)
+      const hasActiveUpload = activeUploadsRef.current.some(u => u.status === 'uploading' || u.status === 'waiting');
+      if (hasActiveUpload) {
+        if (!window.confirm('업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.\n\n정말 이동하시겠습니까?')) {
+          // 취소 시 히스토리 복원 (뒤로가기 취소)
+          window.history.pushState({ viewMode: 'processing' }, '', window.location.href);
+          return;
+        }
+        // 업로드 중단
+        uploaderControllerRef.current?.abortAll();
+        setUploaderController(null);
+        setActiveUploads([]);
+      }
+
       // 뒤로가기 시 대시보드로 복귀
       setViewMode('dashboard');
       setProcessingProject(null);
       setSelectedProjectId(null);
       setShowInspector(false);
       setHighlightProjectId(null);
+      // 업로드 패널 숨김 (뒤로가기 시 항상 숨김)
+      setActiveUploads([]);
+      setUploaderController(null);
       refreshProjects();
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, [refreshProjects]);
+
+  // 업로드 중 페이지 이탈 시 경고 표시
+  useEffect(() => {
+    const hasActiveUpload = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+
+    if (!hasActiveUpload) return;
+
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.';
+      return e.returnValue;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [activeUploads]);
 
   // Periodic refresh while processing is active (dashboard auto-update)
   useEffect(() => {
@@ -531,6 +621,8 @@ function Dashboard() {
         // Initialize progress state
         setActiveUploads(files.map(f => ({
           name: f.name,
+          projectId: created.id,
+          projectTitle: created.title,
           progress: 0,
           status: 'waiting',
           speed: null,
@@ -567,8 +659,8 @@ function Dashboard() {
           },
           onAllComplete: async () => {
             console.log('All uploads finished');
-            // We don't alert here anymore to avoid disruption,
-            // the UI will show "completed" state.
+            // 업로드 완료 시 컨트롤러 초기화 (패널 자동 숨김 조건 충족)
+            setUploaderController(null);
 
             // 썸네일 생성은 Celery 백그라운드 작업으로 처리되므로
             // 업로드 완료 후 일정 시간 동안 주기적으로 갱신
@@ -721,6 +813,18 @@ function Dashboard() {
         }
       `}</style>
       <Header onLogoClick={() => {
+        // 업로드 중이면 경고 표시
+        const hasActiveUpload = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+        if (hasActiveUpload) {
+          if (!window.confirm('업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.\n\n정말 이동하시겠습니까?')) {
+            return;
+          }
+          // 업로드 중단
+          uploaderController?.abortAll();
+          setUploaderController(null);
+          setActiveUploads([]);
+        }
+
         // 상태 기반 네비게이션으로 대시보드 복귀
         setViewMode('dashboard');
         setProcessingProject(null);
@@ -730,6 +834,10 @@ function Dashboard() {
         setActiveGroupId(null);
         setSearchTerm('');
         setRegionFilter('ALL');
+        // 업로드 패널 숨김 (백엔드 기반인 경우)
+        if (!uploaderController) {
+          setActiveUploads([]);
+        }
         refreshProjects();
         window.history.pushState({}, '', window.location.pathname);
       }} />
@@ -739,7 +847,27 @@ function Dashboard() {
             width={sidebarWidth}
             project={processingViewProject}
             activeUploads={activeUploads}
-            onCancel={() => { setViewMode('dashboard'); setProcessingProject(null); refreshProjects(); }}
+            onCancel={() => {
+              // 업로드 중이면 경고 표시
+              const hasActiveUpload = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+              if (hasActiveUpload) {
+                if (!window.confirm('업로드가 진행 중입니다. 페이지를 벗어나면 업로드가 중단됩니다.\n\n정말 이동하시겠습니까?')) {
+                  return;
+                }
+                // 업로드 중단
+                uploaderController?.abortAll();
+                setUploaderController(null);
+                setActiveUploads([]);
+              }
+
+              setViewMode('dashboard');
+              setProcessingProject(null);
+              // 처리 옵션 화면을 나갈 때 업로드 패널도 숨김 (백엔드 기반인 경우)
+              if (!uploaderController) {
+                setActiveUploads([]);
+              }
+              refreshProjects();
+            }}
             onStartProcessing={handleStartProcessing}
             onEoReloaded={async () => {
               await refreshProjects();
@@ -984,17 +1112,23 @@ function Dashboard() {
           </div>
         </div>
       )}
-      {/* Upload Progress Overlay */}
-      <UploadProgressPanel
-        uploads={activeUploads}
-        onAbortAll={() => {
-          if (window.confirm('모든 업로드를 취소하시겠습니까?')) {
-            uploaderController?.abortAll();
+      {/* Upload Progress Overlay - 처리 옵션 화면이거나 실제 업로드 중일 때만 표시 */}
+      {(viewMode === 'processing' || uploaderController) && (
+        <UploadProgressPanel
+          uploads={activeUploads}
+          onAbortAll={() => {
+            if (window.confirm('모든 업로드를 취소하시겠습니까?')) {
+              uploaderController?.abortAll();
+              setUploaderController(null);
+              setActiveUploads([]);
+            }
+          }}
+          onRestore={() => {
+            setUploaderController(null);
             setActiveUploads([]);
-          }
-        }}
-        onRestore={() => setActiveUploads([])}
-      />
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -427,7 +427,28 @@ class MetashapeEngine(ProcessingEngine):
             ])
 
             logger.info(f"[Metashape] build_point_cloud={build_point_cloud}, total steps={len(steps)}")
-            
+
+            # status.json 초기화 - 실행할 단계만 포함
+            script_to_task_name = {
+                "align_photos.py": "Align Photos",
+                "build_depth_maps.py": "Build Depth Maps",
+                "build_point_cloud.py": "Build Point Cloud",
+                "build_dem.py": "Build DEM",
+                "build_orthomosaic.py": "Build Orthomosaic",
+                "export_orthomosaic.py": "Build Orthomosaic",  # export는 orthomosaic 진행률 사용
+            }
+            initial_status = {}
+            for script_name, _ in steps:
+                task_name = script_to_task_name.get(script_name)
+                if task_name and task_name not in initial_status:
+                    initial_status[task_name] = 0
+
+            status_file = output_dir / "status.json"
+            import json
+            with open(status_file, "w") as f:
+                json.dump(initial_status, f)
+            logger.info(f"[Metashape] Initialized status.json with tasks: {list(initial_status.keys())}")
+
             process_mode = options.get("process_mode") or options.get("gsd", "Normal")
             if process_mode not in ["Preview", "Normal", "High"]:
                 process_mode = "Normal"

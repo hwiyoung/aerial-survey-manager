@@ -2,10 +2,45 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
     UploadCloud, FolderPlus, Search, CheckSquare, Square,
     ChevronRight, ChevronDown, MoreHorizontal, Edit2, Trash2,
-    Play, Download, FileImage, Eye
+    Play, Download, FileImage, Eye, Loader2
 } from 'lucide-react';
 
 const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
+
+// 프로젝트 상태 표시 헬퍼 함수
+function getProjectStatusDisplay(project) {
+    const status = project.status;
+    const imageCount = project.imageCount || project.image_count || 0;
+    const uploadCompleted = project.upload_completed_count ?? imageCount;
+    const uploadInProgress = project.upload_in_progress ?? false;
+
+    // 업로드 진행 중
+    if (uploadInProgress || (status === 'pending' && uploadCompleted < imageCount && imageCount > 0)) {
+        return {
+            text: `업로드 중 (${uploadCompleted}/${imageCount})`,
+            style: 'bg-amber-50 text-amber-600 border-amber-200',
+            icon: 'uploading'
+        };
+    }
+
+    // 상태별 표시
+    switch (status) {
+        case 'completed':
+        case '완료':
+            return { text: '완료', style: 'bg-emerald-50 text-emerald-600 border-emerald-100', icon: null };
+        case 'processing':
+        case 'queued':
+        case '진행중':
+            return { text: '진행중', style: 'bg-blue-50 text-blue-600 border-blue-100', icon: null };
+        case 'error':
+        case '오류':
+            return { text: '오류', style: 'bg-red-50 text-red-600 border-red-100', icon: null };
+        case 'pending':
+        case '대기':
+        default:
+            return { text: '대기', style: 'bg-slate-50 text-slate-500 border-slate-100', icon: null };
+    }
+}
 
 export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal', onSelect, onOpenInspector, onToggle, onDelete, onRename, onOpenProcessing, onOpenExport, draggable = false }) {
     const [isEditing, setIsEditing] = useState(false);
@@ -88,7 +123,15 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                     <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
                 )}
                 <span className="text-[10px] text-slate-400 flex items-center gap-0.5 shrink-0"><FileImage size={10} /> {project.imageCount || project.image_count || 0}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+                {(() => {
+                    const statusInfo = getProjectStatusDisplay(project);
+                    return (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 flex items-center gap-1 ${statusInfo.style}`}>
+                            {statusInfo.icon === 'uploading' && <Loader2 size={10} className="animate-spin" />}
+                            {statusInfo.text}
+                        </span>
+                    );
+                })()}
                 <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
                     <button onClick={handleProcessing} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="처리 시작"><Play size={14} /></button>
                     <button onClick={handleExport} disabled={project.status !== '완료'} className="p-1.5 text-slate-500 hover:bg-slate-100 rounded transition-colors disabled:opacity-30" title="내보내기"><Download size={14} /></button>
@@ -117,7 +160,15 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                         {project.startDate && <><span className="text-slate-300">|</span><span>📅 {project.startDate}</span></>}
                     </div>
                     <div className="flex-1" />
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${project.status === '완료' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : project.status === '진행중' ? "bg-yellow-50 text-yellow-600 border-yellow-100" : project.status === '오류' ? "bg-red-50 text-red-600 border-red-100" : "bg-blue-50 text-blue-600 border-blue-100"}`}>{project.status}</span>
+                    {(() => {
+                        const statusInfo = getProjectStatusDisplay(project);
+                        return (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 flex items-center gap-1 ${statusInfo.style}`}>
+                                {statusInfo.icon === 'uploading' && <Loader2 size={10} className="animate-spin" />}
+                                {statusInfo.text}
+                            </span>
+                        );
+                    })()}
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
                         <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="이름 변경">
                             <Edit2 size={14} />
@@ -166,9 +217,15 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                             <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
                         )}
                         <div className="flex items-center gap-1">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${(project.status === '완료' || project.status === 'completed') ? "bg-emerald-50 text-emerald-600 border-emerald-100" : (project.status === '진행중' || project.status === 'processing' || project.status === 'queued') ? "bg-blue-50 text-blue-600 border-blue-100" : (project.status === '오류' || project.status === 'error') ? "bg-red-50 text-red-600 border-red-100" : "bg-slate-50 text-slate-500 border-slate-100"}`}>
-                                {project.status === 'completed' ? '완료' : project.status === 'processing' ? '진행중' : project.status === 'pending' ? '대기' : project.status === 'error' ? '오류' : project.status}
-                            </span>
+                            {(() => {
+                                const statusInfo = getProjectStatusDisplay(project);
+                                return (
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 flex items-center gap-1 ${statusInfo.style}`}>
+                                        {statusInfo.icon === 'uploading' && <Loader2 size={10} className="animate-spin" />}
+                                        {statusInfo.text}
+                                    </span>
+                                );
+                            })()}
                             {(project.status === '완료' || project.status === 'completed') && (
                                 <span className="flex items-center gap-1 text-[9px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded shadow-sm animate-pulse whitespace-nowrap"><Eye size={10} /> 결과</span>
                             )}

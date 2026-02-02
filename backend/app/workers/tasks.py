@@ -375,49 +375,128 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             raise
 
 
-@celery_app.task(bind=True, name="app.workers.tasks.generate_thumbnail")
-def generate_thumbnail(self, image_id: str):
-    """Generate thumbnail for an uploaded image."""
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.generate_thumbnail",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=3,
+)
+def generate_thumbnail(self, image_id: str, force: bool = False):
+    """Generate thumbnail for an uploaded image.
+
+    Args:
+        image_id: UUID of the image
+        force: If True, regenerate even if thumbnail already exists
+    """
     from PIL import Image as PILImage
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from app.models.project import Image
     from app.services.storage import StorageService
-    
+
     sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
     engine = create_engine(sync_db_url)
-    
+
+    temp_path = None
+    thumb_path = None
+
     with Session(engine) as db:
         image = db.query(Image).filter(Image.id == image_id).first()
         if not image or not image.original_path:
-            return {"status": "error", "message": "Image not found"}
-        
+            return {"status": "error", "message": "Image not found or no original path"}
+
+        # Skip if thumbnail already exists (unless force=True)
+        if image.thumbnail_path and not force:
+            return {"status": "skipped", "message": "Thumbnail already exists"}
+
         storage = StorageService()
-        
+
         # Download original
-        temp_path = f"/tmp/{image.filename}"
-        storage.download_file(image.original_path, temp_path)
-        
+        temp_path = f"/tmp/{image_id}_{image.filename}"
+        try:
+            storage.download_file(image.original_path, temp_path)
+        except Exception as e:
+            print(f"Failed to download original image {image_id}: {e}")
+            raise  # Will trigger retry
+
         # Generate thumbnail
         try:
             with PILImage.open(temp_path) as img:
+                # Handle RGBA images (convert to RGB for JPEG)
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
                 img.thumbnail((256, 256))
-                thumb_path = f"/tmp/thumb_{image.filename}"
+                thumb_path = f"/tmp/thumb_{image_id}_{image.filename}.jpg"
                 img.save(thumb_path, "JPEG", quality=85)
-            
+
             # Upload thumbnail
             thumb_object_name = f"projects/{image.project_id}/thumbnails/{image.filename}.jpg"
             storage.upload_file(thumb_path, thumb_object_name, "image/jpeg")
-            
+
             # Update database
             image.thumbnail_path = thumb_object_name
             db.commit()
-            
-            # Cleanup
-            os.remove(temp_path)
-            os.remove(thumb_path)
-            
+
             return {"status": "completed", "thumbnail_path": thumb_object_name}
-            
+
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            print(f"Thumbnail generation failed for {image_id}: {e}")
+            raise  # Will trigger retry
+
+        finally:
+            # Cleanup temp files
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            if thumb_path and os.path.exists(thumb_path):
+                try:
+                    os.remove(thumb_path)
+                except Exception:
+                    pass
+
+
+@celery_app.task(bind=True, name="app.workers.tasks.regenerate_missing_thumbnails")
+def regenerate_missing_thumbnails(self, project_id: str = None):
+    """Find and regenerate thumbnails for images that are missing them.
+
+    Args:
+        project_id: Optional - limit to specific project
+    """
+    from sqlalchemy import create_engine, and_
+    from sqlalchemy.orm import Session
+    from app.models.project import Image
+
+    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
+    engine = create_engine(sync_db_url)
+
+    with Session(engine) as db:
+        query = db.query(Image).filter(
+            and_(
+                Image.thumbnail_path.is_(None),
+                Image.original_path.isnot(None),
+                Image.upload_status == "completed",
+            )
+        )
+
+        if project_id:
+            query = query.filter(Image.project_id == project_id)
+
+        images = query.all()
+
+        triggered_count = 0
+        for image in images:
+            try:
+                generate_thumbnail.delay(str(image.id))
+                triggered_count += 1
+            except Exception as e:
+                print(f"Failed to trigger thumbnail for {image.id}: {e}")
+
+        return {
+            "status": "completed",
+            "total_missing": len(images),
+            "triggered": triggered_count,
+        }

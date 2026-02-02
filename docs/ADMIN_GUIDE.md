@@ -215,6 +215,59 @@ docker system prune -f
 
 ---
 
+## 📤 중단된 업로드 처리 (2026-02-02)
+
+### 1. 업로드 중단 원인
+
+업로드가 중단될 수 있는 상황:
+- 브라우저 새로고침/종료
+- 페이지 이탈 (뒤로가기, 로고 클릭 등)
+- 네트워크 연결 끊김
+- 시스템 재부팅
+
+### 2. 업로드 상태 확인
+
+```bash
+# 모든 uploading 상태 이미지 조회
+docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
+  "SELECT project_id, filename, upload_status, created_at FROM images WHERE upload_status = 'uploading';"
+```
+
+### 3. 중단된 업로드 복구
+
+중단된 업로드는 자동으로 복구되지 않습니다. 다음 두 가지 방법 중 선택하세요:
+
+#### A. 완료된 이미지만으로 처리 진행
+
+프론트엔드에서 처리 시작 시 확인 다이얼로그가 표시됩니다:
+- "완료된 N개 이미지만으로 처리를 진행하시겠습니까?"
+- 확인 선택 시 `force=true` 파라미터로 처리 시작
+
+#### B. 수동으로 상태 변경 후 재업로드
+
+```bash
+# 특정 프로젝트의 uploading 상태를 interrupted로 변경
+docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
+  "UPDATE images SET upload_status = 'interrupted' WHERE upload_status = 'uploading' AND project_id = '<project-id>';"
+```
+
+변경 후 사용자에게 이미지 재업로드를 안내하세요.
+
+### 4. Stale 업로드 감지 기준
+
+시스템은 `created_at`이 **1시간 이전**인 `uploading` 상태 이미지를 "stale"로 판단합니다.
+- 이러한 이미지는 처리 시작 시 사용자에게 안내 메시지를 표시
+- 사용자가 확인 후 진행 여부를 선택할 수 있음
+
+### 5. 업로드 경고 시스템
+
+프론트엔드에서는 업로드 중 페이지 이탈 시 경고를 표시합니다:
+- **브라우저 종료/새로고침**: `beforeunload` 이벤트로 브라우저 기본 경고 표시
+- **앱 내 네비게이션**: 커스텀 confirm 다이얼로그 표시
+- 사용자가 이탈을 확인하면 업로드가 중단되고 남은 이미지는 'interrupted' 상태로 처리됨
+
+---
+
 ## 🔑 Metashape Licensing Management
 
 `worker-metashape` 컨테이너의 라이선스 관리 전략에 대한 상세 기술 문서입니다.

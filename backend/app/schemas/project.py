@@ -44,7 +44,10 @@ class ProjectResponse(ProjectBase):
     area: Optional[float] = None
     ortho_path: Optional[str] = None
     bounds: Optional[List[List[float]]] = None  # List of [lat, lng] or [[lat, lng], ...]
-    
+    # 업로드 상태 통계
+    upload_completed_count: int = 0  # 업로드 완료된 이미지 수
+    upload_in_progress: bool = False  # 업로드 진행 중 여부
+
     class Config:
         from_attributes = True
 

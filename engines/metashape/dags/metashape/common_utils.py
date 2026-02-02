@@ -13,6 +13,9 @@ def progress_callback(value, task_name, output_path):
     """
     작업 진행 상태를 status.json 파일에 기록하는 함수.
     로그는 10% 단위로만 출력하여 로그 양을 줄임.
+
+    Note: status.json은 processing_router.py에서 실행할 단계만 포함하여 미리 초기화됨.
+          이 함수는 기존 status.json을 읽어서 해당 task_name만 업데이트함.
     """
     status_file = os.path.join(output_path, "status.json")
 
@@ -21,16 +24,12 @@ def progress_callback(value, task_name, output_path):
             with open(status_file, "r") as f:
                 try:
                     status = json.load(f)
-                except:
+                except Exception:
                     status = {}
         else:
-            status = {
-                "Align Photos": 0,
-                "Build Depth Maps": 0,
-                "Build Point Cloud": 0,
-                "Build DEM": 0,
-                "Build Orthomosaic": 0
-            }
+            # Fallback: status.json이 없으면 현재 task만 포함
+            # (정상적으로는 processing_router.py에서 미리 생성됨)
+            status = {}
         status[task_name] = round(value, 2)
         with open(status_file, "w") as f:
             json.dump(status, f)
@@ -91,9 +90,17 @@ def notify_result_in_ortho(task_id,comment):
 def check_success(output_path):
     """
     작업 성공 여부를 확인하는 함수.
+
+    진행률 값 의미:
+    - 0-98: 미완료 (진행 중 또는 미시작)
+    - 99-100: 완료 (Metashape가 99.9%로 끝나는 경우 대응)
+    - 1000: 실패
+
+    Note: status.json에는 실행할 단계만 포함됨 (processing_router.py에서 초기화)
+          선택적 단계(예: Build Point Cloud)는 실행하지 않으면 status.json에 포함되지 않음
     """
     status_file = os.path.join(output_path, "status.json")
-    
+
     if not os.path.exists(status_file):
         print(f"Status file not found: {status_file}")
         return False
@@ -105,17 +112,21 @@ def check_success(output_path):
             print(f"Invalid JSON in {status_file}")
             return False
 
-    values = list(state.values())
+    # 1000은 실패를 의미
+    if any(value == 1000 for value in state.values()):
+        failed = [k for k, v in state.items() if v == 1000]
+        print(f"❌ 일부 작업이 실패했습니다: {failed}")
+        return False
 
-    if all(value == 100 for value in values):
-        print("✅ 모든 작업이 성공했습니다.")
-        return True
-    elif any(value == 1000 for value in values):
-        print("❌ 일부 작업이 실패했습니다.")
+    # 99% 이상이면 완료로 간주 (Metashape가 99.9%로 끝나는 경우 대응)
+    incomplete = {k: v for k, v in state.items() if v < 99}
+
+    if incomplete:
+        print(f"⚠️ 일부 작업이 아직 완료되지 않았습니다: {incomplete}")
         return False
-    else:
-        print("⚠️ 일부 작업이 아직 완료되지 않았습니다.")
-        return False
+
+    print("✅ 모든 작업이 성공했습니다.")
+    return True
 
 def activate_metashape_license():
     """

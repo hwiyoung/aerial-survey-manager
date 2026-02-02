@@ -204,7 +204,7 @@ async def list_project_images(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
-    
+
     from sqlalchemy.orm import joinedload
     from app.models.project import ExteriorOrientation
 
@@ -215,10 +215,18 @@ async def list_project_images(
         .order_by(Image.created_at)
     )
     images = result.scalars().unique().all()
-    
+
     storage = get_storage()
     response = []
+
+    # Track images missing thumbnails for background regeneration
+    missing_thumbnails = []
+
     for img in images:
+        # Check if thumbnail is missing for completed uploads
+        if not img.thumbnail_path and img.original_path and img.upload_status == "completed":
+            missing_thumbnails.append(str(img.id))
+
         img_dict = {
             "id": img.id,
             "project_id": img.project_id,
@@ -235,5 +243,87 @@ async def list_project_images(
             "exterior_orientation": img.exterior_orientation,
         }
         response.append(ImageResponse.model_validate(img_dict))
-    
+
+    # Trigger thumbnail regeneration for missing ones (in background)
+    if missing_thumbnails:
+        try:
+            from app.workers.tasks import generate_thumbnail
+            for image_id in missing_thumbnails[:10]:  # Limit to 10 at a time
+                generate_thumbnail.delay(image_id)
+            print(f"Triggered thumbnail generation for {len(missing_thumbnails)} images in project {project_id}")
+        except Exception as e:
+            print(f"Failed to trigger thumbnail regeneration: {e}")
+
     return response
+
+
+@router.post("/projects/{project_id}/images/regenerate-thumbnails")
+async def regenerate_project_thumbnails(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate thumbnails for all images in a project that are missing them."""
+    # Check permission
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    try:
+        from app.workers.tasks import regenerate_missing_thumbnails
+        task = regenerate_missing_thumbnails.delay(str(project_id))
+        return {
+            "status": "triggered",
+            "task_id": task.id,
+            "message": f"Thumbnail regeneration started for project {project_id}",
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger thumbnail regeneration: {str(e)}",
+        )
+
+
+@router.post("/images/{image_id}/regenerate-thumbnail")
+async def regenerate_image_thumbnail(
+    image_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate thumbnail for a specific image."""
+    # Find the image
+    result = await db.execute(
+        select(Image).where(Image.id == image_id)
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found",
+        )
+
+    # Check permission
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(image.project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    try:
+        from app.workers.tasks import generate_thumbnail
+        task = generate_thumbnail.delay(str(image_id), force=True)
+        return {
+            "status": "triggered",
+            "task_id": task.id,
+            "message": f"Thumbnail regeneration started for image {image_id}",
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger thumbnail regeneration: {str(e)}",
+        )

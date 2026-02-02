@@ -509,17 +509,24 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
             <div className="p-5 border-t border-slate-200 bg-slate-50 flex gap-3">
                 <button onClick={onCancel} className="flex-1 py-3 text-slate-600 font-bold text-sm hover:bg-slate-200 rounded-lg">취소</button>
                 {(() => {
-                    const uploadsInProgress = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
-                    const hasImages = (project?.imageCount || 0) > 0;
+                    // 프론트엔드 상태 또는 백엔드 상태로 업로드 진행 여부 확인
+                    const frontendUploading = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+                    const backendUploading = project?.upload_in_progress ?? false;
+                    const uploadsInProgress = frontendUploading || backendUploading;
+
+                    const totalImages = project?.imageCount || project?.image_count || 0;
+                    const uploadCompleted = project?.upload_completed_count ?? totalImages;
+                    const hasImages = totalImages > 0 && uploadCompleted > 0;
                     const isProcessingNow = isProcessing;
                     const isDisabled = !hasImages || uploadsInProgress || isProcessingNow || !selectedPresetId;
 
                     let buttonText = '처리 시작';
                     if (!hasImages) buttonText = '업로드된 이미지 없음';
-                    else if (uploadsInProgress) buttonText = `업로드 중... (${activeUploads.filter(u => u.status === 'completed').length}/${activeUploads.length})`;
+                    else if (frontendUploading) buttonText = `업로드 중... (${activeUploads.filter(u => u.status === 'completed').length}/${activeUploads.length})`;
+                    else if (backendUploading) buttonText = `업로드 중... (${uploadCompleted}/${totalImages})`;
                     else if (!selectedPresetId) buttonText = '프리셋 선택 필요';
                     else if (isProcessingNow) buttonText = '처리 중...';
-                    else buttonText = `처리 시작 (${project?.imageCount || 0}장)`;
+                    else buttonText = `처리 시작 (${uploadCompleted}장)`;
 
                     return (
                         <button

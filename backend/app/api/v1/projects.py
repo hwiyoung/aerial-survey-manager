@@ -144,11 +144,25 @@ async def list_projects(
         project = row[0]
         bounds_wkt = row[1]
         
+        # 이미지 수 및 업로드 상태 집계
         count_result = await db.execute(
             select(func.count()).where(Image.project_id == project.id)
         )
         image_count = count_result.scalar()
-        
+
+        # 업로드 상태별 집계
+        upload_status_result = await db.execute(
+            select(
+                Image.upload_status,
+                func.count(Image.id).label("count")
+            )
+            .where(Image.project_id == project.id)
+            .group_by(Image.upload_status)
+        )
+        status_counts = {row.upload_status: row.count for row in upload_status_result}
+        upload_completed_count = status_counts.get("completed", 0)
+        upload_uploading_count = status_counts.get("uploading", 0)
+
         # Convert ORM model to dict and serialize bounds BEFORE Pydantic validation
         project_dict = {
             "id": project.id,
@@ -168,6 +182,8 @@ async def list_projects(
             "area": project.area,
             "ortho_path": project.ortho_path,
             "bounds": serialize_geometry(bounds_wkt),  # Now using WKT string
+            "upload_completed_count": upload_completed_count,
+            "upload_in_progress": upload_uploading_count > 0,
         }
         response = ProjectResponse.model_validate(project_dict)
         project_responses.append(response)
