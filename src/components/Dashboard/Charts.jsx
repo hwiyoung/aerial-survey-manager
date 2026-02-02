@@ -58,34 +58,34 @@ export function DistributionPieChart({ data, title = '지역별 분포', height 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
             <h3 className="text-sm font-bold text-slate-700 mb-4">{title}</h3>
-            <ResponsiveContainer width="100%" height={height}>
-                <PieChart>
-                    <Pie
-                        data={data}
-                        cx="35%"
-                        cy="50%"
-                        innerRadius={0}
-                        outerRadius={50}
-                        paddingAngle={2}
-                        dataKey="value"
-                    >
-                        {data.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS.multi[index % COLORS.multi.length]} />
-                        ))}
-                    </Pie>
-                    <Tooltip formatter={(value) => value != null && typeof value === 'number' ? `${value.toFixed(1)}%` : '0%'} />
-                    <Legend
-                        layout="vertical"
-                        align="right"
-                        verticalAlign="middle"
-                        wrapperStyle={{ fontSize: '11px', fontFamily: 'inherit', paddingLeft: '10px' }}
-                        formatter={(value, entry) => {
-                            const val = entry?.payload?.value;
-                            return `${value} (${typeof val === 'number' ? val.toFixed(1) : 0}%)`;
-                        }}
-                    />
-                </PieChart>
-            </ResponsiveContainer>
+            <div style={{ height }}>
+                <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                        <Pie
+                            data={data}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={0}
+                            outerRadius={60}
+                            paddingAngle={2}
+                            dataKey="value"
+                        >
+                            {data.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={COLORS.multi[index % COLORS.multi.length]} />
+                            ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => value != null && typeof value === 'number' ? `${value.toFixed(1)}%` : '0%'} />
+                    </PieChart>
+                </ResponsiveContainer>
+            </div>
+            <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-2 text-xs">
+                {data.map((entry, index) => (
+                    <div key={entry.name} className="flex items-center gap-1">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS.multi[index % COLORS.multi.length] }}></div>
+                        <span className="text-slate-600">{entry.name} ({typeof entry.value === 'number' ? entry.value.toFixed(1) : 0}%)</span>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }

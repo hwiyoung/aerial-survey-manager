@@ -468,6 +468,9 @@ function Dashboard() {
   // Highlight state for post-processing animation
   const [highlightProjectId, setHighlightProjectId] = useState(null);
 
+  // Map reset key - increment to reset map to default view
+  const [mapResetKey, setMapResetKey] = useState(0);
+
   const selectedProject = useMemo(() => {
     // Try to find in projects list first
     const proj = projects.find(p => p.id === selectedProjectId);
@@ -857,6 +860,8 @@ function Dashboard() {
         setActiveGroupId(null);
         setSearchTerm('');
         setRegionFilter('ALL');
+        // 지도 초기화 (한국 전체 뷰로 리셋)
+        setMapResetKey(prev => prev + 1);
         // 업로드는 유지 (글로벌 업로드)
         refreshProjects();
         window.history.pushState({}, '', window.location.pathname);
@@ -1013,6 +1018,7 @@ function Dashboard() {
                 projects={filteredProjects}
                 selectedProject={selectedProject}
                 sidebarWidth={sidebarWidth}
+                mapResetKey={mapResetKey}
                 onProjectClick={(project) => {
                   setSelectedProjectId(project.id);
                   setHighlightProjectId(project.id);

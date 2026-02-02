@@ -317,6 +317,21 @@ function HighlightFlyTo({ footprint }) {
 
     return null;
 }
+
+// Map reset controller - resets to default Korea view when resetKey changes
+function MapResetController({ resetKey }) {
+    const map = useMap();
+    const prevResetKeyRef = useRef(resetKey);
+
+    useEffect(() => {
+        if (resetKey !== prevResetKeyRef.current) {
+            prevResetKeyRef.current = resetKey;
+            map.setView([36.5, 127.5], 7, { animate: true, duration: 0.5 });
+        }
+    }, [map, resetKey]);
+
+    return null;
+}
 function MapResizeHandler({ height }) {
     const map = useMap();
 
@@ -511,7 +526,8 @@ export function FootprintMap({
     highlightProjectId = null,
     selectedProjectId = null,
     onRegionClick,
-    activeRegionName = 'ALL'
+    activeRegionName = 'ALL',
+    resetKey = 0
 }) {
     const [highlightPulse, setHighlightPulse] = useState(false);
     const blinkCountRef = useRef(0);
@@ -721,6 +737,7 @@ export function FootprintMap({
                     preferCanvas={true}
                 >
                     <MapPanes />
+                    <MapResetController resetKey={resetKey} />
                     {/* Central Loading Spinner */}
                     {cogLoadStatus === 'loading' && (
                         <div className="absolute inset-0 z-[1001] flex flex-col items-center justify-center bg-slate-900/10 backdrop-blur-[1px]">

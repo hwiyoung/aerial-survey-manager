@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye } from 'lucide-react';
 import { StatsCard } from './StatsCard';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
@@ -237,6 +237,7 @@ export default function DashboardView({
     projects = [],
     selectedProject = null,
     sidebarWidth = 320,
+    mapResetKey = 0,
     onProjectClick,
     onDeselectProject,
     highlightProjectId = null,
@@ -251,7 +252,7 @@ export default function DashboardView({
     const [layoutMode, setLayoutMode] = useState('auto'); // 'wide', 'narrow', or 'auto'
 
     // Map height for narrow layout (draggable)
-    const [mapHeight, setMapHeight] = useState(350);
+    const [mapHeight, setMapHeight] = useState(600);
     const isDragging = useRef(false);
     const startY = useRef(0);
     const startHeight = useRef(350);
@@ -396,6 +397,7 @@ export default function DashboardView({
                             selectedProjectId={selectedProject?.id}
                             onRegionClick={onRegionClick}
                             activeRegionName={regionFilter}
+                            resetKey={mapResetKey}
                         />
                     </div>
 
@@ -440,6 +442,7 @@ export default function DashboardView({
                         selectedProjectId={selectedProject?.id}
                         onRegionClick={onRegionClick}
                         activeRegionName={regionFilter}
+                        resetKey={mapResetKey}
                     />
 
                     {/* Drag Handle */}
