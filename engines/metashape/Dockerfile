@@ -51,5 +51,8 @@ WORKDIR /app
 # 백엔드 애플리케이션 코드 복사 (Celery worker에서 사용)
 COPY backend/app /app/app
 
+# Metashape 처리 스크립트 복사
+COPY engines/metashape/dags /app/engines/metashape/dags
+
 # 기본 명령어
 CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "metashape", "--loglevel=info"]
