@@ -187,6 +187,72 @@ EXTERNAL_ENGINE_API_KEY=
 
 ## 네트워크 설정
 
+### 고정 IP 설정 (권장)
+
+서버의 위치를 옮기거나 네트워크 환경이 변경되어도 일관된 접근을 위해 고정 IP를 설정합니다.
+
+#### Ubuntu Desktop (NetworkManager 사용)
+
+```bash
+# 네트워크 인터페이스 확인
+ip addr show
+
+# 현재 연결 이름 확인
+nmcli connection show
+
+# 고정 IP 설정 (예: eth0 인터페이스, 192.168.0.100)
+sudo nmcli connection modify "유선 연결 1" \
+  ipv4.addresses 192.168.0.100/24 \
+  ipv4.gateway 192.168.0.1 \
+  ipv4.dns "8.8.8.8,8.8.4.4" \
+  ipv4.method manual
+
+# 연결 재시작 (SSH 연결이 끊길 수 있음)
+sudo nmcli connection down "유선 연결 1" && sudo nmcli connection up "유선 연결 1"
+
+# 설정 확인 (valid_lft forever 확인)
+ip addr show
+```
+
+#### Ubuntu Server (Netplan 사용)
+
+```bash
+# netplan 설정 파일 편집
+sudo nano /etc/netplan/00-installer-config.yaml
+```
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp0s31f6:  # 실제 인터페이스 이름으로 변경
+      addresses:
+        - 192.168.0.100/24
+      routes:
+        - to: default
+          via: 192.168.0.1
+      nameservers:
+        addresses:
+          - 8.8.8.8
+          - 8.8.4.4
+```
+
+```bash
+# 설정 적용
+sudo netplan apply
+```
+
+### hosts 파일 설정
+
+클라이언트(접속하는 PC)의 hosts 파일에 도메인을 추가합니다:
+
+```bash
+# Linux/Mac: /etc/hosts
+# Windows: C:\Windows\System32\drivers\etc\hosts
+
+192.168.0.100    ortho.local
+```
+
 ### 방화벽 포트 설정
 
 외부에 노출해야 하는 포트:
