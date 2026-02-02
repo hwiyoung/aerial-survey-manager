@@ -251,8 +251,9 @@ services:
     image: nginx:alpine
     restart: always
     ports:
-      - "\${WEB_PORT:-8081}:80"
-      - "\${HTTPS_PORT:-443}:443"
+      - "80:80"                          # presigned URL용 (MinIO)
+      - "\${WEB_PORT:-8081}:80"          # 웹 접속용
+      - "\${HTTPS_PORT:-443}:443"        # HTTPS용
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
