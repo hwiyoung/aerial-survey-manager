@@ -308,9 +308,16 @@ mkdir -p "$RELEASE_DIR/docs"
 cp docs/DEPLOYMENT_GUIDE.md "$RELEASE_DIR/docs/"
 cp docs/ADMIN_GUIDE.md "$RELEASE_DIR/docs/" 2>/dev/null || true
 
-# ssl 디렉토리 생성
+# SSL 자체 서명 인증서 자동 생성 (nginx 시작을 위해 필요)
+echo ""
+echo "4-1. SSL 인증서 생성 중..."
 mkdir -p "$RELEASE_DIR/ssl"
-touch "$RELEASE_DIR/ssl/.gitkeep"
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout "$RELEASE_DIR/ssl/key.pem" \
+    -out "$RELEASE_DIR/ssl/cert.pem" \
+    -subj "/CN=localhost/O=AerialSurvey/C=KR" 2>/dev/null
+echo "  - 자체 서명 SSL 인증서가 생성되었습니다."
+echo "  - 프로덕션 환경에서는 실제 인증서로 교체하세요."
 
 # data 디렉토리 생성
 mkdir -p "$RELEASE_DIR/data/processing"
@@ -319,7 +326,7 @@ touch "$RELEASE_DIR/data/processing/.gitkeep"
 touch "$RELEASE_DIR/data/minio/.gitkeep"
 
 echo ""
-echo "5. Docker 이미지 저장 중... (시간이 소요됩니다)"
+echo "5. Docker 이미지 저장 중..."
 
 mkdir -p "$RELEASE_DIR/images"
 

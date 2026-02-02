@@ -88,7 +88,7 @@ services:
   worker-metashape:
     build:
       context: .
-      dockerfile: engines/metashape/Dockerfile
+      dockerfile: engines/metashape/Dockerfile.prod
     working_dir: /app
     command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-metashape@%h
     restart: always

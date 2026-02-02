@@ -1,5 +1,10 @@
+# ============================================================
+# Aerial Survey Manager - Production Metashape Worker Dockerfile
+# 코드 보호: Python 바이트코드 컴파일 + 소스 제거
+# ============================================================
+
 # Stage 1: CUDA 기반 베이스 이미지 (GPU 지원)
-FROM nvidia/cuda:12.0.0-base-ubuntu22.04 AS base
+FROM nvidia/cuda:12.0.0-base-ubuntu22.04 AS builder
 
 # 루트 사용자로 변경하여 필요한 시스템 패키지 설치
 USER root
@@ -38,8 +43,8 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 RUN pip install psycopg2-binary GDAL \
     redis==4.5.1 geopandas==0.11.1 numpy==1.26.4 \
     fiona==1.8.21 pyogrio==0.5.1 shapely==1.8.5.post1 \
-    rasterio==1.3.0 
-    
+    rasterio==1.3.0
+
 # Metashape 설치
 RUN wget https://download.agisoft.com/Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311-abi3-linux_x86_64.whl && \
     pip3 install Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311-abi3-linux_x86_64.whl && \
@@ -48,8 +53,46 @@ RUN wget https://download.agisoft.com/Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# 백엔드 애플리케이션 코드 복사 (Celery worker에서 사용)
+# 백엔드 애플리케이션 코드 복사
 COPY backend/app /app/app
+
+# Python 바이트코드 컴파일 (-b: .py와 같은 위치에 .pyc 생성)
+RUN python3 -m compileall -b /app/app/
+# 소스 코드(.py) 제거, 바이트코드(.pyc)만 유지
+RUN find /app/app/ -name "*.py" -type f -delete
+
+# ============================================================
+# Production stage - 최소 이미지
+# ============================================================
+FROM nvidia/cuda:12.0.0-base-ubuntu22.04
+
+USER root
+RUN apt-get update && \
+    apt-get install -y tzdata && \
+    ln -fs /usr/share/zoneinfo/Asia/Seoul /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3 \
+      python3-pip \
+      libglu1-mesa \
+      libgl1-mesa-glx \
+      gdal-bin \
+      libglib2.0-0 \
+      libsm6 \
+      libxrender1 \
+      libxext6 \
+      libgdal-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Python 패키지 복사
+COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# 컴파일된 앱 코드 복사 (바이트코드만)
+COPY --from=builder /app/app /app/app
 
 # 기본 명령어
 CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "metashape", "--loglevel=info"]
