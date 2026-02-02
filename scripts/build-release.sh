@@ -364,7 +364,6 @@ cat > "$RELEASE_DIR/load-images.sh" << 'EOF'
 # Docker 이미지 로드 스크립트
 #
 
-set -e
 cd "$(dirname "$0")"
 
 echo "=============================================="
@@ -382,9 +381,12 @@ current=0
 
 for img in images/*.tar.gz; do
     if [ -f "$img" ]; then
-        ((current++))
+        current=$((current + 1))
         echo "[$current/$total] Loading: $(basename $img)"
-        gunzip -c "$img" | docker load
+        if ! gunzip -c "$img" | docker load; then
+            echo "ERROR: $img 로드 실패"
+            exit 1
+        fi
     fi
 done
 
