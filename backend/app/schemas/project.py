@@ -157,6 +157,8 @@ class ProcessingOptions(BaseModel):
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
     process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
+    # Advanced options
+    build_point_cloud: bool = False  # Point cloud 생성 여부 (3D Tiles 출력 시 필요)
 
 
 class ProcessingJobResponse(BaseModel):

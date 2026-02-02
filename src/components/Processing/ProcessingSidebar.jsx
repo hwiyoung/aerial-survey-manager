@@ -24,7 +24,8 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         engine: 'metashape',
         gsd: 5.0,
         output_crs: 'EPSG:5186',
-        process_mode: 'Normal'
+        process_mode: 'Normal',
+        build_point_cloud: false
     });
     const [eoConfig, setEoConfig] = useState({
         delimiter: ',',
@@ -155,7 +156,8 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                 engine: preset.options.engine || 'odm',
                 gsd: preset.options.gsd || 5.0,
                 output_crs: preset.options.output_crs || 'EPSG:5186',
-                process_mode: preset.options.process_mode || 'Normal'
+                process_mode: preset.options.process_mode || 'Normal',
+                build_point_cloud: preset.options.build_point_cloud || false
             });
         }
     };
@@ -173,7 +175,8 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                     engine: defaultPreset.options.engine || 'odm',
                     gsd: defaultPreset.options.gsd || 5.0,
                     output_crs: defaultPreset.options.output_crs || 'EPSG:5186',
-                    process_mode: defaultPreset.options.process_mode || 'Normal'
+                    process_mode: defaultPreset.options.process_mode || 'Normal',
+                    build_point_cloud: defaultPreset.options.build_point_cloud || false
                 });
             }
         }
@@ -447,12 +450,6 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                 </button>
                             )}
                         </div>
-                        <button
-                            onClick={() => setIsSaveModalOpen(true)}
-                            className="w-full text-[11px] text-slate-500 hover:text-blue-600 hover:bg-blue-50 py-1.5 rounded-md flex items-center justify-center gap-1 border border-dashed border-slate-200 transition-all"
-                        >
-                            <Save size={12} /> 현재 설정을 프리셋으로 저장
-                        </button>
                     </div>
 
                     {/* Processing Parameters */}
@@ -487,6 +484,25 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                 </button>
                             </div>
                         </div>
+
+                        {/* Advanced Options - Only for Metashape */}
+                        {options.engine === 'metashape' && (
+                            <div className="space-y-2 pt-4 border-t border-slate-100">
+                                <label className="block text-xs text-slate-500 font-medium ml-1">고급 옵션 (Advanced)</label>
+                                <label className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={options.build_point_cloud}
+                                        onChange={(e) => setOptions(prev => ({ ...prev, build_point_cloud: e.target.checked }))}
+                                        className="w-4 h-4 text-purple-600 rounded border-slate-300 focus:ring-purple-500"
+                                    />
+                                    <div className="flex-1">
+                                        <span className="text-sm font-medium text-slate-700">Point Cloud 생성</span>
+                                        <p className="text-[10px] text-slate-500 mt-0.5">3D Tiles (Cesium) 출력 시 필요. 정사영상만 필요할 경우 비활성화 권장</p>
+                                    </div>
+                                </label>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -553,6 +569,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                     <span>모드: {options.process_mode}</span>
                                     <span>GSD: {options.gsd} cm</span>
                                     <span>좌표계: {options.output_crs}</span>
+                                    <span>Point Cloud: {options.build_point_cloud ? 'ON' : 'OFF'}</span>
                                 </div>
                             </div>
                         </div>

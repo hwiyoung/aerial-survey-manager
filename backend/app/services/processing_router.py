@@ -411,14 +411,22 @@ class MetashapeEngine(ProcessingEngine):
             if not image_files:
                 raise RuntimeError("처리할 이미지가 없습니다.")
                 
+            # Point cloud 생성 여부 (기본값: False, advanced 옵션)
+            build_point_cloud = options.get("build_point_cloud", False)
+
             steps = [
                 ("align_photos.py", "이미지 정렬 (Align Photos)"),
                 ("build_depth_maps.py", "깊이 맵 생성 (Build Depth Maps)"),
-                ("build_point_cloud.py", "포인트 클라우드 생성 (Build Point Cloud)"),
+            ]
+            if build_point_cloud:
+                steps.append(("build_point_cloud.py", "포인트 클라우드 생성 (Build Point Cloud)"))
+            steps.extend([
                 ("build_dem.py", "DEM 생성 (Build DEM)"),
                 ("build_orthomosaic.py", "정사모자이크 생성 (Build Orthomosaic)"),
                 ("export_orthomosaic.py", "결과물 내보내기 (Export Orthomosaic)"),
-            ]
+            ])
+
+            logger.info(f"[Metashape] build_point_cloud={build_point_cloud}, total steps={len(steps)}")
             
             process_mode = options.get("process_mode") or options.get("gsd", "Normal")
             if process_mode not in ["Preview", "Normal", "High"]:

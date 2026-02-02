@@ -157,6 +157,8 @@
 
 | 날짜 | 항목 | 내용 |
 |------|------|------|
+| 2026-02-02 | Metashape | Point Cloud 생성을 선택적으로 변경 (기본값: 비활성화). 정사영상만 필요 시 처리 시간 단축 |
+| 2026-02-02 | UI | 고급 옵션(Advanced) 추가 - Metashape 엔진 선택 시 Point Cloud 생성 토글 표시 |
 | 2026-01-30 | 처리 상태 복구 | 처리 재진입 시 마지막 단계 메시지/진행률 즉시 동기화 (processing_status.json 캐시) |
 | 2026-01-30 | EO 처리 | EO 업로드 시 metadata.txt 자동 생성으로 Metashape importReference 안정화 |
 | 2026-01-30 | 대시보드 | 처리 중 프로젝트 목록 자동 갱신 (폴링) |

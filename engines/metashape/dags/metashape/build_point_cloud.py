@@ -42,8 +42,7 @@ def build_point_cloud(output_path, run_id, reai_task_id, output_epsg=None):
 
         # Point Cloud 결과 요약
         if chunk.point_cloud:
-            point_count = len(chunk.point_cloud.points)
-            print(f"📊 Point cloud: {point_count:,} points generated")
+            print("📊 Point cloud generated successfully")
 
         export_epsg = _normalize_epsg(output_epsg)
         print(f"ℹ️ Point cloud export target EPSG: {export_epsg}")
