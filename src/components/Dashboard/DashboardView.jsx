@@ -74,8 +74,8 @@ function StatsSummary({ stats, isCompact = false }) {
                     value={stats.area || '0'}
                     unit="km²"
                     label="처리 완료 면적"
-                    progress={parseFloat(stats.area) > 0 ? Math.min(100, (parseFloat(stats.area) / 1003.2 * 100)) : 0}
-                    progressLabel={`전체 국토 면적 대비 ${parseFloat(stats.area) > 0 ? (parseFloat(stats.area) / 1003.2 * 100).toFixed(2) : 0}%`}
+                    progress={parseFloat(stats.area) > 0 ? Math.min(100, (parseFloat(stats.area) / 103643 * 100)) : 0}
+                    progressLabel={`전체 국토 면적 대비 ${parseFloat(stats.area) > 0 ? (parseFloat(stats.area) / 103643 * 100).toFixed(4) : 0}%`}
                 />
 
                 {/* 프로젝트 진행 */}
@@ -206,8 +206,8 @@ function ProjectDetailView({ project, onBack }) {
                 />
                 <DashboardStatsCard
                     icon={<HardDrive size={18} />}
-                    value={project.ortho_size ? (project.ortho_size / (1024 * 1024)).toFixed(1) : (project.source_size ? (project.source_size / (1024 * 1024 * 1024)).toFixed(2) : '0')}
-                    unit={project.ortho_size ? "MB" : "GB"}
+                    value={project.ortho_size ? (project.ortho_size / (1024 * 1024 * 1024)).toFixed(2) : (project.source_size ? (project.source_size / (1024 * 1024 * 1024)).toFixed(2) : '0')}
+                    unit="GB"
                     label={project.ortho_size ? "정사영상 용량" : "원본 총 용량"}
                 />
                 <DashboardStatsCard

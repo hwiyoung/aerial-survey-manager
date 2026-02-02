@@ -5,7 +5,17 @@ import {
     Play, Download, FileImage, Eye, Loader2
 } from 'lucide-react';
 
-const REGIONS = ['경기권역', '충청권역', '강원권역', '전라권역', '경상권역'];
+const REGIONS = [
+    '수도권북부 권역',
+    '수도권남부 권역',
+    '강원 권역',
+    '충청 권역',
+    '전라동부 권역',
+    '전라서부 권역',
+    '경북 권역',
+    '경남 권역',
+    '제주 권역'
+];
 
 // 프로젝트 상태 표시 헬퍼 함수
 function getProjectStatusDisplay(project) {

@@ -29,35 +29,50 @@ const STATUS_COLORS = {
 export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, onLoadComplete, onLoadError }) {
     const map = useMap();
     const layerRef = useRef(null);
+    const currentProjectIdRef = useRef(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [tileUrl, setTileUrl] = useState(null);
     const [bounds, setBounds] = useState(null);
 
     useEffect(() => {
+        // 이전 레이어 정리
+        if (layerRef.current) {
+            map.removeLayer(layerRef.current);
+            layerRef.current = null;
+        }
+
         if (!projectId || !visible) {
-            if (layerRef.current) {
-                map.removeLayer(layerRef.current);
-                layerRef.current = null;
-            }
             setTileUrl(null);
+            setBounds(null);
+            currentProjectIdRef.current = null;
             return;
         }
+
+        // 현재 요청 ID 저장 (경쟁 조건 방지)
+        currentProjectIdRef.current = projectId;
+        console.log('[TiTiler] Starting load for project:', projectId);
 
         const initTiTiler = async () => {
             setLoading(true);
             setError(null);
+            setTileUrl(null);
+            setBounds(null);
 
             try {
                 // Get COG info from backend
                 const cogInfo = await api.getCogUrl(projectId);
-                console.log('[TiTiler] COG info:', cogInfo);
+
+                // 요청 중 projectId가 변경되었으면 무시
+                if (currentProjectIdRef.current !== projectId) {
+                    console.log('[TiTiler] Project changed, ignoring response for:', projectId);
+                    return;
+                }
+
+                console.log('[TiTiler] COG info for project:', projectId, cogInfo);
 
                 // Build TiTiler tile URL
-                // For MinIO: use internal S3 URL via TiTiler
                 let cogUrl = cogInfo.url;
-
-                // If it's a local file, we need to use the full URL
                 if (cogInfo.local) {
                     cogUrl = `${window.location.origin}${cogInfo.url}`;
                 }
@@ -71,7 +86,7 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
                 // Get bounds info from TiTiler
                 try {
                     const boundsResponse = await fetch(`/titiler/cog/bounds?url=${encodeURIComponent(cogUrl)}`);
-                    if (boundsResponse.ok) {
+                    if (boundsResponse.ok && currentProjectIdRef.current === projectId) {
                         const boundsData = await boundsResponse.json();
                         console.log('[TiTiler] Bounds:', boundsData);
                         if (boundsData.bounds) {
@@ -87,10 +102,12 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
                 onLoadComplete?.();
 
             } catch (err) {
-                console.error('[TiTiler] Failed to initialize:', err);
-                setError(err.message);
-                setLoading(false);
-                onLoadError?.(err.message);
+                if (currentProjectIdRef.current === projectId) {
+                    console.error('[TiTiler] Failed to initialize:', err);
+                    setError(err.message);
+                    setLoading(false);
+                    onLoadError?.(err.message);
+                }
             }
         };
 
@@ -115,6 +132,7 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
 
     return (
         <TileLayer
+            key={`titiler-${projectId}-${tileUrl}`}
             ref={layerRef}
             url={tileUrl}
             opacity={opacity}

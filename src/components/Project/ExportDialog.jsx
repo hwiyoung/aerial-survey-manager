@@ -5,10 +5,11 @@ import api from '../../api/client';
 export default function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     const [format, setFormat] = useState('GeoTiff');
     const [crs, setCrs] = useState('GRS80 (EPSG:5186)');
-    const [gsd, setGsd] = useState(5);
+    const [gsd, setGsd] = useState(12);
     const [filename, setFilename] = useState('');
     const [isExporting, setIsExporting] = useState(false);
     const [progress, setProgress] = useState(0);
+    const progressIntervalRef = React.useRef(null);
 
     const targets = useMemo(() => {
         return allProjects.filter(p => targetProjectIds.includes(p.id));
@@ -28,10 +29,20 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
 
     const handleExportStart = async () => {
         setIsExporting(true);
-        setProgress(10);
+        setProgress(5);
+
+        // 자연스러운 진행률 시뮬레이션 (5% ~ 85%까지 점진적 증가)
+        let currentProgress = 5;
+        progressIntervalRef.current = setInterval(() => {
+            currentProgress += Math.random() * 3 + 1; // 1~4% 랜덤 증가
+            if (currentProgress >= 85) {
+                currentProgress = 85;
+                clearInterval(progressIntervalRef.current);
+            }
+            setProgress(Math.floor(currentProgress));
+        }, 200);
 
         try {
-            setProgress(30);
             const blob = await api.batchExport(targetProjectIds, {
                 format: format,
                 crs: crs.includes('5186') ? 'EPSG:5186' : crs.includes('4326') ? 'EPSG:4326' : 'EPSG:32652',
@@ -39,7 +50,9 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                 custom_filename: filename || null,
             });
 
-            setProgress(80);
+            // API 완료 후 인터벌 정리
+            clearInterval(progressIntervalRef.current);
+            setProgress(90);
 
             const count = targetProjectIds.length;
             const ext = count === 1 ? 'tif' : 'zip';
@@ -55,6 +68,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             }, 300);
 
         } catch (err) {
+            clearInterval(progressIntervalRef.current);
             console.error('Batch export failed:', err);
             alert('내보내기 실패: ' + err.message);
             setIsExporting(false);

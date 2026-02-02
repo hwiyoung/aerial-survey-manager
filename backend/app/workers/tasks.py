@@ -188,25 +188,25 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 except Exception:
                     pass  # Don't fail the task if broadcast fails
             
-            update_progress(5, "Downloading images from storage...")
-            
+            update_progress(5, "저장소에서 이미지 다운로드 중...")
+
             total_source_size = 0
             for i, image in enumerate(images):
                 if image.file_size:
                     total_source_size += image.file_size
-                
+
                 if image.original_path:
                     local_path = input_dir / image.filename
                     storage.download_file(image.original_path, str(local_path))
-                    
+
                     # Update download progress
                     download_progress = 5 + int((i + 1) / len(images) * 15)
-                    update_progress(download_progress, f"Downloaded {i + 1}/{len(images)} images")
-            
+                    update_progress(download_progress, f"{i + 1}/{len(images)} 이미지 다운로드 완료")
+
             project.source_size = total_source_size
             db.commit()
-            
-            update_progress(20, "Starting processing engine...")
+
+            update_progress(20, "처리 엔진 시작 중...")
             
             # Define async progress callback
             async def progress_callback(progress, message):
@@ -235,14 +235,14 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             finally:
                 loop.close()
             
-            update_progress(90, "Uploading result to storage...")
+            update_progress(90, "결과물 업로드 중...")
             
             # Upload result to storage
             result_object_name = f"projects/{project_id}/ortho/result.tif"
             storage.upload_file(str(result_path), result_object_name, "image/tiff")
             
             # Convert to COG (Cloud Optimized GeoTIFF) for efficient streaming
-            update_progress(92, "Converting to Cloud Optimized GeoTIFF (COG)...")
+            update_progress(92, "클라우드 최적화 GeoTIFF 변환 중...")
             cog_path = output_dir / "result_cog.tif"
             
             try:
@@ -271,12 +271,12 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 print(f"COG conversion failed: {cog_error}")
             
             # Calculate checksum
-            update_progress(95, "Calculating checksum...")
+            update_progress(95, "체크섬 계산 중...")
             checksum = calculate_file_checksum(str(result_path))
             file_size = os.path.getsize(result_path)
             
             # Update project bounds from orthophoto
-            update_progress(98, "Updating project footprint...")
+            update_progress(98, "프로젝트 영역 정보 업데이트 중...")
             bounds_wkt = get_orthophoto_bounds(str(result_path))
             if bounds_wkt:
                 project.bounds = bounds_wkt

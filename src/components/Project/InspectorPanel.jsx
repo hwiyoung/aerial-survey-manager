@@ -53,7 +53,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                         {project.ortho_size && (
                             <div className="flex justify-between border-b pb-2">
                                 <span className="text-slate-500">정사영상 용량</span>
-                                <span className="font-medium">{(project.ortho_size / (1024 * 1024)).toFixed(1)} MB</span>
+                                <span className="font-medium">{(project.ortho_size / (1024 * 1024 * 1024)).toFixed(2)} GB</span>
                             </div>
                         )}
                         {project.area && (

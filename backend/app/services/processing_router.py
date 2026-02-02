@@ -415,15 +415,15 @@ class MetashapeEngine(ProcessingEngine):
             build_point_cloud = options.get("build_point_cloud", False)
 
             steps = [
-                ("align_photos.py", "이미지 정렬 (Align Photos)"),
-                ("build_depth_maps.py", "깊이 맵 생성 (Build Depth Maps)"),
+                ("align_photos.py", "이미지 정렬 중..."),
+                ("build_depth_maps.py", "깊이 맵 생성 중..."),
             ]
             if build_point_cloud:
-                steps.append(("build_point_cloud.py", "포인트 클라우드 생성 (Build Point Cloud)"))
+                steps.append(("build_point_cloud.py", "포인트 클라우드 생성 중..."))
             steps.extend([
-                ("build_dem.py", "DEM 생성 (Build DEM)"),
-                ("build_orthomosaic.py", "정사모자이크 생성 (Build Orthomosaic)"),
-                ("export_orthomosaic.py", "결과물 내보내기 (Export Orthomosaic)"),
+                ("build_dem.py", "수치표고모델 생성 중..."),
+                ("build_orthomosaic.py", "정사모자이크 생성 중..."),
+                ("export_orthomosaic.py", "결과물 내보내기 중..."),
             ])
 
             logger.info(f"[Metashape] build_point_cloud={build_point_cloud}, total steps={len(steps)}")
