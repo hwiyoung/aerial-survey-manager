@@ -46,6 +46,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    restart: always
     ports:
       - "8001:8000"
     environment:
@@ -161,6 +162,10 @@ services:
       dockerfile: engines/metashape/Dockerfile
     working_dir: /app
     command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-metashape@%h
+    restart: always
+    # 라이센스 비활성화를 위한 graceful shutdown 설정
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
     deploy:
       resources:
         reservations:
@@ -217,6 +222,7 @@ services:
   # === PostgreSQL + PostGIS ===
   db:
     image: postgis/postgis:15-3.3
+    restart: always
     environment:
       - POSTGRES_DB=aerial_survey
       - POSTGRES_USER=postgres
@@ -238,6 +244,7 @@ services:
   # === Redis ===
   redis:
     image: redis:7-alpine
+    restart: always
     command: redis-server --appendonly yes
     ports:
       - "6380:6379"
@@ -250,6 +257,7 @@ services:
   # === MinIO (S3-compatible Storage) ===
   minio:
     image: minio/minio:latest
+    restart: always
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
@@ -311,12 +319,14 @@ services:
   # === Nginx Reverse Proxy ===
   nginx:
     image: nginx:alpine
+    restart: always
     ports:
       - "8081:80"
       - "4443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
+      - ${TILES_PATH:-/data/tiles}:/data/tiles:ro  # 오프라인 타일맵
     depends_on:
       - frontend
       - api

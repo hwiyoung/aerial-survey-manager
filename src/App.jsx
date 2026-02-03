@@ -746,7 +746,7 @@ function Dashboard() {
     }
   };
 
-  const handleStartProcessing = async (options = {}, force = false) => {
+  const handleStartProcessing = async (options = {}, forceRestart = false) => {
     if (!processingProject) return;
 
     const projectId = processingProject.id;
@@ -762,8 +762,8 @@ function Dashboard() {
     };
 
     try {
-      // Start processing via API
-      const result = await api.startProcessing(projectId, processingOptions, force);
+      // Start processing via API (force=false for incomplete uploads, forceRestart for existing jobs)
+      const result = await api.startProcessing(projectId, processingOptions, false, forceRestart);
       console.log('Processing started:', result);
 
       // 해당 프로젝트의 업로드 패널 자동 숨김 (처리 시작 시)
@@ -790,14 +790,26 @@ function Dashboard() {
         );
 
         if (shouldProceed) {
-          // force=true로 다시 시도
-          return handleStartProcessing(options, true);
+          // force=true로 다시 시도 (incomplete uploads bypass)
+          try {
+            const result = await api.startProcessing(projectId, processingOptions, true, forceRestart);
+            console.log('Processing started with force:', result);
+            setUploadsByProject(prev => {
+              const { [projectId]: _, ...rest } = prev;
+              return rest;
+            });
+            setProcessingProject(prev => prev ? ({ ...prev, status: '대기', progress: 0 }) : prev);
+            alert('처리가 시작되었습니다.');
+            refreshProjects();
+          } catch (retryErr) {
+            alert('처리 시작 실패: ' + retryErr.message);
+          }
         }
         return;
       }
 
-      alert('처리 시작 실패: ' + err.message);
-      return;
+      // job_already_running 에러는 ProcessingSidebar에서 처리하므로 여기서는 그냥 throw
+      throw err;
     }
 
     // Refresh project list to update status

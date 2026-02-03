@@ -14,7 +14,7 @@ from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, Image, ExteriorOrientation
+from app.models.project import Project, Image, ExteriorOrientation, ProcessingJob
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
@@ -163,6 +163,17 @@ async def list_projects(
         upload_completed_count = status_counts.get("completed", 0)
         upload_uploading_count = status_counts.get("uploading", 0)
 
+        # Get latest processing job for result_gsd and process_mode
+        job_result = await db.execute(
+            select(ProcessingJob)
+            .where(ProcessingJob.project_id == project.id)
+            .order_by(ProcessingJob.created_at.desc())
+            .limit(1)
+        )
+        latest_job = job_result.scalar_one_or_none()
+        result_gsd = latest_job.result_gsd if latest_job else None
+        process_mode = latest_job.process_mode if latest_job else None
+
         # Convert ORM model to dict and serialize bounds BEFORE Pydantic validation
         project_dict = {
             "id": project.id,
@@ -184,6 +195,8 @@ async def list_projects(
             "bounds": serialize_geometry(bounds_wkt),  # Now using WKT string
             "upload_completed_count": upload_completed_count,
             "upload_in_progress": upload_uploading_count > 0,
+            "result_gsd": result_gsd,
+            "process_mode": process_mode,
         }
         response = ProjectResponse.model_validate(project_dict)
         project_responses.append(response)
@@ -263,16 +276,27 @@ async def get_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-    
+
     project = row[0]
     bounds_wkt = row[1]
-    
+
     # Get image count
     count_result = await db.execute(
         select(func.count()).where(Image.project_id == project.id)
     )
     image_count = count_result.scalar()
-    
+
+    # Get latest processing job for result_gsd and process_mode
+    job_result = await db.execute(
+        select(ProcessingJob)
+        .where(ProcessingJob.project_id == project.id)
+        .order_by(ProcessingJob.created_at.desc())
+        .limit(1)
+    )
+    latest_job = job_result.scalar_one_or_none()
+    result_gsd = latest_job.result_gsd if latest_job else None
+    process_mode = latest_job.process_mode if latest_job else None
+
     response_dict = {
         "id": project.id,
         "title": project.title,
@@ -291,6 +315,8 @@ async def get_project(
         "area": project.area,
         "ortho_path": project.ortho_path,
         "bounds": serialize_geometry(bounds_wkt),
+        "result_gsd": result_gsd,
+        "process_mode": process_mode,
     }
     return ProjectResponse.model_validate(response_dict)
 

@@ -53,3 +53,8 @@ pgdata/
 redis_data/
 minio_data/
 docs/ADMIN_GUIDE.md
+
+# Release archives (large binary files)
+releases/
+*.tar.gz
+*.zip

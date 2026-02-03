@@ -164,7 +164,11 @@ class ProcessingJob(Base):
     result_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     result_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA256
     result_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    
+
+    # 처리 결과 메타데이터
+    result_gsd: Mapped[float | None] = mapped_column(Float, nullable=True)  # 실제 결과 GSD (cm/pixel)
+    process_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Preview, Normal, High
+
     # Celery task tracking
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     

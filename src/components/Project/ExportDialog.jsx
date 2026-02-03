@@ -2,10 +2,20 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, Download, FileOutput } from 'lucide-react';
 import api from '../../api/client';
 
+// 처리 모드별 GSD 배율 (원본 GSD 기준)
+const MULTIPLIER_BY_MODE = {
+    'Preview': 16,  // 원본 GSD × 16 (저해상도)
+    'Normal': 4,    // 원본 GSD × 4 (중간 해상도)
+    'High': 1,      // 원본 GSD × 1 (원본 해상도)
+};
+
+// result_gsd가 없을 때 사용할 기본 원본 GSD (cm/pixel)
+const DEFAULT_BASE_GSD = 3;
+
 export default function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     const [format, setFormat] = useState('GeoTiff');
     const [crs, setCrs] = useState('GRS80 (EPSG:5186)');
-    const [gsd, setGsd] = useState(12);
+    const [gsd, setGsd] = useState(6);  // 기본값을 Normal 모드 기준으로 변경
     const [filename, setFilename] = useState('');
     const [isExporting, setIsExporting] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -15,17 +25,51 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         return allProjects.filter(p => targetProjectIds.includes(p.id));
     }, [allProjects, targetProjectIds]);
 
+    // 프로젝트의 처리 모드와 실제 GSD에 따른 권장 내보내기 GSD 계산
+    const { recommendedGsd, baseGsd } = useMemo(() => {
+        if (targets.length === 1) {
+            const project = targets[0];
+            // 실제 처리 결과 GSD 사용 (없으면 기본값)
+            const resultGsd = project.result_gsd || DEFAULT_BASE_GSD;
+            // 프로젝트에 저장된 처리 모드 사용
+            const mode = project.process_mode ||
+                         project.processing_options?.process_mode ||
+                         project.last_processing_options?.process_mode ||
+                         'Normal';
+            const multiplier = MULTIPLIER_BY_MODE[mode] || 4;
+            // 권장 GSD = 원본 GSD × 배율
+            const recommended = Math.round(resultGsd * multiplier * 100) / 100;
+            return { recommendedGsd: recommended, baseGsd: resultGsd };
+        }
+        // 다중 프로젝트의 경우 기본값 (Normal 기준, 기본 GSD × 4)
+        return { recommendedGsd: DEFAULT_BASE_GSD * 4, baseGsd: DEFAULT_BASE_GSD };
+    }, [targets]);
+
+    // 단일 프로젝트의 처리 모드 표시용
+    const processMode = useMemo(() => {
+        if (targets.length === 1) {
+            const project = targets[0];
+            return project.process_mode ||
+                   project.processing_options?.process_mode ||
+                   project.last_processing_options?.process_mode ||
+                   null;
+        }
+        return null;
+    }, [targets]);
+
     useEffect(() => {
         if (isOpen) {
             setIsExporting(false);
             setProgress(0);
+            // 권장 GSD로 초기화
+            setGsd(recommendedGsd);
             if (targets.length === 1) {
                 setFilename(`${targets[0].title}_ortho`);
             } else {
                 setFilename(`Bulk_Export_${new Date().toISOString().slice(0, 10)}`);
             }
         }
-    }, [isOpen, targets]);
+    }, [isOpen, targets, recommendedGsd]);
 
     const handleExportStart = async () => {
         setIsExporting(true);
@@ -116,11 +160,22 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                             </div>
                         </div>
                         <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-500">해상도 (GSD)</label>
+                            <label className="text-xs font-bold text-slate-500">
+                                해상도 (GSD)
+                                {processMode && (
+                                    <span className="text-blue-500 ml-2 font-normal">
+                                        처리 모드: {processMode}
+                                    </span>
+                                )}
+                            </label>
                             <div className="flex gap-2">
-                                <input type="number" className="border p-2 rounded text-sm w-full" value={gsd} onChange={e => setGsd(e.target.value)} />
+                                <input type="number" className="border p-2 rounded text-sm w-full" value={gsd} onChange={e => setGsd(Number(e.target.value))} />
                                 <span className="text-sm text-slate-500 self-center whitespace-nowrap">cm/pixel</span>
                             </div>
+                            <p className="text-[10px] text-slate-400">
+                                권장: {recommendedGsd} cm/pixel
+                                {processMode && ` (원본 ${baseGsd}cm × ${MULTIPLIER_BY_MODE[processMode] || 4}, ${processMode} 모드)`}
+                            </p>
                         </div>
                         <div className="space-y-1">
                             <label className="text-xs font-bold text-slate-500">파일 이름</label>

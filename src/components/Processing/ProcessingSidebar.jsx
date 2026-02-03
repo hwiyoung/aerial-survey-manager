@@ -221,7 +221,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
     };
 
     // Start processing with current options
-    const handleStart = async () => {
+    const handleStart = async (forceRestart = false) => {
         if (!selectedPresetId) {
             alert('프리셋을 선택해주세요.');
             return;
@@ -229,10 +229,28 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         setHasTriggeredCancel(false);
         setIsStarting(true);
         try {
-            await onStartProcessing(options);
+            await onStartProcessing(options, forceRestart);
             if (reconnect) reconnect();
         } catch (error) {
             console.error('Failed to start processing:', error);
+
+            // Handle job_already_running error with force restart option
+            const errorData = error.response?.data?.detail || error.response?.data;
+            if (errorData?.type === 'job_already_running') {
+                const confirmRestart = window.confirm(
+                    `현재 진행 중인 처리 작업이 있습니다.\n\n` +
+                    `상태: ${errorData.job_status === 'queued' ? '대기 중' : '처리 중'}\n` +
+                    `진행률: ${errorData.progress || 0}%\n` +
+                    `시작 시간: ${errorData.started_at ? new Date(errorData.started_at).toLocaleString() : '아직 시작되지 않음'}\n\n` +
+                    `기존 작업을 중단하고 새로 시작하시겠습니까?`
+                );
+                if (confirmRestart) {
+                    // Retry with force_restart
+                    await handleStart(true);
+                    return;
+                }
+            }
+
             setIsStarting(false);
         }
     };
@@ -452,24 +470,6 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                         </div>
                     </div>
 
-                    {/* Advanced Options */}
-                    <div className="space-y-4 pt-2">
-                        <div className="space-y-2 pt-2 border-t border-slate-100">
-                            <label className="block text-xs text-slate-500 font-medium ml-1">고급 옵션 (Advanced)</label>
-                            <label className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors">
-                                <input
-                                    type="checkbox"
-                                    checked={options.build_point_cloud}
-                                    onChange={(e) => setOptions(prev => ({ ...prev, build_point_cloud: e.target.checked }))}
-                                    className="w-4 h-4 text-purple-600 rounded border-slate-300 focus:ring-purple-500"
-                                />
-                                <div className="flex-1">
-                                    <span className="text-sm font-medium text-slate-700">Point Cloud 생성</span>
-                                    <p className="text-[10px] text-slate-500 mt-0.5">3D Tiles (Cesium) 출력 시 필요. 정사영상만 필요할 경우 비활성화 권장</p>
-                                </div>
-                            </label>
-                        </div>
-                    </div>
                 </div>
             </div>
             <div className="p-5 border-t border-slate-200 bg-slate-50 flex gap-3">
@@ -542,7 +542,6 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                                     <span>모드: {options.process_mode}</span>
                                     <span>GSD: {options.gsd} cm</span>
                                     <span>좌표계: {options.output_crs}</span>
-                                    <span>Point Cloud: {options.build_point_cloud ? 'ON' : 'OFF'}</span>
                                 </div>
                             </div>
                         </div>

@@ -194,10 +194,12 @@ class ApiClient {
     }
 
     // --- Processing ---
-    async startProcessing(projectId, options, force = false) {
-        const url = force
-            ? `/processing/projects/${projectId}/start?force=true`
-            : `/processing/projects/${projectId}/start`;
+    async startProcessing(projectId, options, force = false, forceRestart = false) {
+        const params = new URLSearchParams();
+        if (force) params.append('force', 'true');
+        if (forceRestart) params.append('force_restart', 'true');
+        const queryString = params.toString();
+        const url = `/processing/projects/${projectId}/start${queryString ? `?${queryString}` : ''}`;
         return this.request(url, {
             method: 'POST',
             body: JSON.stringify(options),

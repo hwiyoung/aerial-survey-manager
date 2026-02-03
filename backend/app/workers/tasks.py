@@ -234,7 +234,21 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 )
             finally:
                 loop.close()
-            
+
+            # Read result_gsd from status.json (Metashape engine)
+            if engine_name == "metashape":
+                status_json_path = output_dir / "status.json"
+                if status_json_path.exists():
+                    try:
+                        with open(status_json_path, "r") as f:
+                            status_data = json.load(f)
+                        if "result_gsd" in status_data:
+                            job.result_gsd = status_data["result_gsd"]
+                            print(f"📊 Result GSD saved to job: {job.result_gsd} cm/pixel")
+                            db.commit()
+                    except Exception as e:
+                        print(f"Failed to read result_gsd from status.json: {e}")
+
             update_progress(90, "결과물 업로드 중...")
             
             # Upload result to storage

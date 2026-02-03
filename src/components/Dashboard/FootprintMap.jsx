@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import { Layers, Eye, EyeOff, ChevronRight } from 'lucide-react';
 import proj4 from 'proj4';
 import KOREA_REGIONS from '../../data/koreaRegions';
+import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 
 // Set proj4 globally for georaster-layer-for-leaflet
 if (typeof window !== 'undefined') {
@@ -754,10 +755,19 @@ export function FootprintMap({
                         </div>
                     )}
 
-                    <TileLayer
-                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    />
+                    {/* 베이스맵 타일 레이어 - 오프라인/온라인 설정 기반 */}
+                    {(() => {
+                        const tileConfig = getTileConfig();
+                        return (
+                            <TileLayer
+                                attribution={tileConfig.attribution}
+                                url={tileConfig.url}
+                                subdomains={tileConfig.subdomains}
+                                maxZoom={MAP_CONFIG.maxZoom}
+                                minZoom={MAP_CONFIG.minZoom}
+                            />
+                        );
+                    })()}
 
                     {/* Handle map resize when height changes */}
                     <MapResizeHandler height={height} />
