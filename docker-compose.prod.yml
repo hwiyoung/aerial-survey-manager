@@ -112,9 +112,11 @@ services:
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
     volumes:
-      # 프로덕션: 소스 마운트 제거
+      # 프로덕션: 데이터 디렉토리 마운트
       - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
       - metashape-license:/var/tmp/agisoft/licensing
+      # Metashape 스크립트 마운트 (subprocess 실행용)
+      - ./engines/metashape/dags:/app/engines/metashape/dags:ro
     depends_on:
       - redis
       - db

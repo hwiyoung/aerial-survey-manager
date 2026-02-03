@@ -56,9 +56,13 @@ WORKDIR /app
 # 백엔드 애플리케이션 코드 복사
 COPY backend/app /app/app
 
+# Metashape 스크립트 복사
+COPY engines/metashape/dags /app/engines/metashape/dags
+
 # Python 바이트코드 컴파일 (-b: .py와 같은 위치에 .pyc 생성)
 RUN python3 -m compileall -b /app/app/
 # 소스 코드(.py) 제거, 바이트코드(.pyc)만 유지
+# 주의: engines 디렉토리는 subprocess로 직접 실행되므로 .py 유지
 RUN find /app/app/ -name "*.py" -type f -delete
 
 # ============================================================
@@ -93,6 +97,9 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # 컴파일된 앱 코드 복사 (바이트코드만)
 COPY --from=builder /app/app /app/app
+
+# Metashape 스크립트 복사 (subprocess 실행을 위해 .py 소스 유지)
+COPY --from=builder /app/engines /app/engines
 
 # 기본 명령어
 CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "metashape", "--loglevel=info"]
