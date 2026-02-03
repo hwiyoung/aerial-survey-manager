@@ -167,7 +167,7 @@ async def list_projects(
         job_result = await db.execute(
             select(ProcessingJob)
             .where(ProcessingJob.project_id == project.id)
-            .order_by(ProcessingJob.created_at.desc())
+            .order_by(ProcessingJob.id.desc())
             .limit(1)
         )
         latest_job = job_result.scalar_one_or_none()
@@ -290,7 +290,7 @@ async def get_project(
     job_result = await db.execute(
         select(ProcessingJob)
         .where(ProcessingJob.project_id == project.id)
-        .order_by(ProcessingJob.created_at.desc())
+        .order_by(ProcessingJob.id.desc())
         .limit(1)
     )
     latest_job = job_result.scalar_one_or_none()
