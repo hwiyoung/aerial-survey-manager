@@ -153,6 +153,8 @@ def create_camera_entries(cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 'sensor_width': camera.get('sensor_width'),
                 'sensor_height': camera.get('sensor_height'),
                 'pixel_size': camera.get('pixel_size'),
+                'sensor_width_px': camera.get('sensor_width_px'),
+                'sensor_height_px': camera.get('sensor_height_px'),
                 'ppa_x': camera.get('ppa_x'),
                 'ppa_y': camera.get('ppa_y'),
                 'is_custom': False
@@ -161,8 +163,14 @@ def create_camera_entries(cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return entries
 
 
-async def seed_camera_models(file_path: str, clear_existing: bool = False):
-    """Seed camera models from io.csv file."""
+async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_mode: bool = False):
+    """Seed camera models from io.csv file.
+
+    Args:
+        file_path: Path to io.csv file
+        clear_existing: Delete ALL camera models before seeding
+        sync_mode: Delete cameras not in io.csv and update existing ones
+    """
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -179,21 +187,57 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False):
     entries = create_camera_entries(cameras)
     print(f"Created {len(entries)} camera model entries.")
 
+    # Create name -> entry mapping for updates
+    entry_by_name = {e['name']: e for e in entries}
+    valid_names = set(entry_by_name.keys())
+
     async with async_session() as session:
         if clear_existing:
             # Delete ALL camera models (both custom and standard)
             await session.execute(text("DELETE FROM camera_models"))
             print("Cleared ALL existing camera models.")
+        elif sync_mode:
+            # Delete cameras not in io.csv (only non-custom ones)
+            result = await session.execute(
+                select(CameraModel).where(CameraModel.is_custom == False)
+            )
+            existing_cameras = result.scalars().all()
 
-        # Get existing camera names
-        result = await session.execute(select(CameraModel.name))
-        existing_names = {row[0] for row in result.fetchall()}
+            deleted = 0
+            for cam in existing_cameras:
+                if cam.name not in valid_names:
+                    await session.delete(cam)
+                    deleted += 1
+                    print(f"  Deleted: {cam.name}")
+
+            if deleted > 0:
+                await session.commit()
+                print(f"Deleted {deleted} camera models not in io.csv.")
+
+        # Get existing cameras for update/insert
+        result = await session.execute(select(CameraModel))
+        existing_cameras = {cam.name: cam for cam in result.scalars().all()}
 
         inserted = 0
+        updated = 0
         skipped = 0
+
         for entry in entries:
-            if entry['name'] in existing_names:
-                skipped += 1
+            if entry['name'] in existing_cameras:
+                if sync_mode:
+                    # Update existing camera with new data
+                    cam = existing_cameras[entry['name']]
+                    cam.focal_length = entry['focal_length']
+                    cam.sensor_width = entry['sensor_width']
+                    cam.sensor_height = entry['sensor_height']
+                    cam.pixel_size = entry['pixel_size']
+                    cam.sensor_width_px = entry.get('sensor_width_px')
+                    cam.sensor_height_px = entry.get('sensor_height_px')
+                    cam.ppa_x = entry.get('ppa_x')
+                    cam.ppa_y = entry.get('ppa_y')
+                    updated += 1
+                else:
+                    skipped += 1
                 continue
 
             camera_model = CameraModel(
@@ -202,6 +246,8 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False):
                 sensor_width=entry['sensor_width'],
                 sensor_height=entry['sensor_height'],
                 pixel_size=entry['pixel_size'],
+                sensor_width_px=entry.get('sensor_width_px'),
+                sensor_height_px=entry.get('sensor_height_px'),
                 ppa_x=entry.get('ppa_x'),
                 ppa_y=entry.get('ppa_y'),
                 is_custom=entry['is_custom'],
@@ -209,14 +255,13 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False):
             )
             session.add(camera_model)
             inserted += 1
-            existing_names.add(entry['name'])
 
             if inserted % 10 == 0:
                 await session.commit()
                 print(f"Inserted {inserted} camera models...")
 
         await session.commit()
-        print(f"\nSeed complete: {inserted} inserted, {skipped} skipped (already exist)")
+        print(f"\nSeed complete: {inserted} inserted, {updated} updated, {skipped} skipped")
 
 
 if __name__ == "__main__":
@@ -225,7 +270,9 @@ if __name__ == "__main__":
     parser.add_argument('--file', '-f', default='/app/data/io.csv',
                         help='Path to io.csv file')
     parser.add_argument('--clear', '-c', action='store_true',
-                        help='Clear existing standard camera models before seeding')
+                        help='Clear ALL camera models before seeding')
+    parser.add_argument('--sync', '-s', action='store_true',
+                        help='Sync mode: delete cameras not in io.csv and update existing ones')
     args = parser.parse_args()
 
     file_path = args.file
@@ -241,4 +288,4 @@ if __name__ == "__main__":
         print("Please provide a valid path to io.csv using --file option")
         sys.exit(1)
 
-    asyncio.run(seed_camera_models(file_path, clear_existing=args.clear))
+    asyncio.run(seed_camera_models(file_path, clear_existing=args.clear, sync_mode=args.sync))

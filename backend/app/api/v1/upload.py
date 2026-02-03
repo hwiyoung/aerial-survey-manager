@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, Image
+from app.models.project import Project, Image, CameraModel
 from app.schemas.project import ImageResponse, ImageUploadResponse
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.config import get_settings
@@ -355,6 +355,7 @@ class MultipartInitRequest(BaseModel):
     """Request body for multipart upload initialization."""
     files: List[FileInfo]
     part_size: Optional[int] = 10 * 1024 * 1024  # 10MB default
+    camera_model_name: Optional[str] = None  # Link images to camera model
 
 
 class PartInfo(BaseModel):
@@ -457,6 +458,16 @@ async def init_multipart_upload(
     s3_service = get_s3_multipart_service()
     uploads = []
 
+    # Look up camera model if provided
+    camera_model_id = None
+    if request.camera_model_name:
+        cam_result = await db.execute(
+            select(CameraModel).where(CameraModel.name == request.camera_model_name)
+        )
+        camera_model = cam_result.scalar_one_or_none()
+        if camera_model:
+            camera_model_id = camera_model.id
+
     for file_info in request.files:
         # Create or update image record
         existing_result = await db.execute(
@@ -470,6 +481,8 @@ async def init_multipart_upload(
         if existing_image:
             existing_image.upload_status = "uploading"
             existing_image.file_size = file_info.size
+            if camera_model_id:
+                existing_image.camera_model_id = camera_model_id
             await db.flush()
             image = existing_image
         else:
@@ -478,6 +491,7 @@ async def init_multipart_upload(
                 filename=file_info.filename,
                 file_size=file_info.size,
                 upload_status="uploading",
+                camera_model_id=camera_model_id,
             )
             db.add(image)
             await db.flush()

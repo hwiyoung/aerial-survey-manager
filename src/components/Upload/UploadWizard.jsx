@@ -14,16 +14,32 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const [step, setStep] = useState(1);
     const [imageCount, setImageCount] = useState(0);
     const [eoFileName, setEoFileName] = useState(null);
-    const [cameraModel, setCameraModel] = useState("UltraCam Eagle 4.1");
+    const [cameraModel, setCameraModel] = useState("");
     const [cameraModels, setCameraModels] = useState([]);
     const [isAddingCamera, setIsAddingCamera] = useState(false);
-    const [newCamera, setNewCamera] = useState({ name: '', focal_length: 80, sensor_width: 53.4, sensor_height: 40, pixel_size: 5.2 });
+    const [newCamera, setNewCamera] = useState({
+        name: '',
+        focal_length: 80,
+        sensor_width: 53.4,
+        sensor_height: 40,
+        pixel_size: 5.2,
+        sensor_width_px: 17310,
+        sensor_height_px: 11310,
+        ppa_x: 0,
+        ppa_y: 0
+    });
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
-            api.getCameraModels().then(setCameraModels).catch(console.error);
+            api.getCameraModels().then(models => {
+                setCameraModels(models);
+                // Set default to first camera model if not already set
+                if (models.length > 0 && !cameraModel) {
+                    setCameraModel(models[0].name);
+                }
+            }).catch(console.error);
         }
     }, [isOpen]);
 
@@ -43,7 +59,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     };
     const [selectedFiles, setSelectedFiles] = useState([]);
     const [selectedEoFile, setSelectedEoFile] = useState(null);
-    const [eoConfig, setEoConfig] = useState({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
+    const [eoConfig, setEoConfig] = useState({ delimiter: ',', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
 
     const folderInputRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -86,7 +102,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setStep(1);
             setImageCount(0);
             setEoFileName(null);
-            setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
+            setEoConfig({ delimiter: ',', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
             setProjectName('');
             setShowMismatchWarning(false);
             setSelectedFiles([]);
@@ -196,7 +212,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
         // Pass raw data to parent for processing
         const projectData = {
             title: projectName || `Project_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`,
-            region: '경기권역',
+            region: '수도권북부 권역',
             company: '신규 업로드',
         };
 
@@ -271,7 +287,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                     )}
                     {step === 2 && (
                         <div className="flex flex-col h-full gap-6">
-                            <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: ',', hasHeader: true, crs: 'WGS84 (EPSG:4326)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); if (eoInputRef.current) eoInputRef.current.value = ''; }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
+                            <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: ',', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); if (eoInputRef.current) eoInputRef.current.value = ''; }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
                             <div className="flex gap-6 shrink-0 h-[220px]">
                                 <input
                                     type="file"
@@ -288,7 +304,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 </div>
                                 <div className="flex-1 bg-slate-50 p-5 rounded-xl border border-slate-200 flex flex-col justify-between">
                                     <div className="grid grid-cols-3 gap-6">
-                                        <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">좌표계 (CRS)</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.crs} onChange={(e) => setEoConfig({ ...eoConfig, crs: e.target.value })}><option value="WGS84 (EPSG:4326)">WGS84 (Lat/Lon)</option><option value="GRS80 (EPSG:5186)">GRS80 (TM)</option><option value="UTM52N (EPSG:32652)">UTM Zone 52N</option></select></div>
+                                        <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">좌표계 (CRS)</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.crs} onChange={(e) => setEoConfig({ ...eoConfig, crs: e.target.value })}><option value="TM중부 (EPSG:5186)">TM 중부 (EPSG:5186)</option><option value="TM서부 (EPSG:5185)">TM 서부 (EPSG:5185)</option><option value="TM동부 (EPSG:5187)">TM 동부 (EPSG:5187)</option><option value="UTM-K (EPSG:5179)">UTM-K (EPSG:5179)</option><option value="WGS84 (EPSG:4326)">WGS84 (EPSG:4326)</option></select></div>
                                         <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">구분자</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.delimiter} onChange={(e) => setEoConfig({ ...eoConfig, delimiter: e.target.value })}><option value=",">콤마 (,)</option><option value="tab">탭 (Tab)</option><option value="space">공백 (Space)</option></select></div>
                                         <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">헤더 행</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.hasHeader} onChange={(e) => setEoConfig({ ...eoConfig, hasHeader: e.target.value === 'true' })}><option value="true">첫 줄 제외 (Skip)</option><option value="false">포함 (Include)</option></select></div>
                                     </div>
@@ -344,16 +360,37 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                 <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_height} onChange={e => setNewCamera({ ...newCamera, sensor_height: parseFloat(e.target.value) })} />
                                             </div>
                                         </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-500">이미지 W (px)</label>
+                                                <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_width_px} onChange={e => setNewCamera({ ...newCamera, sensor_width_px: parseInt(e.target.value) })} />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-500">이미지 H (px)</label>
+                                                <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_height_px} onChange={e => setNewCamera({ ...newCamera, sensor_height_px: parseInt(e.target.value) })} />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-500">PPA X (mm)</label>
+                                                <input type="number" step="0.001" className="w-full p-2 border rounded text-sm" value={newCamera.ppa_x} onChange={e => setNewCamera({ ...newCamera, ppa_x: parseFloat(e.target.value) })} />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-500">PPA Y (mm)</label>
+                                                <input type="number" step="0.001" className="w-full p-2 border rounded text-sm" value={newCamera.ppa_y} onChange={e => setNewCamera({ ...newCamera, ppa_y: parseFloat(e.target.value) })} />
+                                            </div>
+                                        </div>
                                         <button onClick={handleAddCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">저장 및 선택</button>
                                     </div>
                                 ) : (
                                     <div className="space-y-3">
                                         <div className="relative">
                                             <select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none" value={cameraModel} onChange={(e) => setCameraModel(e.target.value)}>
-                                                {Array.isArray(cameraModels) && cameraModels.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                                                {!cameraModels?.length && <option value="" disabled>카메라 모델 로딩 중...</option>}
-                                                <option value="UltraCam Eagle 4.1">UltraCam Eagle 4.1</option>
-                                                <option value="Leica DMC III">Leica DMC III</option>
+                                                {Array.isArray(cameraModels) && cameraModels.length > 0 ? (
+                                                    cameraModels.map(c => <option key={c.id} value={c.name}>{c.name}</option>)
+                                                ) : (
+                                                    <option value="" disabled>카메라 모델 로딩 중...</option>
+                                                )}
                                             </select>
                                             <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
                                         </div>
@@ -367,6 +404,12 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                     <div className="flex justify-between text-sm"><span className="text-slate-500">Focal Length</span><span className="font-mono font-bold text-slate-700">{selectedCamera.focal_length} mm</span></div>
                                     <div className="flex justify-between text-sm"><span className="text-slate-500">Sensor Size</span><span className="font-mono font-bold text-slate-700">{selectedCamera.sensor_width} x {selectedCamera.sensor_height} mm</span></div>
                                     <div className="flex justify-between text-sm"><span className="text-slate-500">Pixel Size</span><span className="font-mono font-bold text-slate-700">{selectedCamera.pixel_size} µm</span></div>
+                                    {(selectedCamera.sensor_width_px && selectedCamera.sensor_height_px) && (
+                                        <div className="flex justify-between text-sm"><span className="text-slate-500">Image Size</span><span className="font-mono font-bold text-slate-700">{selectedCamera.sensor_width_px} x {selectedCamera.sensor_height_px} px</span></div>
+                                    )}
+                                    {(selectedCamera.ppa_x != null || selectedCamera.ppa_y != null) && (
+                                        <div className="flex justify-between text-sm"><span className="text-blue-600">PPA</span><span className="font-mono font-bold text-blue-700">({selectedCamera.ppa_x?.toFixed(3) || '0.000'}, {selectedCamera.ppa_y?.toFixed(3) || '0.000'}) mm</span></div>
+                                    )}
                                 </div>
                             </div>
                         </div>

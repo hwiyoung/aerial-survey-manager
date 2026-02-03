@@ -185,6 +185,14 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                                                 <span className="font-mono font-medium text-slate-700">{image.camera_model.pixel_size} μm</span>
                                             </div>
                                         )}
+                                        {(image.camera_model.sensor_width_px && image.camera_model.sensor_height_px) && (
+                                            <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                                <span className="text-slate-500">이미지 크기</span>
+                                                <span className="font-mono font-medium text-slate-700">
+                                                    {image.camera_model.sensor_width_px} x {image.camera_model.sensor_height_px} px
+                                                </span>
+                                            </div>
+                                        )}
                                         {(image.camera_model.ppa_x != null || image.camera_model.ppa_y != null) && (
                                             <div className="flex justify-between p-2 bg-blue-50 rounded border border-blue-100">
                                                 <span className="text-blue-600">PPA (주점 오프셋)</span>

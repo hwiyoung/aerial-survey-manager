@@ -187,6 +187,11 @@ MINIO_DATA_PATH=/path/to/large/disk/minio            # MinIO 저장소 경로
 # External Processing Engine (Optional)
 EXTERNAL_ENGINE_URL=https://external-engine.example.com
 EXTERNAL_ENGINE_API_KEY=your-api-key
+
+# Offline Map Tiles (Optional)
+VITE_MAP_OFFLINE=false               # true로 설정 시 로컬 타일 사용
+VITE_TILE_URL=/tiles/{z}/{x}/{y}.png # 오프라인 타일 URL 패턴
+TILES_PATH=/data/tiles               # 호스트의 타일 디렉토리 경로
 ```
 
 > ⚠️ **중요**: `MINIO_DATA_PATH`는 반드시 **충분한 여유 공간이 있는 디스크**에 설정하세요.
@@ -212,21 +217,26 @@ EXTERNAL_ENGINE_API_KEY=your-api-key
 - 조직 스토리지 할당량 관리
 - 그룹 단위 일괄 작업
 
-## ⚠️ Known Issues (2026-01-31)
+## ⚠️ Known Issues (2026-02-03)
 
 ### 지도 및 상호작용
 - **권역 툴팁 우선순위**: 권역(Region)과 프로젝트(Footprint) 중첩 시 바운딩박스 호버에도 권역 툴팁이 표시되는 경우 있음 (CSS + 이벤트 제어로 개선 중)
+- **오프라인 타일맵**: `VITE_MAP_OFFLINE=true` 설정 시 로컬 타일 필요 (없으면 회색 배경)
 
 ### 시스템
 - **COG Loading**: MinIO presigned URL 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
 - **처리 중단 후 재시작 오류**: 동일 프로젝트에서 처리 중단 후 곧바로 재시작할 때 Metashape 단계에서 오류(예: `Empty DEM`)가 발생할 수 있음. EO 파일명 매칭/metadata.txt 상태를 확인하고, 필요 시 EO 재업로드 또는 프로젝트 재생성을 권장.
 
-### 저장소 (2026-01-31 추가)
+### 저장소
 - **MinIO 디스크 용량 부족 시 업로드 실패**: MinIO가 설치된 디스크의 여유 공간이 임계치(기본 10%) 이하로 떨어지면 **HTTP 507 (Storage Full)** 오류와 함께 모든 업로드가 중단됩니다.
   - **증상**: TUS 로그에 `XMinioStorageFull: Storage backend has reached its minimum free drive threshold` 에러 발생
   - **해결**: `.env`의 `MINIO_DATA_PATH`를 충분한 용량의 드라이브로 설정 (최소 1TB 이상 권장)
   - **긴급 대응**: 실패한 업로드 파일 정리 (`mc rm --recursive --force local/aerial-survey/uploads/`)
   - 상세 내용은 [docs/ADMIN_GUIDE.md](./docs/ADMIN_GUIDE.md#minio-저장소-관리) 참조
+
+### 배포 (2026-02-03 추가)
+- **컨테이너 자동 시작**: `restart: always` 설정됨. Docker 서비스 자동 시작 확인 필요 (`systemctl enable docker`)
+- **Metashape 라이센스**: 정상 종료 시 자동 비활성화 (`stop_signal: SIGTERM`). 강제 종료 시 수동 비활성화 필요
 
 실제 데이터를 사용하여 플랫폼을 테스트하는 방법은 다음과 같습니다.
 

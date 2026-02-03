@@ -281,13 +281,13 @@ export default function DashboardView({
                 }));
                 setMonthlyData(transformedMonthly);
 
-                // Transform regional data for charts (경기권역 제외)
-                const transformedRegional = regionalRes.data
-                    .filter(item => item.region !== '경기권역')
-                    .map(item => ({
-                        name: item.region,
-                        value: item.percentage
-                    }));
+                // Transform regional data for charts (경기 관련 권역 제외 + 퍼센트 재계산)
+                const filteredRegions = regionalRes.data.filter(item => !item.region.includes('경기'));
+                const filteredTotal = filteredRegions.reduce((sum, item) => sum + item.count, 0);
+                const transformedRegional = filteredRegions.map(item => ({
+                    name: item.region,
+                    value: filteredTotal > 0 ? Math.round((item.count / filteredTotal) * 100) : 0
+                }));
                 setRegionalData(transformedRegional);
             } catch (error) {
                 console.error('Failed to fetch statistics:', error);

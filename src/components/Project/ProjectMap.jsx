@@ -4,7 +4,7 @@ import L from 'leaflet';
 import { Loader2, Camera, Layers, X } from 'lucide-react';
 import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
 
-function FitBounds({ images }) {
+function FitBounds({ images, projectId }) {
     const map = useMap();
     useEffect(() => {
         if (images && images.length > 0) {
@@ -13,7 +13,7 @@ function FitBounds({ images }) {
                 map.fitBounds(bounds, { padding: [50, 50] });
             }
         }
-    }, [images, map]);
+    }, [images, map, projectId]); // Add projectId to re-trigger on project change
     return null;
 }
 
@@ -71,7 +71,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
 
                 <RegionBoundaryLayer visible={true} interactive={!isProcessingMode} />
 
-                {images.length > 0 && <FitBounds images={images} />}
+                {images.length > 0 && <FitBounds images={images} projectId={project?.id} />}
 
                 {images.map(img => (
                     <CircleMarker

@@ -26,12 +26,16 @@ services:
       args:
         - VITE_API_URL=
         - VITE_TUS_URL=/files/
+        - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-false}
+        - VITE_TILE_URL=${VITE_TILE_URL:-}
     ports:
       - "3000:80"
       - "3001:5173" # Vite dev port
     environment:
       - VITE_API_URL=
       - VITE_TUS_URL=/files/
+      - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-false}
+      - VITE_TILE_URL=${VITE_TILE_URL:-}
     volumes:
       - .:/app
       - /app/node_modules
@@ -161,7 +165,7 @@ services:
       context: .
       dockerfile: engines/metashape/Dockerfile
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-metashape@%h
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info --concurrency=4 -n worker-metashape@%h
     restart: always
     # 라이센스 비활성화를 위한 graceful shutdown 설정
     stop_signal: SIGTERM
@@ -310,6 +314,11 @@ services:
       - AWS_VIRTUAL_HOSTING=FALSE
       - AWS_HTTPS=NO
       - AWS_NO_SIGN_REQUEST=NO
+      # GDAL performance optimization
+      - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+      - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.TIF,.tiff
+      - VSI_CACHE=TRUE
+      - VSI_CACHE_SIZE=50000000
     depends_on:
       - minio
     networks:

@@ -109,29 +109,49 @@ class StorageService:
         response_headers: Optional[dict] = None,
     ) -> str:
         """
-        Generate a presigned URL for downloading.
-        
-        Uses the presigned_client which is configured with the PUBLIC endpoint.
-        This ensures the AWS S3 V4 signature is generated with the correct Host header.
-        
+        Generate a URL for downloading.
+
+        For public paths (projects/), returns a simple public URL via direct MinIO access.
+        For private paths, generates a presigned URL via nginx proxy.
+
         Args:
             object_name: Object name/key in storage
             expires: Expiration time in seconds
             response_headers: Optional response headers to include
-        
+
         Returns:
-            Presigned URL accessible from browser
+            URL accessible from browser
         """
-        # Use presigned_client which is configured with MINIO_PUBLIC_ENDPOINT
-        url = self.presigned_client.presigned_get_object(
+        protocol = "https" if settings.MINIO_SECURE else "http"
+
+        # Objects under projects/ are publicly accessible (bucket policy set)
+        # Use direct MinIO access (port 9002) to avoid signature issues
+        if object_name.startswith("projects/"):
+            # MINIO_PUBLIC_ENDPOINT is for nginx proxy (uploads)
+            # For direct public access, use the same host but port 9002
+            public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
+            # Extract host from endpoint and use direct MinIO port
+            host = public_endpoint.split(':')[0]
+            direct_endpoint = f"{host}:9002"
+            return f"{protocol}://{direct_endpoint}/{self.bucket}/{object_name}"
+
+        # For private objects, generate presigned URL via nginx proxy
+        public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
+
+        # For private objects, generate presigned URL using internal client
+        url = self.client.presigned_get_object(
             self.bucket,
             object_name,
             expires=timedelta(seconds=expires),
             response_headers=response_headers,
         )
-        
-        print(f"[STORAGE] Presigned URL generated with endpoint: {settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT}")
-        
+
+        # Replace internal endpoint with public endpoint for browser access
+        if public_endpoint and public_endpoint != settings.MINIO_ENDPOINT:
+            internal_endpoint = settings.MINIO_ENDPOINT
+            url = url.replace(f"http://{internal_endpoint}", f"{protocol}://{public_endpoint}")
+            url = url.replace(f"https://{internal_endpoint}", f"{protocol}://{public_endpoint}")
+
         return url
     
     def get_presigned_upload_url(

@@ -705,3 +705,282 @@ s3://aerial-survey/projects/{project_id}/ortho/result_cog.tif
 | `nginx.conf` | `/titiler/` 프록시 및 CORS |
 | `backend/app/api/v1/download.py` | COG URL 반환 API |
 | `src/components/Dashboard/FootprintMap.jsx` | TiTiler 타일 레이어 |
+
+### 6. GDAL 환경변수 (2026-02-03 업데이트)
+
+TiTiler의 GDAL 성능 최적화를 위해 다음 환경변수가 추가되었습니다:
+
+```yaml
+# docker-compose.yml - titiler 서비스
+environment:
+  # 기존 설정
+  - AWS_S3_ENDPOINT=minio:9000        # http:// 없이!
+  - AWS_VIRTUAL_HOSTING=FALSE
+  - AWS_HTTPS=NO
+  # 추가된 GDAL 최적화 설정
+  - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR  # 불필요한 디렉토리 리스팅 방지
+  - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.TIF,.tiff  # TIFF 파일만 허용
+  - VSI_CACHE=TRUE                    # 캐시 활성화
+  - VSI_CACHE_SIZE=50000000           # 50MB 캐시
+```
+
+> ⚠️ `AWS_S3_ENDPOINT`에 `http://` 프로토콜을 포함하면 "Could not resolve host: http" 오류가 발생합니다.
+
+---
+
+## 🔄 배포 PC 재부팅 시 자동 시작 (2026-02-03)
+
+### 1. Docker 컨테이너 자동 재시작
+
+모든 주요 서비스에 `restart: always` 정책이 설정되어 있습니다:
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    restart: always
+  worker-metashape:
+    restart: always
+  nginx:
+    restart: always
+  # ... 기타 서비스
+```
+
+### 2. Docker 서비스 자동 시작 확인
+
+시스템 재부팅 시 Docker 서비스가 자동으로 시작되어야 합니다:
+
+```bash
+# Docker 서비스 자동 시작 활성화
+sudo systemctl enable docker
+sudo systemctl enable containerd
+
+# 상태 확인
+sudo systemctl is-enabled docker
+```
+
+### 3. 재부팅 후 확인 명령
+
+```bash
+# 모든 컨테이너 실행 상태 확인
+docker ps
+
+# 특정 서비스 로그 확인
+docker compose logs -f worker-metashape --tail=50
+```
+
+---
+
+## 🔒 Metashape 라이센스 자동 비활성화 (2026-02-03)
+
+### 1. Graceful Shutdown 설정
+
+컨테이너 종료 시 Metashape 라이센스를 자동으로 비활성화하기 위한 설정:
+
+```yaml
+# docker-compose.yml - worker-metashape 서비스
+worker-metashape:
+  stop_signal: SIGTERM           # 종료 시그널
+  stop_grace_period: 60s         # 종료 대기 시간 (60초)
+```
+
+### 2. 동작 원리
+
+1. `docker compose stop` 또는 `docker compose down` 실행
+2. 컨테이너에 SIGTERM 시그널 전송
+3. 엔트리포인트 스크립트에서 SIGTERM 핸들러 실행
+4. `deactivate.py` 호출하여 라이센스 비활성화
+5. 60초 이내에 완료되지 않으면 강제 종료 (SIGKILL)
+
+### 3. 수동 비활성화
+
+필요 시 수동으로 라이센스를 비활성화할 수 있습니다:
+
+```bash
+docker compose exec worker-metashape python3 /app/engines/metashape/dags/metashape/deactivate.py
+```
+
+### 4. 로그 확인
+
+종료 시 라이센스 비활성화 로그 확인:
+
+```bash
+docker compose logs worker-metashape | grep -i "deactivat"
+```
+
+### 5. 주의사항
+
+- **SIGKILL 종료 시 비활성화 안됨**: `docker kill` 명령이나 시스템 강제 종료 시 라이센스가 비활성화되지 않습니다
+- **정상 종료 권장**: 항상 `docker compose stop` 또는 `docker compose down` 사용
+- **시스템 종료**: 리눅스 시스템의 정상 종료 (`shutdown`, `reboot`)는 SIGTERM을 전송하므로 안전합니다
+
+---
+
+## 🗺️ 오프라인 타일맵 설정 (2026-02-03)
+
+### 1. 환경변수 설정
+
+오프라인 타일맵을 사용하려면 `.env` 파일에서 다음을 설정합니다:
+
+```bash
+# .env
+VITE_MAP_OFFLINE=true
+VITE_TILE_URL=/tiles/{z}/{x}/{y}.png
+TILES_PATH=/path/to/your/tiles   # 호스트의 타일 디렉토리
+```
+
+### 2. 타일 디렉토리 구조
+
+타일은 `z/x/y.png` 형식이어야 합니다:
+
+```
+/path/to/tiles/
+├── 5/
+│   ├── 27/
+│   │   └── 12.png
+│   └── 28/
+│       └── 12.png
+├── 6/
+│   └── ...
+└── 15/
+    └── ...
+```
+
+### 3. Docker Compose 설정
+
+```yaml
+# docker-compose.yml
+nginx:
+  volumes:
+    - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
+```
+
+### 4. Nginx 설정
+
+```nginx
+# nginx.conf
+location /tiles/ {
+    alias /data/tiles/;
+    expires 30d;
+    add_header Cache-Control "public, immutable";
+    add_header Access-Control-Allow-Origin "*";
+    try_files $uri =404;
+}
+```
+
+### 5. 온라인/오프라인 전환
+
+| VITE_MAP_OFFLINE | 동작 |
+|------------------|------|
+| `false` (기본값) | OpenStreetMap 온라인 타일 사용 |
+| `true` | 로컬 `/tiles/` 경로에서 타일 로드 |
+
+### 6. 프론트엔드 빌드 필요
+
+환경변수 변경 후 프론트엔드를 재빌드해야 합니다:
+
+```bash
+docker compose up -d --build frontend
+```
+
+### 7. 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `src/config/mapConfig.js` | 타일 설정 로직 |
+| `Dockerfile.frontend` | VITE_MAP_OFFLINE 빌드 인자 |
+| `nginx.conf` | `/tiles/` 라우팅 |
+
+---
+
+## 📷 카메라 모델 확장 필드 (2026-02-03)
+
+### 1. 새로 추가된 필드
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `ppa_x` | Float | 주점 X 오프셋 (mm) |
+| `ppa_y` | Float | 주점 Y 오프셋 (mm) |
+| `sensor_width_px` | Integer | 이미지 가로 픽셀 수 |
+| `sensor_height_px` | Integer | 이미지 세로 픽셀 수 |
+
+### 2. 사용 위치
+
+- **카메라 모델 추가 폼**: 업로드 위자드 3단계에서 입력
+- **카메라 정보 표시**: 처리 옵션 사이드바의 IO 패널
+- **API 응답**: `/api/v1/camera-models` 엔드포인트
+
+### 3. 기존 데이터 마이그레이션
+
+기존 카메라 모델에 새 필드가 없으면 기본값(0 또는 null)으로 표시됩니다.
+필요시 DB에서 직접 업데이트:
+
+```bash
+docker compose exec db psql -U postgres -d aerial_survey -c \
+  "UPDATE camera_models SET ppa_x = 0, ppa_y = 0, sensor_width_px = 17310, sensor_height_px = 11310 WHERE name = 'UltraCam Eagle';"
+```
+
+---
+
+## 📤 스토리지 엔드포인트 분리 (2026-02-03)
+
+### 1. 아키텍처 변경
+
+업로드와 다운로드가 서로 다른 엔드포인트를 사용합니다:
+
+| 용도 | 엔드포인트 | 포트 | 경로 |
+|------|----------|------|------|
+| 업로드 (S3 Multipart) | nginx 프록시 | 8081 | `/storage/` |
+| 다운로드 (썸네일, projects/) | 직접 MinIO | 9002 | 없음 (직접 접근) |
+
+### 2. 환경변수 설정
+
+```bash
+# .env
+# 업로드용 nginx 프록시 주소
+MINIO_PUBLIC_ENDPOINT=192.168.10.203:8081
+```
+
+### 3. storage.py 로직
+
+```python
+def get_presigned_url(self, object_name, ...):
+    # projects/ 경로: 직접 MinIO 접근 (port 9002)
+    if object_name.startswith("projects/"):
+        host = public_endpoint.split(':')[0]
+        return f"http://{host}:9002/{bucket}/{object_name}"
+
+    # 그 외: nginx 프록시 presigned URL
+    return presigned_url_via_nginx
+```
+
+### 4. 왜 분리했나?
+
+1. **업로드**: nginx의 `/storage/` 프록시 필요 (path rewriting, CORS)
+2. **다운로드 (public)**: presigned URL signature 문제 회피
+   - S3 V4 서명은 Host 헤더를 포함하므로, nginx 프록시와 MinIO 직접 접근 시 서명 불일치 발생
+   - `projects/` 버킷 정책을 public으로 설정하고 직접 접근하면 서명 불필요
+
+### 5. 트러블슈팅
+
+#### 증상: 업로드 실패 (ERR_CONNECTION_RESET)
+```
+PUT http://192.168.10.203:9002/storage/aerial-survey/... net::ERR_CONNECTION_RESET
+```
+
+**원인**: MINIO_PUBLIC_ENDPOINT가 9002로 설정되어 nginx 프록시를 거치지 않음
+
+**해결**:
+```bash
+# .env
+MINIO_PUBLIC_ENDPOINT=192.168.10.203:8081
+
+# API 컨테이너 재생성
+docker compose up -d --force-recreate api
+```
+
+#### 증상: 썸네일 403 Forbidden
+```
+원인: presigned URL 서명 불일치
+해결: storage.py에서 projects/ 경로는 직접 MinIO 접근 (이미 적용됨)
+```

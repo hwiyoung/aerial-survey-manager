@@ -155,6 +155,9 @@ class CameraModelResponse(CameraModelBase):
     """Camera model response schema."""
     id: UUID
     is_custom: bool
+    # Sensor size in pixels (image dimensions)
+    sensor_width_px: Optional[int] = None  # pixels
+    sensor_height_px: Optional[int] = None  # pixels
     # PPA (Principal Point of Autocollimation) offset
     ppa_x: Optional[float] = None  # mm
     ppa_y: Optional[float] = None  # mm

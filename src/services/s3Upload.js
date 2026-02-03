@@ -26,14 +26,15 @@ export class S3MultipartUploader {
         onError,
         concurrency = 6,      // Files in parallel
         partConcurrency = 4,  // Parts per file in parallel
-        partSize = 10 * 1024 * 1024  // 10MB
+        partSize = 10 * 1024 * 1024,  // 10MB
+        cameraModelName = null  // Camera model to link to images
     } = {}) {
         const abortController = { aborted: false };
         const fileArray = Array.from(files);
 
         try {
             // 1. Initialize all uploads at once (batch API call)
-            const initResponse = await this.initMultipartUploads(projectId, fileArray, partSize);
+            const initResponse = await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelName);
 
             if (!initResponse.uploads || initResponse.uploads.length === 0) {
                 throw new Error('Failed to initialize uploads');
@@ -241,21 +242,27 @@ export class S3MultipartUploader {
     /**
      * Initialize multipart uploads via backend API
      */
-    async initMultipartUploads(projectId, files, partSize) {
+    async initMultipartUploads(projectId, files, partSize, cameraModelName = null) {
+        const body = {
+            files: files.map(f => ({
+                filename: f.name,
+                size: f.size,
+                content_type: f.type || 'application/octet-stream'
+            })),
+            part_size: partSize
+        };
+
+        if (cameraModelName) {
+            body.camera_model_name = cameraModelName;
+        }
+
         const response = await fetch(`${API_BASE}/upload/projects/${projectId}/multipart/init`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${this.authToken}`
             },
-            body: JSON.stringify({
-                files: files.map(f => ({
-                    filename: f.name,
-                    size: f.size,
-                    content_type: f.type || 'application/octet-stream'
-                })),
-                part_size: partSize
-            })
+            body: JSON.stringify(body)
         });
 
         if (!response.ok) {

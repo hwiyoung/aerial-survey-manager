@@ -31,7 +31,8 @@ celery_app.conf.update(
         "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
         "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
         "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
-        "app.workers.tasks.generate_thumbnail": {"queue": "odm"},  # lightweight task, use ODM queue
+        "app.workers.tasks.generate_thumbnail": {"queue": "metashape"},  # Use metashape queue (ODM worker is disabled)
+        "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "metashape"},  # Use metashape queue
     },
 )
 
@@ -405,6 +406,8 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
         force: If True, regenerate even if thumbnail already exists
     """
     from PIL import Image as PILImage
+    # Increase limit for large aerial images (e.g., UltraCam Eagle: 17310x11310 = 195MP)
+    PILImage.MAX_IMAGE_PIXELS = 300000000  # 300 megapixels
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from app.models.project import Image

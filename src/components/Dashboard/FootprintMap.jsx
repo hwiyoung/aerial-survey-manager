@@ -762,7 +762,7 @@ export function FootprintMap({
                             <TileLayer
                                 attribution={tileConfig.attribution}
                                 url={tileConfig.url}
-                                subdomains={tileConfig.subdomains}
+                                {...(tileConfig.subdomains ? { subdomains: tileConfig.subdomains } : {})}
                                 maxZoom={MAP_CONFIG.maxZoom}
                                 minZoom={MAP_CONFIG.minZoom}
                             />

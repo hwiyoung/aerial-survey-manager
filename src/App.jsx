@@ -33,7 +33,7 @@ import DashboardView from './components/Dashboard/DashboardView';
 
 
 // --- 1. CONSTANTS ---
-const REGIONS = ['경기 권역', '충청 권역', '강원 권역', '전라 권역', '경상 권역'];
+const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역', '제주 권역'];
 const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
 
 // Status mapping for display
@@ -379,6 +379,12 @@ function Dashboard() {
   }, [activeProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
+
+  // Reset selected image when project changes or when leaving processing mode
+  useEffect(() => {
+    setSelectedImageId(null);
+  }, [selectedProjectId, viewMode]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
   const [sidebarWidth, setSidebarWidth] = useState(800);
@@ -419,6 +425,7 @@ function Dashboard() {
       setViewMode('dashboard');
       setProcessingProject(null);
       setSelectedProjectId(null);
+      setSelectedImageId(null);
       setShowInspector(false);
       setHighlightProjectId(null);
       // 업로드는 유지 (글로벌 업로드)
@@ -682,6 +689,7 @@ function Dashboard() {
           concurrency: 6,
           partConcurrency: 4,
           partSize: 10 * 1024 * 1024, // 10MB parts
+          cameraModelName: cameraModel, // Link images to camera model
           onFileProgress: (idx, name, progress) => {
             setUploadsByProject(prev => {
               const projectUploads = prev[projectId] || [];
