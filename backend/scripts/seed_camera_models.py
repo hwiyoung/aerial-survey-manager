@@ -102,6 +102,15 @@ def parse_io_csv(file_path: str) -> List[Dict[str, Any]]:
                         except ValueError:
                             pass
 
+                elif '$PRINCIPAL_POINT_AUTOCOLLIMATION:' in field or (len(parts) > 1 and '$PRINCIPAL_POINT_AUTOCOLLIMATION:' in parts[1]):
+                    idx = 2 if '$PRINCIPAL_POINT_AUTOCOLLIMATION:' in parts[1] else 1
+                    if len(parts) > idx + 1:
+                        try:
+                            current_camera['ppa_x'] = float(parts[idx])
+                            current_camera['ppa_y'] = float(parts[idx + 1])
+                        except ValueError:
+                            pass
+
     return cameras
 
 
@@ -144,6 +153,8 @@ def create_camera_entries(cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 'sensor_width': camera.get('sensor_width'),
                 'sensor_height': camera.get('sensor_height'),
                 'pixel_size': camera.get('pixel_size'),
+                'ppa_x': camera.get('ppa_x'),
+                'ppa_y': camera.get('ppa_y'),
                 'is_custom': False
             })
 
@@ -191,6 +202,8 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False):
                 sensor_width=entry['sensor_width'],
                 sensor_height=entry['sensor_height'],
                 pixel_size=entry['pixel_size'],
+                ppa_x=entry.get('ppa_x'),
+                ppa_y=entry.get('ppa_y'),
                 is_custom=entry['is_custom'],
                 organization_id=None
             )
