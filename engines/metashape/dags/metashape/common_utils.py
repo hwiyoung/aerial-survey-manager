@@ -119,7 +119,9 @@ def check_success(output_path):
         return False
 
     # 99% 이상이면 완료로 간주 (Metashape가 99.9%로 끝나는 경우 대응)
-    incomplete = {k: v for k, v in state.items() if v < 99}
+    # result_gsd는 GSD 값이므로 진행률 체크에서 제외
+    progress_keys = [k for k in state.keys() if k != 'result_gsd']
+    incomplete = {k: v for k, v in state.items() if k in progress_keys and v < 99}
 
     if incomplete:
         print(f"⚠️ 일부 작업이 아직 완료되지 않았습니다: {incomplete}")
