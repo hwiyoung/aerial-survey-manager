@@ -82,8 +82,13 @@ class ImageResponse(ImageBase):
     has_error: bool = False
     upload_status: str = "pending"
     created_at: datetime
-    exterior_orientation: Optional["EOData"] = None  # Renamed from eo to avoid confusion? No, relationship is exterior_orientation
-    
+    # Image dimensions
+    image_width: Optional[int] = None  # pixels
+    image_height: Optional[int] = None  # pixels
+    # Camera model reference
+    camera_model: Optional["CameraModelResponse"] = None
+    exterior_orientation: Optional["EOData"] = None
+
     class Config:
         from_attributes = True
 
@@ -150,7 +155,10 @@ class CameraModelResponse(CameraModelBase):
     """Camera model response schema."""
     id: UUID
     is_custom: bool
-    
+    # PPA (Principal Point of Autocollimation) offset
+    ppa_x: Optional[float] = None  # mm
+    ppa_y: Optional[float] = None  # mm
+
     class Config:
         from_attributes = True
 

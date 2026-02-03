@@ -599,31 +599,56 @@ function Dashboard() {
         console.log('Uploading EO data...');
         try {
           await api.uploadEoData(created.id, eoFile, eoConfig);
-          // Wait briefly (500ms) for DB commit and fetch real images
-          await new Promise(resolve => setTimeout(resolve, 500));
-          const fetchedImages = await api.getProjectImages(created.id);
-          if (fetchedImages && fetchedImages.length > 0) {
-            const points = fetchedImages.map(img => {
-              const eo = img.exterior_orientation;
-              return {
-                id: img.id,
-                name: img.filename,
-                // If EO exists, use it. Otherwise 0
-                wx: eo ? eo.x : 0,
-                wy: eo ? eo.y : 0,
-                z: eo ? eo.z : null,
-                omega: eo ? eo.omega : null,
-                phi: eo ? eo.phi : null,
-                kappa: eo ? eo.kappa : null,
-                hasEo: !!eo,
-                thumbnail_url: img.thumbnail_url || null,
-                file_size: img.file_size || null,
-                thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
-              };
-            });
-            imagesToUse = points.filter(p => p.hasEo);
-            setProjectImages(imagesToUse); // Update global state for map
+
+          // Retry fetching images with EO data (with exponential backoff)
+          const maxRetries = 5;
+          const baseDelay = 800; // Start with 800ms delay
+
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const delay = baseDelay * attempt; // 800, 1600, 2400, 3200, 4000ms
+            console.log(`Fetching images (attempt ${attempt}/${maxRetries}) after ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            const fetchedImages = await api.getProjectImages(created.id);
+            if (fetchedImages && fetchedImages.length > 0) {
+              const points = fetchedImages.map(img => {
+                const eo = img.exterior_orientation;
+                return {
+                  id: img.id,
+                  name: img.filename,
+                  // If EO exists, use it. Otherwise 0
+                  wx: eo ? eo.x : 0,
+                  wy: eo ? eo.y : 0,
+                  z: eo ? eo.z : null,
+                  omega: eo ? eo.omega : null,
+                  phi: eo ? eo.phi : null,
+                  kappa: eo ? eo.kappa : null,
+                  hasEo: !!eo,
+                  thumbnail_url: img.thumbnail_url || null,
+                  file_size: img.file_size || null,
+                  thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
+                };
+              });
+
+              const imagesWithEo = points.filter(p => p.hasEo);
+
+              // If we have images with EO data, use them and break
+              if (imagesWithEo.length > 0) {
+                console.log(`Found ${imagesWithEo.length} images with EO data`);
+                imagesToUse = imagesWithEo;
+                setProjectImages(imagesToUse); // Update global state for map
+                break;
+              }
+
+              // If no EO data yet but this is last attempt, use all images
+              if (attempt === maxRetries) {
+                console.warn('No EO data found after all retries, using images without EO');
+                imagesToUse = points;
+                setProjectImages(imagesToUse);
+              }
+            }
           }
+
           alert("EO data uploaded successfully.");
         } catch (e) {
           console.error(e);
@@ -683,16 +708,52 @@ function Dashboard() {
               }
               return { ...prev, [projectId]: next };
             });
+
+            // Update processing project's completed count
+            setProcessingProject(prev => {
+              if (prev && prev.id === projectId) {
+                const currentCompleted = (prev.upload_completed_count || 0) + 1;
+                return {
+                  ...prev,
+                  upload_completed_count: currentCompleted
+                };
+              }
+              return prev;
+            });
           },
           onAllComplete: async () => {
             console.log(`All uploads finished for project ${projectId}`);
+
+            // Mark all uploads as completed to enable processing button
+            setUploadsByProject(prev => {
+              const projectUploads = prev[projectId] || [];
+              const allCompleted = projectUploads.map(u => ({
+                ...u,
+                status: 'completed',
+                progress: 100
+              }));
+              return { ...prev, [projectId]: allCompleted };
+            });
+
+            // Update processing project with completed upload count
+            setProcessingProject(prev => {
+              if (prev && prev.id === projectId) {
+                return {
+                  ...prev,
+                  upload_completed_count: files.length,
+                  upload_in_progress: false
+                };
+              }
+              return prev;
+            });
+
             // 해당 프로젝트의 컨트롤러만 제거
             setUploaderControllers(prev => {
               const { [projectId]: _, ...rest } = prev;
               return rest;
             });
 
-            // 썸네일 생성 대기
+            // 썸네일 생성 대기 및 프로젝트 목록 갱신
             const attempts = 8;
             const intervalMs = 4000;
             for (let i = 1; i <= attempts; i += 1) {
@@ -701,6 +762,9 @@ function Dashboard() {
                 setImageRefreshKey(prev => prev + 1);
               }, delay);
             }
+
+            // Refresh project list after uploads complete
+            await refreshProjects();
           },
           onError: (idx, name, err) => {
             console.error(`Failed ${name}`, err);
@@ -722,13 +786,18 @@ function Dashboard() {
       }
 
       // 5. Update UI State (Switch to Processing View immediately)
+      const hasFilesToUpload = files && files.length > 0;
       const projectForProcessing = {
         ...created,
         status: '대기',
         imageCount: files?.length || 0,
+        image_count: files?.length || 0,
         images: imagesToUse, // Use real images if fetched, else placeholders
         bounds: { x: 30, y: 30, w: 40, h: 40 },
-        cameraModel: cameraModel
+        cameraModel: cameraModel,
+        // Upload tracking
+        upload_in_progress: hasFilesToUpload, // Will be set to false when uploads complete
+        upload_completed_count: hasFilesToUpload ? 0 : (files?.length || 0), // 0 initially, updated as uploads complete
       };
 
       setProcessingProject(projectForProcessing);

@@ -209,11 +209,14 @@ async def list_project_images(
         )
 
     from sqlalchemy.orm import joinedload
-    from app.models.project import ExteriorOrientation
+    from app.models.project import ExteriorOrientation, CameraModel
 
     result = await db.execute(
         select(Image)
-        .options(joinedload(Image.exterior_orientation))
+        .options(
+            joinedload(Image.exterior_orientation),
+            joinedload(Image.camera_model)
+        )
         .where(Image.project_id == project_id)
         .order_by(Image.created_at)
     )
@@ -243,6 +246,11 @@ async def list_project_images(
             "has_error": img.has_error,
             "upload_status": img.upload_status,
             "created_at": img.created_at,
+            # Image dimensions
+            "image_width": img.image_width,
+            "image_height": img.image_height,
+            # Camera model
+            "camera_model": img.camera_model,
             "exterior_orientation": img.exterior_orientation,
         }
         response.append(ImageResponse.model_validate(img_dict))

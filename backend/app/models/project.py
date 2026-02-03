@@ -64,9 +64,9 @@ class Project(Base):
 
 class Image(Base):
     """Aerial/Drone image model."""
-    
+
     __tablename__ = "images"
-    
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -81,16 +81,26 @@ class Image(Base):
     file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     has_error: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    
+
+    # Image dimensions
+    image_width: Mapped[int | None] = mapped_column(Integer, nullable=True)  # pixels
+    image_height: Mapped[int | None] = mapped_column(Integer, nullable=True)  # pixels
+
+    # Camera model reference
+    camera_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("camera_models.id"), nullable=True
+    )
+
     # Upload tracking (tus)
     upload_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     upload_status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, uploading, completed
-    
+
     # Spatial data (PostGIS)
     location = mapped_column(Geometry("POINT", srid=4326), nullable=True)
-    
+
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="images")
+    camera_model: Mapped["CameraModel | None"] = relationship("CameraModel")
     exterior_orientation: Mapped["ExteriorOrientation"] = relationship(
         "ExteriorOrientation", back_populates="image", uselist=False, cascade="all, delete-orphan"
     )
@@ -124,9 +134,9 @@ class ExteriorOrientation(Base):
 
 class CameraModel(Base):
     """Camera model/Interior Orientation parameters."""
-    
+
     __tablename__ = "camera_models"
-    
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -135,6 +145,9 @@ class CameraModel(Base):
     sensor_width: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
     sensor_height: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
     pixel_size: Mapped[float | None] = mapped_column(Float, nullable=True)  # µm
+    # PPA (Principal Point of Autocollimation) offset from image center
+    ppa_x: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
+    ppa_y: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
     is_custom: Mapped[bool] = mapped_column(Boolean, default=False)
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True

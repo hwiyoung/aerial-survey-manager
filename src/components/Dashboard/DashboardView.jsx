@@ -103,10 +103,10 @@ function StatsSummary({ stats, isCompact = false }) {
                 {/* 총 원본 사진 */}
                 <DashboardStatsCard
                     icon={<Camera size={18} />}
-                    value={stats.photoCount?.toLocaleString() || '7,305'}
+                    value={(stats.photoCount ?? 0).toLocaleString()}
                     unit="장"
                     label="총 원본 사진"
-                    subLabel={`평균 ${stats.avgPhotos || 292}장 / 블록`}
+                    subLabel={stats.total > 0 ? `평균 ${stats.avgPhotos}장 / 블록` : '프로젝트 없음'}
                 />
             </div>
         </div>
@@ -281,11 +281,13 @@ export default function DashboardView({
                 }));
                 setMonthlyData(transformedMonthly);
 
-                // Transform regional data for charts
-                const transformedRegional = regionalRes.data.map(item => ({
-                    name: item.region,
-                    value: item.percentage
-                }));
+                // Transform regional data for charts (경기권역 제외)
+                const transformedRegional = regionalRes.data
+                    .filter(item => item.region !== '경기권역')
+                    .map(item => ({
+                        name: item.region,
+                        value: item.percentage
+                    }));
                 setRegionalData(transformedRegional);
             } catch (error) {
                 console.error('Failed to fetch statistics:', error);
