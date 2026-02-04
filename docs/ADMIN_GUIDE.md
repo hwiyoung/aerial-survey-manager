@@ -616,7 +616,7 @@ $END_CAMERA
 
 ---
 
-## ⚙️ 처리 엔진 설정 (2026-02-02)
+## ⚙️ 처리 엔진 설정 (2026-02-04 업데이트)
 
 ### 1. Metashape 전용 모드
 
@@ -625,6 +625,58 @@ $END_CAMERA
 - ODM, External 엔진은 `docker-compose.yml`에서 주석 처리됨
 - 프론트엔드 처리 옵션에서 엔진 선택 UI 제거됨
 - 기본 엔진: `metashape`
+
+### 2. 처리 프리셋 (2026-02-04)
+
+시스템 기본 프리셋이 간소화되었습니다:
+
+| 프리셋 이름 | 처리 모드 | GSD | 설명 |
+|------------|----------|-----|------|
+| **정밀 처리** | Normal | 5cm | 일반적인 정사영상 생성 (기본값) |
+| **고속 처리** | Preview | 10cm | 빠른 처리용 저해상도 설정 |
+
+> ⚠️ **변경사항**: "표준 정사영상"→"정밀 처리", "빠른 미리보기"→"고속 처리"로 이름 변경, "고해상도 정사영상" 프리셋 제거
+
+### 3. 출력 좌표계 설정 (2026-02-04)
+
+정사영상 생성 시 **출력 좌표계가 입력 좌표계와 동일하게** 설정됩니다:
+
+- 이전: 프리셋에서 지정한 `output_crs` (예: EPSG:5186) 사용
+- 현재: 프로젝트에 설정된 입력 좌표계 (`chunk.crs`) 그대로 사용
+- EO 파일에서 EPSG가 감지되면 해당 좌표계로 자동 설정됨
+
+**관련 파일**: `engines/metashape/dags/metashape/build_orthomosaic.py`
+
+```python
+# 출력 좌표계를 프로젝트에 설정된 입력 좌표계와 동일하게 사용
+proj = Metashape.OrthoProjection()
+proj.crs = chunk.crs
+```
+
+### 4. COG 생성 시 원본 GSD 유지 (2026-02-04)
+
+COG(Cloud Optimized GeoTIFF) 변환 시 **원본 정사영상의 GSD가 유지**됩니다:
+
+- 이전: `TILING_SCHEME=GoogleMapsCompatible` 옵션으로 인해 GSD가 Google Maps 타일 스킴에 맞게 변경됨
+- 현재: 해당 옵션 제거, 원본 해상도 유지
+
+**관련 파일**: `backend/app/workers/tasks.py`
+
+```python
+# COG 변환 명령 (원본 GSD 유지)
+gdal_cmd = [
+    "gdal_translate",
+    "-of", "COG",
+    "-co", "COMPRESS=LZW",
+    "-co", "BLOCKSIZE=256",
+    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+    "-co", "BIGTIFF=YES",
+    str(result_path),
+    str(cog_path)
+]
+```
+
+> 💡 **참고**: Metashape에서 내보낸 `result.tif`는 타일링과 오버뷰가 포함되어 있지만, 완전한 COG 표준은 아닙니다. `gdal_translate`로 변환하여 HTTP Range Request에 최적화된 COG를 생성합니다.
 
 ### 2. 비활성화된 서비스
 

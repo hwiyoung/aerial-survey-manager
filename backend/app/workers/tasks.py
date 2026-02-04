@@ -263,12 +263,14 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             try:
                 import subprocess
                 # Use GDAL to create COG with proper tiling and overviews
+                # Note: TILING_SCHEME 제거하여 원본 GSD 유지
                 gdal_cmd = [
                     "gdal_translate",
                     "-of", "COG",
                     "-co", "COMPRESS=LZW",
-                    "-co", "TILING_SCHEME=GoogleMapsCompatible",
+                    "-co", "BLOCKSIZE=256",
                     "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+                    "-co", "BIGTIFF=YES",
                     str(result_path),
                     str(cog_path)
                 ]

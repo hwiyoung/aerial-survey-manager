@@ -7,7 +7,7 @@ from common_utils import progress_callback, change_task_status_in_ortho, save_re
 def build_orthomosaic( output_path, run_id, input_epsg="4326", ):
     """
     Generate an orthophoto and other outputs with progress tracking and refined seamlines.
-    
+
     Parameters:
       input_images (list): List of image file paths.
       output_path (str): Base path to save the generated outputs.
@@ -15,18 +15,22 @@ def build_orthomosaic( output_path, run_id, input_epsg="4326", ):
     """
     def progress_callback_wrapper(value):
         progress_callback(value, task_name, output_path)
-    proj = Metashape.OrthoProjection()
-    proj.crs = Metashape.CoordinateSystem(f"EPSG::{input_epsg}")
+
     doc = Metashape.Document()
     doc.open(output_path + '/project.psx')
+    chunk = doc.chunk
+
+    # 출력 좌표계를 프로젝트에 설정된 입력 좌표계와 동일하게 사용
+    proj = Metashape.OrthoProjection()
+    proj.crs = chunk.crs
+    print(f"ℹ️ 출력 좌표계: {chunk.crs} (입력 좌표계와 동일)")
     
-        # --- Step 6: Build Orthomosaic & Refine Seamlines ---
+    # --- Step 6: Build Orthomosaic & Refine Seamlines ---
     try:
         print("🛠 Building orthomosaic...")
         key = "main/enable_refine_roof_edges"
         Metashape.app.settings.setValue(key, True)
         task_name = "Build Orthomosaic"
-        chunk = doc.chunk
         chunk.buildOrthomosaic(
             surface_data=Metashape.DataSource.ElevationData,
             refine_seamlines = False,

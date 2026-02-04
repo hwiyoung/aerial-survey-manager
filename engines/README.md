@@ -30,5 +30,56 @@
 - 활성화하려면 `EXPORT_GSD_COPY=true` 환경변수를 설정하세요.
 - 활성화 시 `result.tif_1_78cm.tif` 같은 GSD 표기 복사본이 생성됩니다.
 
+## Metashape 출력 좌표계 (2026-02-04)
+
+정사영상 생성 시 **출력 좌표계가 입력 좌표계와 동일하게** 자동 설정됩니다.
+
+### 동작 방식
+
+1. `align_photos.py`에서 EO reference 파일의 EPSG를 감지하여 `chunk.crs` 설정
+2. `build_orthomosaic.py`에서 프로젝트의 `chunk.crs`를 그대로 사용하여 정사영상 내보내기
+3. 별도의 `output_crs` 프리셋 설정 없이 입력 데이터의 좌표계 유지
+
+### 관련 코드
+
+```python
+# build_orthomosaic.py
+doc = Metashape.Document()
+doc.open(output_path + '/project.psx')
+chunk = doc.chunk
+
+# 출력 좌표계를 프로젝트에 설정된 입력 좌표계와 동일하게 사용
+proj = Metashape.OrthoProjection()
+proj.crs = chunk.crs
+print(f"출력 좌표계: {chunk.crs} (입력 좌표계와 동일)")
+```
+
+### 이점
+
+- **좌표 변환 오류 방지**: 입력/출력 좌표계 불일치로 인한 정밀도 손실 없음
+- **설정 간소화**: 프리셋에서 `output_crs` 설정 불필요
+- **유연성**: EO 파일의 좌표계에 따라 자동 적용
+
+## Metashape COG 변환 (2026-02-04)
+
+처리 완료 후 `result.tif`를 Cloud Optimized GeoTIFF(COG)로 변환합니다.
+
+### 원본 GSD 유지
+
+COG 변환 시 **원본 정사영상의 해상도(GSD)가 그대로 유지**됩니다:
+
+```bash
+# 변환 명령 (TILING_SCHEME 제거로 원본 GSD 유지)
+gdal_translate \
+  -of COG \
+  -co COMPRESS=LZW \
+  -co BLOCKSIZE=256 \
+  -co OVERVIEW_RESAMPLING=AVERAGE \
+  -co BIGTIFF=YES \
+  result.tif result_cog.tif
+```
+
+> ⚠️ 이전에는 `TILING_SCHEME=GoogleMapsCompatible` 옵션이 있어 GSD가 Google Maps 타일 스킴에 맞게 변경되었으나, 2026-02-04부터 제거되어 원본 해상도를 유지합니다.
+
 ---
-*Created on 2026-01-27*
+*Created on 2026-01-27 / Updated on 2026-02-04*
