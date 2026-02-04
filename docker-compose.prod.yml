@@ -40,6 +40,7 @@ services:
       args:
         - VITE_API_URL=
         - VITE_TUS_URL=/files/
+        - VITE_MAP_OFFLINE=true
     restart: always
     environment:
       - VITE_API_URL=
