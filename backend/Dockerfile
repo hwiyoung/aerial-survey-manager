@@ -24,5 +24,9 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /data/processing
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Entrypoint script (auto-migration)
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Run the application with auto-migration
+CMD ["/entrypoint.sh"]

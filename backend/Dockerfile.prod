@@ -65,9 +65,13 @@ COPY --from=builder /app/alembic /app/alembic
 # Create necessary directories
 RUN mkdir -p /data/processing
 
+# Entrypoint script (auto-migration)
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Security: Run as non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /data
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /data /entrypoint.sh
 USER appuser
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application with auto-migration
+CMD ["/entrypoint.sh"]
