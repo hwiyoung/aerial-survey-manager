@@ -41,7 +41,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                     <div className="flex items-center gap-2 mb-2"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">BLOCK</span><span className="text-xs text-slate-400 font-mono">{project.id}</span></div>
                     <h2 className="text-2xl font-bold leading-tight mb-6">{project.title}</h2>
                     <div className="space-y-4 text-sm">
-                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역/업체</span><span className="font-medium">{project.region}/{project.company}</span></div>
+                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역</span><span className="font-medium">{project.region}</span></div>
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">상태</span><span className={`font-bold ${project.status === '완료' || project.status === 'completed' ? 'text-emerald-600' : project.status === '오류' || project.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>{project.status === 'completed' ? '완료' : project.status}</span></div>
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">원본사진</span><span className="font-medium">{project.image_count || project.imageCount || 0}장</span></div>
                         {project.source_size && (

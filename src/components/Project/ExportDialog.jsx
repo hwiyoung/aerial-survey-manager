@@ -46,6 +46,19 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         }
     }, [isOpen, targets, resultGsd]);
 
+    // ESC 키로 창 닫기
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape' && !isExporting) {
+                onClose();
+            }
+        };
+        if (isOpen) {
+            document.addEventListener('keydown', handleKeyDown);
+        }
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, isExporting, onClose]);
+
     const handleExportStart = async () => {
         setIsExporting(true);
         setProgress(5);

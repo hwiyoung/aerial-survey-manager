@@ -17,9 +17,9 @@ export class S3MultipartUploader {
      * @param {File[]} files - Array of files to upload
      * @param {string} projectId - Project ID
      * @param {Object} callbacks - Callback functions
-     * @returns {Object} Controller with abort method
+     * @returns {Object} Controller with abort method (returned synchronously)
      */
-    async uploadFiles(files, projectId, {
+    uploadFiles(files, projectId, {
         onFileProgress,
         onFileComplete,
         onAllComplete,
@@ -32,6 +32,47 @@ export class S3MultipartUploader {
         const abortController = { aborted: false };
         const fileArray = Array.from(files);
 
+        // 컨트롤러를 동기적으로 반환하고, 실제 업로드는 비동기로 진행
+        const controller = {
+            abort: () => {
+                abortController.aborted = true;
+                this.activeUploads.forEach(ctrl => {
+                    ctrl.abort?.();
+                });
+                this.activeUploads.clear();
+            }
+        };
+
+        // 비동기 업로드 시작 (백그라운드에서 실행)
+        this._startUpload(fileArray, projectId, {
+            abortController,
+            onFileProgress,
+            onFileComplete,
+            onAllComplete,
+            onError,
+            concurrency,
+            partConcurrency,
+            partSize,
+            cameraModelName
+        });
+
+        return controller;
+    }
+
+    /**
+     * Internal async upload method
+     */
+    async _startUpload(fileArray, projectId, {
+        abortController,
+        onFileProgress,
+        onFileComplete,
+        onAllComplete,
+        onError,
+        concurrency,
+        partConcurrency,
+        partSize,
+        cameraModelName
+    }) {
         try {
             // 1. Initialize all uploads at once (batch API call)
             const initResponse = await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelName);
@@ -89,7 +130,12 @@ export class S3MultipartUploader {
                             }).catch((error) => {
                                 activeCount--;
                                 completedCount++;
-                                onError?.(index, file.name, error);
+                                // AbortError는 정상적인 취소이므로 에러로 처리하지 않음
+                                if (error.name === 'AbortError' || abortController.aborted) {
+                                    console.log(`Upload cancelled: ${file.name}`);
+                                } else {
+                                    onError?.(index, file.name, error);
+                                }
                                 uploadNext();
                             });
                         }
@@ -113,16 +159,6 @@ export class S3MultipartUploader {
             console.error('Upload initialization failed:', error);
             onError?.(0, 'initialization', error);
         }
-
-        return {
-            abort: () => {
-                abortController.aborted = true;
-                this.activeUploads.forEach(controller => {
-                    controller.abort?.();
-                });
-                this.activeUploads.clear();
-            }
-        };
     }
 
     /**

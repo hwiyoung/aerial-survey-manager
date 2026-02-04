@@ -59,7 +59,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     };
     const [selectedFiles, setSelectedFiles] = useState([]);
     const [selectedEoFile, setSelectedEoFile] = useState(null);
-    const [eoConfig, setEoConfig] = useState({ delimiter: ',', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
+    const [eoConfig, setEoConfig] = useState({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
 
     const folderInputRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -102,7 +102,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setStep(1);
             setImageCount(0);
             setEoFileName(null);
-            setEoConfig({ delimiter: ',', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
+            setEoConfig({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
             setProjectName('');
             setShowMismatchWarning(false);
             setSelectedFiles([]);
@@ -213,7 +213,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
         const projectData = {
             title: projectName || `Project_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`,
             region: '수도권북부 권역',
-            company: '신규 업로드',
+            company: '',
         };
 
         console.log('handleFinish - selectedEoFile:', selectedEoFile); // DEBUG
@@ -287,7 +287,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                     )}
                     {step === 2 && (
                         <div className="flex flex-col h-full gap-6">
-                            <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: ',', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); if (eoInputRef.current) eoInputRef.current.value = ''; }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
+                            <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); if (eoInputRef.current) eoInputRef.current.value = ''; }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
                             <div className="flex gap-6 shrink-0 h-[220px]">
                                 <input
                                     type="file"
@@ -305,7 +305,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 <div className="flex-1 bg-slate-50 p-5 rounded-xl border border-slate-200 flex flex-col justify-between">
                                     <div className="grid grid-cols-3 gap-6">
                                         <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">좌표계 (CRS)</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.crs} onChange={(e) => setEoConfig({ ...eoConfig, crs: e.target.value })}><option value="TM중부 (EPSG:5186)">TM 중부 (EPSG:5186)</option><option value="TM서부 (EPSG:5185)">TM 서부 (EPSG:5185)</option><option value="TM동부 (EPSG:5187)">TM 동부 (EPSG:5187)</option><option value="UTM-K (EPSG:5179)">UTM-K (EPSG:5179)</option><option value="WGS84 (EPSG:4326)">WGS84 (EPSG:4326)</option></select></div>
-                                        <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">구분자</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.delimiter} onChange={(e) => setEoConfig({ ...eoConfig, delimiter: e.target.value })}><option value=",">콤마 (,)</option><option value="tab">탭 (Tab)</option><option value="space">공백 (Space)</option></select></div>
+                                        <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">구분자</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.delimiter} onChange={(e) => setEoConfig({ ...eoConfig, delimiter: e.target.value })}><option value="space">공백 (Space)</option><option value="tab">탭 (Tab)</option><option value=",">콤마 (,)</option></select></div>
                                         <div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 block">헤더 행</label><select className="w-full text-sm border p-2.5 rounded-lg bg-white shadow-sm" value={eoConfig.hasHeader} onChange={(e) => setEoConfig({ ...eoConfig, hasHeader: e.target.value === 'true' })}><option value="true">첫 줄 제외 (Skip)</option><option value="false">포함 (Include)</option></select></div>
                                     </div>
                                     <div className="pt-4 border-t border-slate-200">
@@ -449,10 +449,10 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 이미지 수(<span className="font-bold text-blue-600">{imageCount}장</span>)와
                                 EO 데이터 수(<span className="font-bold text-amber-600">{eoLineCount}줄</span>)가 일치하지 않습니다.
                             </p>
-                            <p className="text-xs text-slate-500 mb-6">그래도 진행하시겠습니까?</p>
+                            <p className="text-xs text-slate-500 mb-6">계속 진행하시겠습니까?</p>
                             <div className="flex gap-3">
                                 <button onClick={() => setShowMismatchWarning(false)} className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50">돌아가기</button>
-                                <button onClick={handleConfirmMismatch} className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-bold hover:bg-amber-600">그래도 진행</button>
+                                <button onClick={handleConfirmMismatch} className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-bold hover:bg-amber-600">계속 진행</button>
                             </div>
                         </div>
                     </div>

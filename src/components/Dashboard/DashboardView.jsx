@@ -176,7 +176,7 @@ function ProjectDetailView({ project, onBack }) {
                             <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
                             <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded font-mono uppercase tracking-tighter">ID: {project.id?.slice(0, 8)}...</span>
                         </div>
-                        <p className="text-sm text-slate-500">{project.region} · {project.company}</p>
+                        <p className="text-sm text-slate-500">{project.region}</p>
                     </div>
                 </div>
                 <div className="flex flex-col items-end gap-2">
