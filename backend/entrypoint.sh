@@ -29,9 +29,22 @@ if [ -f "scripts/seed_camera_models.py" ]; then
 fi
 
 # 권역 데이터 시드 (GeoJSON 파일이 있는 경우)
-if [ -f "scripts/import_regions.py" ] && [ -f "data/regions.geojson" ]; then
-    echo "  - Importing regions..."
-    python scripts/import_regions.py data/regions.geojson 2>/dev/null || echo "    (regions may already exist)"
+if [ -f "scripts/import_regions.py" ]; then
+    # GeoJSON 파일 경로 탐색 (다양한 이름 지원)
+    REGION_FILE=""
+    for f in "data/전국_권역_5K_5179.geojson" "data/regions.geojson" "/app/data/regions.geojson"; do
+        if [ -f "$f" ]; then
+            REGION_FILE="$f"
+            break
+        fi
+    done
+
+    if [ -n "$REGION_FILE" ]; then
+        echo "  - Importing regions from $REGION_FILE..."
+        python scripts/import_regions.py 2>/dev/null || echo "    (regions may already exist)"
+    else
+        echo "  - No regions GeoJSON file found, skipping..."
+    fi
 fi
 
 echo "Initial data seeding completed."

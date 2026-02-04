@@ -148,6 +148,45 @@ setup_environment() {
     read -p "MinIO 저장소 경로 [./data/minio]: " minio_path
     minio_path=${minio_path:-./data/minio}
 
+    # 오프라인 타일맵 설정
+    echo ""
+    echo -e "${YELLOW}오프라인 지도 타일 설정${NC}"
+    echo "인터넷 없이 지도를 표시하려면 타일 데이터가 필요합니다."
+    read -p "오프라인 타일맵을 사용하시겠습니까? (y/N): " use_offline_tiles
+
+    if [[ "$use_offline_tiles" =~ ^[Yy]$ ]]; then
+        USE_OFFLINE_TILES="true"
+        read -p "타일 데이터 경로 (예: /data/tiles 또는 ./data/tiles): " tiles_path
+        if [ -z "$tiles_path" ]; then
+            tiles_path="./data/tiles"
+            log_warn "기본 경로 사용: $tiles_path"
+        fi
+
+        # 타일 경로 확인
+        if [ ! -d "$tiles_path" ]; then
+            log_warn "타일 디렉토리가 존재하지 않습니다: $tiles_path"
+            read -p "디렉토리를 생성하시겠습니까? (Y/n): " create_tiles_dir
+            if [[ ! "$create_tiles_dir" =~ ^[Nn]$ ]]; then
+                mkdir -p "$tiles_path"
+                log_info "타일 디렉토리 생성됨: $tiles_path"
+                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png"
+            fi
+        else
+            # 타일 파일 존재 확인
+            tile_count=$(find "$tiles_path" -name "*.png" 2>/dev/null | head -10 | wc -l)
+            if [ "$tile_count" -gt 0 ]; then
+                log_info "타일 데이터 확인됨: $tiles_path"
+            else
+                log_warn "타일 디렉토리는 있지만 PNG 파일이 없습니다."
+                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png"
+            fi
+        fi
+    else
+        USE_OFFLINE_TILES="false"
+        tiles_path="./data/tiles"
+        log_info "온라인 지도를 사용합니다. (인터넷 연결 필요)"
+    fi
+
     # Metashape 사용 여부
     echo ""
     echo -e "${YELLOW}Metashape 처리 엔진 설정${NC}"
@@ -184,6 +223,20 @@ setup_environment() {
     sed -i "s|^PROCESSING_DATA_PATH=.*|PROCESSING_DATA_PATH=$processing_path|" .env
     sed -i "s|^MINIO_DATA_PATH=.*|MINIO_DATA_PATH=$minio_path|" .env
     sed -i "s|^METASHAPE_LICENSE_KEY=.*|METASHAPE_LICENSE_KEY=$metashape_license|" .env
+
+    # 타일 경로 설정
+    if ! grep -q "^TILES_PATH=" .env; then
+        echo "TILES_PATH=$tiles_path" >> .env
+    else
+        sed -i "s|^TILES_PATH=.*|TILES_PATH=$tiles_path|" .env
+    fi
+
+    # 오프라인 지도 사용 여부 설정
+    if ! grep -q "^USE_OFFLINE_TILES=" .env; then
+        echo "USE_OFFLINE_TILES=$USE_OFFLINE_TILES" >> .env
+    else
+        sed -i "s|^USE_OFFLINE_TILES=.*|USE_OFFLINE_TILES=$USE_OFFLINE_TILES|" .env
+    fi
 
     # 도메인 설정 추가
     if ! grep -q "^DOMAIN=" .env; then

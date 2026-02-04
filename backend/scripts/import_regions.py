@@ -87,9 +87,30 @@ async def import_regions(file_path):
         print(f"Successfully imported {count} regions.")
 
 if __name__ == "__main__":
-    file_path = "/app/data/전국_권역_5K_5179.geojson"
+    # 명령줄 인자가 있으면 사용, 없으면 기본 경로들에서 탐색
+    if len(sys.argv) > 1:
+        file_path = sys.argv[1]
+    else:
+        # 가능한 경로들을 순서대로 탐색
+        possible_paths = [
+            "/app/data/전국_권역_5K_5179.geojson",
+            "/app/data/regions.geojson",
+            "data/전국_권역_5K_5179.geojson",
+            "data/regions.geojson",
+        ]
+        file_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                file_path = path
+                break
+
+        if not file_path:
+            print("No GeoJSON file found in default paths.")
+            print(f"Searched: {possible_paths}")
+            sys.exit(0)  # 파일이 없어도 에러가 아님
+
     if not os.path.exists(file_path):
         print(f"File not found: {file_path}")
         sys.exit(1)
-        
+
     asyncio.run(import_regions(file_path))
