@@ -2,20 +2,13 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, Download, FileOutput } from 'lucide-react';
 import api from '../../api/client';
 
-// 처리 모드별 GSD 배율 (원본 GSD 기준)
-const MULTIPLIER_BY_MODE = {
-    'Preview': 16,  // 원본 GSD × 16 (저해상도)
-    'Normal': 4,    // 원본 GSD × 4 (중간 해상도)
-    'High': 1,      // 원본 GSD × 1 (원본 해상도)
-};
-
-// result_gsd가 없을 때 사용할 기본 원본 GSD (cm/pixel)
-const DEFAULT_BASE_GSD = 3;
+// result_gsd가 없을 때 사용할 기본 GSD (cm/pixel)
+const DEFAULT_GSD = 5;
 
 export default function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     const [format, setFormat] = useState('GeoTiff');
     const [crs, setCrs] = useState('GRS80 (EPSG:5186)');
-    const [gsd, setGsd] = useState(6);  // 기본값을 Normal 모드 기준으로 변경
+    const [gsd, setGsd] = useState(DEFAULT_GSD);
     const [filename, setFilename] = useState('');
     const [isExporting, setIsExporting] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -25,91 +18,66 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         return allProjects.filter(p => targetProjectIds.includes(p.id));
     }, [allProjects, targetProjectIds]);
 
-    // 프로젝트의 처리 모드와 실제 GSD에 따른 권장 내보내기 GSD 계산
-    const { recommendedGsd, baseGsd } = useMemo(() => {
+    // Metashape build orthomosaic의 result_gsd 값을 직접 사용
+    const resultGsd = useMemo(() => {
         if (targets.length === 1) {
             const project = targets[0];
-            // 실제 처리 결과 GSD 사용 (없으면 기본값)
-            const resultGsd = project.result_gsd || DEFAULT_BASE_GSD;
-            // 프로젝트에 저장된 처리 모드 사용
-            const mode = project.process_mode ||
-                         project.processing_options?.process_mode ||
-                         project.last_processing_options?.process_mode ||
-                         'Normal';
-            const multiplier = MULTIPLIER_BY_MODE[mode] || 4;
-            // 권장 GSD = 원본 GSD × 배율
-            const recommended = Math.round(resultGsd * multiplier * 100) / 100;
-            return { recommendedGsd: recommended, baseGsd: resultGsd };
+            // result_gsd: Metashape에서 실제로 생성된 정사영상의 GSD
+            return project.result_gsd || DEFAULT_GSD;
         }
-        // 다중 프로젝트의 경우 기본값 (Normal 기준, 기본 GSD × 4)
-        return { recommendedGsd: DEFAULT_BASE_GSD * 4, baseGsd: DEFAULT_BASE_GSD };
-    }, [targets]);
-
-    // 단일 프로젝트의 처리 모드 표시용
-    const processMode = useMemo(() => {
-        if (targets.length === 1) {
-            const project = targets[0];
-            return project.process_mode ||
-                   project.processing_options?.process_mode ||
-                   project.last_processing_options?.process_mode ||
-                   null;
+        // 다중 프로젝트의 경우 첫 번째 프로젝트의 GSD 또는 기본값
+        if (targets.length > 1 && targets[0].result_gsd) {
+            return targets[0].result_gsd;
         }
-        return null;
+        return DEFAULT_GSD;
     }, [targets]);
 
     useEffect(() => {
         if (isOpen) {
             setIsExporting(false);
             setProgress(0);
-            // 권장 GSD로 초기화
-            setGsd(recommendedGsd);
+            // Metashape result_gsd로 초기화
+            setGsd(resultGsd);
             if (targets.length === 1) {
                 setFilename(`${targets[0].title}_ortho`);
             } else {
                 setFilename(`Bulk_Export_${new Date().toISOString().slice(0, 10)}`);
             }
         }
-    }, [isOpen, targets, recommendedGsd]);
+    }, [isOpen, targets, resultGsd]);
 
     const handleExportStart = async () => {
         setIsExporting(true);
         setProgress(5);
 
-        // 자연스러운 진행률 시뮬레이션 (5% ~ 85%까지 점진적 증가)
+        // 진행률 시뮬레이션 (5% ~ 99%까지, 절대 100%는 안됨)
         let currentProgress = 5;
         progressIntervalRef.current = setInterval(() => {
-            currentProgress += Math.random() * 3 + 1; // 1~4% 랜덤 증가
-            if (currentProgress >= 85) {
-                currentProgress = 85;
-                clearInterval(progressIntervalRef.current);
+            currentProgress += Math.random() * 3 + 1;
+            if (currentProgress >= 99) {
+                currentProgress = 99; // 최대 99%까지만
             }
             setProgress(Math.floor(currentProgress));
         }, 200);
 
         try {
-            const blob = await api.batchExport(targetProjectIds, {
+            // 1. 파일 준비 (서버에서 변환 및 임시 저장)
+            const result = await api.prepareBatchExport(targetProjectIds, {
                 format: format,
                 crs: crs.includes('5186') ? 'EPSG:5186' : crs.includes('4326') ? 'EPSG:4326' : 'EPSG:32652',
                 gsd: gsd,
                 custom_filename: filename || null,
             });
 
-            // API 완료 후 인터벌 정리
+            // 인터벌 정리
             clearInterval(progressIntervalRef.current);
-            setProgress(90);
 
-            const count = targetProjectIds.length;
-            const ext = count === 1 ? 'tif' : 'zip';
-            const name = filename || (count === 1 && targets[0] ? `${targets[0].title}_ortho` : 'batch_export');
-            const downloadFilename = name.toLowerCase().endsWith('.' + ext) ? name : `${name}.${ext}`;
+            // 2. 다운로드 트리거 (브라우저 메모리 사용 안함)
+            api.triggerDirectDownload(result.download_id);
 
-            api.downloadBlob(blob, downloadFilename);
-
+            // 3. 100% 표시 후 다이얼로그 닫기
             setProgress(100);
-            setTimeout(() => {
-                alert(`${targets.length}개 프로젝트 내보내기가 완료되었습니다.`);
-                onClose();
-            }, 300);
+            onClose();
 
         } catch (err) {
             clearInterval(progressIntervalRef.current);
@@ -160,22 +128,11 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                             </div>
                         </div>
                         <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-500">
-                                해상도 (GSD)
-                                {processMode && (
-                                    <span className="text-blue-500 ml-2 font-normal">
-                                        처리 모드: {processMode}
-                                    </span>
-                                )}
-                            </label>
+                            <label className="text-xs font-bold text-slate-500">해상도 (GSD)</label>
                             <div className="flex gap-2">
                                 <input type="number" className="border p-2 rounded text-sm w-full" value={gsd} onChange={e => setGsd(Number(e.target.value))} />
                                 <span className="text-sm text-slate-500 self-center whitespace-nowrap">cm/pixel</span>
                             </div>
-                            <p className="text-[10px] text-slate-400">
-                                권장: {recommendedGsd} cm/pixel
-                                {processMode && ` (원본 ${baseGsd}cm × ${MULTIPLIER_BY_MODE[processMode] || 4}, ${processMode} 모드)`}
-                            </p>
                         </div>
                         <div className="space-y-1">
                             <label className="text-xs font-bold text-slate-500">파일 이름</label>

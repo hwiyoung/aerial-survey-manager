@@ -357,7 +357,7 @@ class ApiClient {
     }
 
     /**
-     * Batch export multiple project orthoimages as a ZIP file
+     * Batch export multiple project orthoimages as a ZIP file (legacy - uses blob)
      * @param {string[]} projectIds - Array of project IDs to export
      * @param {object} options - Export options (format, crs)
      * @returns {Promise<Blob>} - ZIP file blob for download
@@ -390,6 +390,48 @@ class ApiClient {
         }
 
         return response.blob();
+    }
+
+    /**
+     * 파일 준비 후 다운로드 ID 반환 (대용량 파일용)
+     * @param {string[]} projectIds - 프로젝트 ID 배열
+     * @param {object} options - 내보내기 옵션
+     * @returns {Promise<{download_id: string, filename: string, file_size: number}>}
+     */
+    async prepareBatchExport(projectIds, options = {}) {
+        return this.request('/download/batch/prepare', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_ids: projectIds,
+                format: options.format || 'GeoTiff',
+                crs: options.crs || 'EPSG:5186',
+                gsd: options.gsd ? parseFloat(options.gsd) : null,
+                custom_filename: options.custom_filename || null,
+            }),
+        });
+    }
+
+    /**
+     * 준비된 파일 직접 다운로드 URL 반환
+     * @param {string} downloadId - 다운로드 ID
+     * @returns {string} - 다운로드 URL
+     */
+    getBatchDownloadUrl(downloadId) {
+        return `${API_BASE}/api/v1/download/batch/${downloadId}`;
+    }
+
+    /**
+     * 직접 다운로드 트리거 (브라우저 메모리 사용 안함)
+     * @param {string} downloadId - 다운로드 ID
+     */
+    triggerDirectDownload(downloadId) {
+        // anchor 태그로 직접 다운로드 (인증 불필요 - download_id가 임시 토큰 역할)
+        const a = document.createElement('a');
+        a.href = this.getBatchDownloadUrl(downloadId);
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     }
 
     /**
