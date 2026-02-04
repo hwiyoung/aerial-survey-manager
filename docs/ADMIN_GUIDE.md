@@ -816,7 +816,7 @@ docker compose logs worker-metashape | grep -i "deactivat"
 
 ---
 
-## 🗺️ 오프라인 타일맵 설정 (2026-02-03)
+## 🗺️ 오프라인 타일맵 설정 (2026-02-04 업데이트)
 
 ### 1. 환경변수 설정
 
@@ -825,28 +825,57 @@ docker compose logs worker-metashape | grep -i "deactivat"
 ```bash
 # .env
 VITE_MAP_OFFLINE=true
-VITE_TILE_URL=/tiles/{z}/{x}/{y}.png
-TILES_PATH=/path/to/your/tiles   # 호스트의 타일 디렉토리
+VITE_TILE_URL=/tiles/{z}/{x}/{y}.jpg   # 타일 파일 확장자에 맞게 설정 (.jpg 또는 .png)
+TILES_PATH=/media/innopam/InnoPAM-8TB/data/vworld_tiles/  # 호스트의 타일 디렉토리
 ```
+
+> ⚠️ **중요**: `VITE_TILE_URL`의 확장자는 실제 타일 파일 확장자와 **정확히 일치**해야 합니다!
+> - VWorld 타일: `.jpg`
+> - OpenStreetMap 타일: `.png`
 
 ### 2. 타일 디렉토리 구조
 
-타일은 `z/x/y.png` 형식이어야 합니다:
+타일은 `z/x/y.확장자` 형식이어야 합니다:
 
 ```
 /path/to/tiles/
 ├── 5/
 │   ├── 27/
-│   │   └── 12.png
+│   │   └── 12.jpg
 │   └── 28/
-│       └── 12.png
+│       └── 12.jpg
 ├── 6/
 │   └── ...
 └── 15/
     └── ...
 ```
 
-### 3. Docker Compose 설정
+타일 구조 확인 명령:
+```bash
+# 특정 줌 레벨의 타일 확인
+ls /path/to/tiles/7/109/
+# 출력 예: 49.jpg  50.jpg  51.jpg
+```
+
+### 3. 환경변수별 적용 방법
+
+| 환경변수 | 적용 시점 | 변경 시 필요한 작업 |
+|----------|----------|-------------------|
+| `VITE_MAP_OFFLINE` | 빌드 타임 | 프론트엔드 **재빌드** 필요 |
+| `VITE_TILE_URL` | 빌드 타임 | 프론트엔드 **재빌드** 필요 |
+| `TILES_PATH` | 런타임 (볼륨 마운트) | nginx **재시작**만 필요 |
+
+### 4. 설정 변경 후 적용 명령
+
+```bash
+# VITE_* 변수 변경 시: 프론트엔드 재빌드 + nginx 재시작
+docker compose build frontend --no-cache && docker compose up -d frontend nginx
+
+# TILES_PATH만 변경 시: nginx 재시작만
+docker compose up -d nginx
+```
+
+### 5. Docker Compose 설정
 
 ```yaml
 # docker-compose.yml
@@ -855,7 +884,7 @@ nginx:
     - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
 ```
 
-### 4. Nginx 설정
+### 6. Nginx 설정
 
 ```nginx
 # nginx.conf
@@ -868,28 +897,49 @@ location /tiles/ {
 }
 ```
 
-### 5. 온라인/오프라인 전환
+### 7. 온라인/오프라인 전환
 
 | VITE_MAP_OFFLINE | 동작 |
 |------------------|------|
 | `false` (기본값) | OpenStreetMap 온라인 타일 사용 |
 | `true` | 로컬 `/tiles/` 경로에서 타일 로드 |
 
-### 6. 프론트엔드 빌드 필요
+### 8. 트러블슈팅
 
-환경변수 변경 후 프론트엔드를 재빌드해야 합니다:
+#### 증상: 지도가 회색 배경만 표시됨
+```
+원인 1: VITE_MAP_OFFLINE=true인데 타일 파일이 없음
+확인: curl http://localhost:8081/tiles/7/109/49.jpg
+해결: TILES_PATH가 올바른 경로인지 확인
 
-```bash
-docker compose up -d --build frontend
+원인 2: 확장자 불일치 (.png vs .jpg)
+확인: ls /path/to/tiles/7/109/  # 실제 파일 확장자 확인
+해결: VITE_TILE_URL의 확장자를 실제 파일에 맞게 변경 후 재빌드
 ```
 
-### 7. 관련 파일
+#### 증상: 타일 요청이 404 반환
+```bash
+# 타일 경로 확인
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/tiles/7/109/49.jpg
+
+# 컨테이너 내부에서 타일 파일 확인
+docker compose exec nginx ls -la /data/tiles/7/109/
+```
+
+#### 증상: 빌드 후에도 온라인 타일 사용
+```
+원인: 브라우저 캐시
+해결: Ctrl+Shift+R (하드 리프레시) 또는 시크릿 모드에서 확인
+```
+
+### 9. 관련 파일
 
 | 파일 | 설명 |
 |------|------|
 | `src/config/mapConfig.js` | 타일 설정 로직 |
 | `Dockerfile.frontend` | VITE_MAP_OFFLINE 빌드 인자 |
 | `nginx.conf` | `/tiles/` 라우팅 |
+| `.env` | 환경변수 설정 |
 
 ---
 

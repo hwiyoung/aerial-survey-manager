@@ -189,9 +189,9 @@ EXTERNAL_ENGINE_URL=https://external-engine.example.com
 EXTERNAL_ENGINE_API_KEY=your-api-key
 
 # Offline Map Tiles (Optional)
-VITE_MAP_OFFLINE=false               # true로 설정 시 로컬 타일 사용
-VITE_TILE_URL=/tiles/{z}/{x}/{y}.png # 오프라인 타일 URL 패턴
-TILES_PATH=/data/tiles               # 호스트의 타일 디렉토리 경로
+VITE_MAP_OFFLINE=true                # true로 설정 시 로컬 타일 사용
+VITE_TILE_URL=/tiles/{z}/{x}/{y}.jpg # 오프라인 타일 URL 패턴 (확장자는 실제 타일 파일에 맞게 설정)
+TILES_PATH=/path/to/your/tiles       # 호스트의 타일 디렉토리 경로 (z/x/y.확장자 구조)
 ```
 
 > ⚠️ **중요**: `MINIO_DATA_PATH`는 반드시 **충분한 여유 공간이 있는 디스크**에 설정하세요.
