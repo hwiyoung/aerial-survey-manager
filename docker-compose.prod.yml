@@ -40,11 +40,14 @@ services:
       args:
         - VITE_API_URL=
         - VITE_TUS_URL=/files/
-        - VITE_MAP_OFFLINE=true
+        - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-true}
+        - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}.png}
     restart: always
     environment:
       - VITE_API_URL=
       - VITE_TUS_URL=/files/
+      - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-true}
+      - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}.png}
     # 프로덕션: 소스 마운트 제거, 빌드된 이미지 사용
     depends_on:
       - api
