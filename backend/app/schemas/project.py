@@ -47,6 +47,9 @@ class ProjectResponse(ProjectBase):
     # 업로드 상태 통계
     upload_completed_count: int = 0  # 업로드 완료된 이미지 수
     upload_in_progress: bool = False  # 업로드 진행 중 여부
+    # 처리 결과 정보
+    result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
+    process_mode: Optional[str] = None  # 마지막 처리 모드 (Preview, Normal, High)
 
     class Config:
         from_attributes = True
@@ -79,8 +82,13 @@ class ImageResponse(ImageBase):
     has_error: bool = False
     upload_status: str = "pending"
     created_at: datetime
-    exterior_orientation: Optional["EOData"] = None  # Renamed from eo to avoid confusion? No, relationship is exterior_orientation
-    
+    # Image dimensions
+    image_width: Optional[int] = None  # pixels
+    image_height: Optional[int] = None  # pixels
+    # Camera model reference
+    camera_model: Optional["CameraModelResponse"] = None
+    exterior_orientation: Optional["EOData"] = None
+
     class Config:
         from_attributes = True
 
@@ -147,7 +155,13 @@ class CameraModelResponse(CameraModelBase):
     """Camera model response schema."""
     id: UUID
     is_custom: bool
-    
+    # Sensor size in pixels (image dimensions)
+    sensor_width_px: Optional[int] = None  # pixels
+    sensor_height_px: Optional[int] = None  # pixels
+    # PPA (Principal Point of Autocollimation) offset
+    ppa_x: Optional[float] = None  # mm
+    ppa_y: Optional[float] = None  # mm
+
     class Config:
         from_attributes = True
 
@@ -180,7 +194,9 @@ class ProcessingJobResponse(BaseModel):
     error_message: Optional[str] = None
     result_path: Optional[str] = None
     result_size: Optional[int] = None
-    
+    result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
+    process_mode: Optional[str] = None  # Preview, Normal, High
+
     class Config:
         from_attributes = True
 

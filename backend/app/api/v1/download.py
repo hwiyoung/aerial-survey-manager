@@ -332,10 +332,13 @@ async def get_cog_url(
 
 
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict
 import zipfile
 import io
 import tempfile
+import uuid
+import time
+from datetime import datetime
 
 
 class BatchExportRequest(BaseModel):
@@ -345,6 +348,24 @@ class BatchExportRequest(BaseModel):
     crs: str = "EPSG:5186"
     gsd: float | None = None  # Planned GSD in cm/pixel
     custom_filename: str | None = None  # Optional custom filename for ZIP
+
+
+# 임시 다운로드 저장소 (download_id -> file_info)
+# 실제 운영에서는 Redis 등을 사용하는 것이 좋음
+_pending_downloads: Dict[str, dict] = {}
+
+
+def cleanup_old_downloads():
+    """5분 이상 지난 다운로드 정리"""
+    now = time.time()
+    expired = [k for k, v in _pending_downloads.items() if now - v.get("created_at", 0) > 300]
+    for k in expired:
+        info = _pending_downloads.pop(k, None)
+        if info and info.get("file_path") and os.path.exists(info["file_path"]):
+            try:
+                os.unlink(info["file_path"])
+            except:
+                pass
 
 
 @router.post("/batch")
@@ -615,3 +636,290 @@ async def batch_download(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create ZIP archive: {str(e)}",
         )
+
+
+@router.post("/batch/prepare")
+async def prepare_batch_download(
+    request: BatchExportRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    파일을 준비하고 다운로드 ID를 반환합니다.
+    실제 다운로드는 GET /batch/{download_id}로 수행합니다.
+    이 방식은 브라우저 메모리 문제를 방지합니다.
+    """
+    # 오래된 다운로드 정리
+    cleanup_old_downloads()
+
+    if not request.project_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No project IDs provided",
+        )
+
+    if len(request.project_ids) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 20 projects allowed per batch export",
+        )
+
+    # Get all eligible projects
+    projects_with_files = []
+
+    for project_id in request.project_ids:
+        permission_checker = PermissionChecker("view")
+        if not await permission_checker.check(str(project_id), current_user, db):
+            continue
+
+        project_result = await db.execute(select(Project).where(Project.id == project_id))
+        project = project_result.scalar_one_or_none()
+
+        if not project:
+            continue
+
+        ortho_path = project.ortho_path
+
+        if not ortho_path:
+            result = await db.execute(
+                select(ProcessingJob)
+                .where(
+                    ProcessingJob.project_id == project_id,
+                    ProcessingJob.status == "completed",
+                )
+                .order_by(ProcessingJob.completed_at.desc())
+            )
+            job = result.scalar_one_or_none()
+            if job and job.result_path:
+                ortho_path = job.result_path
+
+        if not ortho_path:
+            continue
+
+        storage = StorageService()
+        source_path = None
+        if storage.object_exists(ortho_path):
+            import tempfile as tf
+            temp_file = tf.NamedTemporaryFile(delete=False, suffix='.tif')
+            temp_file.close()
+            storage.download_file(ortho_path, temp_file.name)
+
+            expected_size = storage.get_object_size(ortho_path)
+            actual_size = os.path.getsize(temp_file.name)
+            if actual_size != expected_size:
+                os.unlink(temp_file.name)
+                continue
+
+            source_path = temp_file.name
+        elif os.path.exists(ortho_path):
+            source_path = ortho_path
+        else:
+            continue
+
+        # Re-projection
+        target_crs = request.crs
+        final_file_path = source_path
+
+        try:
+            import subprocess
+            import json
+            import re as regex_module
+
+            print(f"DEBUG: [prepare] Processing re-projection for project {project.id}", flush=True)
+            info_result = subprocess.run(["gdalinfo", "-json", source_path], capture_output=True, text=True)
+
+            source_epsg = "Unknown"
+            if info_result.returncode == 0:
+                info = json.loads(info_result.stdout)
+                source_wkt = info.get('coordinateSystem', {}).get('wkt', '') or info.get('stac', {}).get('proj:wkt2', '')
+                epsg_match = regex_module.search(r'ID\["EPSG",(\d+)\]', source_wkt)
+                source_epsg = f"EPSG:{epsg_match.group(1)}" if epsg_match else "Unknown"
+                print(f"DEBUG: [prepare] Detected Source EPSG: {source_epsg}", flush=True)
+
+            target_res = float(request.gsd) / 100.0 if request.gsd else None
+            needs_warp = (target_crs != source_epsg) or (target_res is not None)
+
+            if needs_warp:
+                print(f"DEBUG: [prepare] Warping: {source_epsg} -> {target_crs} (GSD: {request.gsd}cm)", flush=True)
+                warped_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{target_crs.replace(":", "_")}.tif')
+                warped_file.close()
+
+                warp_cmd = [
+                    "gdalwarp",
+                    "-t_srs", target_crs,
+                    "-r", "bilinear",
+                    "-overwrite",
+                    "-co", "COMPRESS=LZW",
+                ]
+
+                if target_res:
+                    if target_crs == "EPSG:4326":
+                        deg_res = target_res / 111320.0
+                        warp_cmd.extend(["-tr", f"{deg_res:.12f}", f"{deg_res:.12f}"])
+                    else:
+                        warp_cmd.extend(["-tr", str(target_res), str(target_res)])
+
+                warp_cmd.extend([source_path, warped_file.name])
+
+                print(f"DEBUG: [prepare] Executing: {' '.join(warp_cmd)}", flush=True)
+                result = subprocess.run(warp_cmd, capture_output=True, text=True)
+
+                if result.returncode == 0:
+                    final_file_path = warped_file.name
+                    print(f"DEBUG: [prepare] Successfully warped", flush=True)
+                    if source_path.startswith(tempfile.gettempdir()):
+                        try: os.unlink(source_path)
+                        except: pass
+                else:
+                    print(f"ERROR: [prepare] gdalwarp failed: {result.stderr}", flush=True)
+
+        except Exception as warp_err:
+            print(f"WARNING: [prepare] Re-projection exception: {warp_err}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+        projects_with_files.append({
+            "project": project,
+            "file_path": final_file_path,
+        })
+
+    if not projects_with_files:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No completed orthoimages found for the selected projects",
+        )
+
+    # 다운로드 ID 생성
+    download_id = str(uuid.uuid4())
+
+    # 단일 프로젝트: TIF 그대로
+    if len(projects_with_files) == 1:
+        item = projects_with_files[0]
+        project = item["project"]
+        file_path = item["file_path"]
+
+        if request.custom_filename:
+            target_filename = request.custom_filename
+            if not target_filename.lower().endswith('.tif') and not target_filename.lower().endswith('.tiff'):
+                target_filename += ".tif"
+        else:
+            safe_title = project.title.replace(" ", "_").replace("/", "_")
+            target_filename = f"{safe_title}_ortho.tif"
+
+        file_size = os.path.getsize(file_path)
+
+        _pending_downloads[download_id] = {
+            "file_path": file_path,
+            "filename": target_filename,
+            "media_type": "image/tiff",
+            "file_size": file_size,
+            "created_at": time.time(),
+        }
+
+        return {
+            "download_id": download_id,
+            "filename": target_filename,
+            "file_size": file_size,
+        }
+
+    # 다중 프로젝트: ZIP 생성
+    temp_zip_path = tempfile.NamedTemporaryFile(delete=False, suffix='.zip').name
+    try:
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zipf:
+            for item in projects_with_files:
+                project = item["project"]
+                file_path = item["file_path"]
+                safe_title = project.title.replace(" ", "_").replace("/", "_")
+                arcname = f"{safe_title}_ortho.tif"
+                zipf.write(file_path, arcname)
+
+                if file_path.startswith(tempfile.gettempdir()):
+                    try: os.unlink(file_path)
+                    except: pass
+
+        zip_size = os.path.getsize(temp_zip_path)
+
+        if request.custom_filename:
+            zip_filename = request.custom_filename
+            if not zip_filename.lower().endswith('.zip'):
+                zip_filename += ".zip"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            zip_filename = f"batch_export_{timestamp}.zip"
+
+        _pending_downloads[download_id] = {
+            "file_path": temp_zip_path,
+            "filename": zip_filename,
+            "media_type": "application/zip",
+            "file_size": zip_size,
+            "created_at": time.time(),
+        }
+
+        return {
+            "download_id": download_id,
+            "filename": zip_filename,
+            "file_size": zip_size,
+        }
+
+    except Exception as e:
+        try:
+            os.unlink(temp_zip_path)
+        except:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to prepare download: {str(e)}",
+        )
+
+
+@router.get("/batch/{download_id}")
+async def get_prepared_download(
+    download_id: str,
+):
+    # 인증 불필요 - download_id 자체가 임시 토큰 역할
+    # (prepare 단계에서 이미 권한 확인됨)
+    """
+    준비된 파일을 직접 다운로드합니다.
+    브라우저가 직접 파일을 다운로드하므로 메모리 문제가 없습니다.
+    """
+    info = _pending_downloads.get(download_id)
+
+    if not info:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Download not found or expired",
+        )
+
+    file_path = info["file_path"]
+
+    if not os.path.exists(file_path):
+        _pending_downloads.pop(download_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found",
+        )
+
+    encoded_filename = quote(info["filename"])
+
+    async def iter_file_and_cleanup():
+        try:
+            async with aiofiles.open(file_path, 'rb') as f:
+                while chunk := await f.read(8 * 1024 * 1024):  # 8MB chunks
+                    yield chunk
+        finally:
+            # 다운로드 완료 후 정리
+            _pending_downloads.pop(download_id, None)
+            if file_path.startswith(tempfile.gettempdir()):
+                try:
+                    os.unlink(file_path)
+                except:
+                    pass
+
+    return StreamingResponse(
+        iter_file_and_cleanup(),
+        headers={
+            "Content-Length": str(info["file_size"]),
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
+        media_type=info["media_type"],
+    )

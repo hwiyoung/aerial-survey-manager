@@ -58,6 +58,7 @@ async def start_processing(
     project_id: UUID,
     options: ProcessingOptions,
     force: bool = False,
+    force_restart: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -68,6 +69,7 @@ async def start_processing(
 
     Args:
         force: If True, proceed with only completed images even if some uploads are incomplete/failed.
+        force_restart: If True, cancel existing job and start a new one.
     """
     # Check permission
     permission_checker = PermissionChecker("edit")
@@ -171,22 +173,51 @@ async def start_processing(
     )
     existing_job = result.scalar_one_or_none()
     if existing_job:
-        # Check if job is stale (started more than 24 hours ago or never started)
-        from datetime import timedelta
-        is_stale = (
-            existing_job.started_at is None or
-            (datetime.utcnow() - existing_job.started_at) > timedelta(hours=24)
-        )
-        
+        now = datetime.utcnow()
+        is_stale = False
+        stale_reason = ""
+
+        # Case 1: Job never started and has been queued for more than 6 hours
+        if existing_job.started_at is None:
+            is_stale = True
+            stale_reason = "작업이 시작되지 않고 대기 중이었습니다"
+
+        # Case 2: Job started more than 24 hours ago
+        elif (now - existing_job.started_at) > timedelta(hours=24):
+            is_stale = True
+            stale_reason = "작업이 24시간 이상 진행 중이었습니다"
+
+        # Case 3: User requested force restart
+        if force_restart:
+            is_stale = True
+            stale_reason = "사용자가 강제 재시작을 요청했습니다"
+
+            # Also revoke the Celery task if exists
+            if existing_job.celery_task_id:
+                try:
+                    from app.workers.tasks import celery_app
+                    celery_app.control.revoke(existing_job.celery_task_id, terminate=True)
+                except Exception:
+                    pass
+
         if is_stale:
             # Auto-reset stale job
             existing_job.status = "failed"
-            existing_job.error_message = "Job was stale and auto-reset"
+            existing_job.error_message = f"작업이 자동 초기화되었습니다: {stale_reason}"
             await db.commit()
         else:
+            # Return detailed error for frontend to handle
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="A processing job is already running for this project",
+                detail={
+                    "type": "job_already_running",
+                    "message": "이 프로젝트에 이미 진행 중인 처리 작업이 있습니다",
+                    "job_id": str(existing_job.id),
+                    "job_status": existing_job.status,
+                    "started_at": existing_job.started_at.isoformat() if existing_job.started_at else None,
+                    "progress": existing_job.progress,
+                    "can_force_restart": True
+                },
             )
     
     
@@ -198,6 +229,7 @@ async def start_processing(
         output_crs=options.output_crs,
         output_format=options.output_format,
         status="queued",
+        process_mode=options.process_mode,  # 처리 모드 저장
     )
     db.add(job)
     await db.flush()

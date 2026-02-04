@@ -304,13 +304,18 @@ docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
 - 이러한 이미지는 처리 시작 시 사용자에게 안내 메시지를 표시
 - 사용자가 확인 후 진행 여부를 선택할 수 있음
 
-### 5. 글로벌 업로드 시스템 (2026-02-02 업데이트)
+### 5. 글로벌 업로드 시스템 (2026-02-04 업데이트)
 
 프론트엔드에서는 업로드 중에도 앱 내 자유로운 네비게이션을 지원합니다:
 - **앱 내 네비게이션**: 업로드 중에도 대시보드, 다른 프로젝트로 이동 가능 (업로드 계속 진행)
 - **업로드 패널 글로벌 표시**: 어느 화면에서든 업로드 진행률 패널이 우측 하단에 표시됨
 - **브라우저 종료/새로고침**: `beforeunload` 이벤트로 경고 표시 (실제 페이지 이탈 시에만)
 - 브라우저를 완전히 닫거나 새로고침하면 업로드가 중단됨
+
+**업로드 취소 UX (2026-02-04)**:
+- 취소 버튼 클릭 시 확인 다이얼로그 표시
+- 확인 후 "업로드가 취소되었습니다" 알림 메시지 표시
+- 알림 확인 후 업로드 패널 자동 닫힘
 
 ### 6. 멀티 프로젝트 동시 업로드 (2026-02-02 추가)
 
@@ -616,7 +621,7 @@ $END_CAMERA
 
 ---
 
-## ⚙️ 처리 엔진 설정 (2026-02-02)
+## ⚙️ 처리 엔진 설정 (2026-02-04 업데이트)
 
 ### 1. Metashape 전용 모드
 
@@ -625,6 +630,74 @@ $END_CAMERA
 - ODM, External 엔진은 `docker-compose.yml`에서 주석 처리됨
 - 프론트엔드 처리 옵션에서 엔진 선택 UI 제거됨
 - 기본 엔진: `metashape`
+
+### 2. 처리 프리셋 (2026-02-04)
+
+시스템 기본 프리셋이 간소화되었습니다:
+
+| 프리셋 이름 | 처리 모드 | GSD | 설명 |
+|------------|----------|-----|------|
+| **정밀 처리** | Normal | 5cm | 일반적인 정사영상 생성 (기본값) |
+| **고속 처리** | Preview | 10cm | 빠른 처리용 저해상도 설정 |
+
+> ⚠️ **변경사항**: "표준 정사영상"→"정밀 처리", "빠른 미리보기"→"고속 처리"로 이름 변경, "고해상도 정사영상" 프리셋 제거
+
+### 3. EO 파일 설정 (2026-02-04 업데이트)
+
+업로드 위자드에서 EO 파일 구분자 및 좌표계를 설정할 수 있습니다:
+
+| 설정 | 옵션 | 기본값 |
+|------|------|--------|
+| **구분자** | 공백(Space), 탭(Tab), 콤마(,) | 공백(Space) |
+| **좌표계** | TM 중부/서부/동부, UTM-K, WGS84 | TM 중부 (EPSG:5186) |
+| **헤더 행** | 첫 줄 제외 / 포함 | 첫 줄 제외 |
+
+> ⚠️ **변경사항 (2026-02-04)**: 구분자 기본값이 콤마(,)에서 공백(Space)으로 변경됨. 옵션 순서도 공백 → 탭 → 콤마 순으로 변경됨.
+
+**데이터 불일치 경고**: 이미지 수와 EO 데이터 수가 일치하지 않으면 경고 다이얼로그가 표시됩니다:
+- "계속 진행하시겠습니까?" 메시지와 함께 "돌아가기" / "계속 진행" 버튼 제공
+- "계속 진행" 클릭 시 불일치 상태에서도 프로젝트 생성 가능
+
+### 4. 출력 좌표계 설정 (2026-02-04)
+
+정사영상 생성 시 **출력 좌표계가 입력 좌표계와 동일하게** 설정됩니다:
+
+- 이전: 프리셋에서 지정한 `output_crs` (예: EPSG:5186) 사용
+- 현재: 프로젝트에 설정된 입력 좌표계 (`chunk.crs`) 그대로 사용
+- EO 파일에서 EPSG가 감지되면 해당 좌표계로 자동 설정됨
+
+**관련 파일**: `engines/metashape/dags/metashape/build_orthomosaic.py`
+
+```python
+# 출력 좌표계를 프로젝트에 설정된 입력 좌표계와 동일하게 사용
+proj = Metashape.OrthoProjection()
+proj.crs = chunk.crs
+```
+
+### 4. COG 생성 시 원본 GSD 유지 (2026-02-04)
+
+COG(Cloud Optimized GeoTIFF) 변환 시 **원본 정사영상의 GSD가 유지**됩니다:
+
+- 이전: `TILING_SCHEME=GoogleMapsCompatible` 옵션으로 인해 GSD가 Google Maps 타일 스킴에 맞게 변경됨
+- 현재: 해당 옵션 제거, 원본 해상도 유지
+
+**관련 파일**: `backend/app/workers/tasks.py`
+
+```python
+# COG 변환 명령 (원본 GSD 유지)
+gdal_cmd = [
+    "gdal_translate",
+    "-of", "COG",
+    "-co", "COMPRESS=LZW",
+    "-co", "BLOCKSIZE=256",
+    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+    "-co", "BIGTIFF=YES",
+    str(result_path),
+    str(cog_path)
+]
+```
+
+> 💡 **참고**: Metashape에서 내보낸 `result.tif`는 타일링과 오버뷰가 포함되어 있지만, 완전한 COG 표준은 아닙니다. `gdal_translate`로 변환하여 HTTP Range Request에 최적화된 COG를 생성합니다.
 
 ### 2. 비활성화된 서비스
 
@@ -705,3 +778,332 @@ s3://aerial-survey/projects/{project_id}/ortho/result_cog.tif
 | `nginx.conf` | `/titiler/` 프록시 및 CORS |
 | `backend/app/api/v1/download.py` | COG URL 반환 API |
 | `src/components/Dashboard/FootprintMap.jsx` | TiTiler 타일 레이어 |
+
+### 6. GDAL 환경변수 (2026-02-03 업데이트)
+
+TiTiler의 GDAL 성능 최적화를 위해 다음 환경변수가 추가되었습니다:
+
+```yaml
+# docker-compose.yml - titiler 서비스
+environment:
+  # 기존 설정
+  - AWS_S3_ENDPOINT=minio:9000        # http:// 없이!
+  - AWS_VIRTUAL_HOSTING=FALSE
+  - AWS_HTTPS=NO
+  # 추가된 GDAL 최적화 설정
+  - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR  # 불필요한 디렉토리 리스팅 방지
+  - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.TIF,.tiff  # TIFF 파일만 허용
+  - VSI_CACHE=TRUE                    # 캐시 활성화
+  - VSI_CACHE_SIZE=50000000           # 50MB 캐시
+```
+
+> ⚠️ `AWS_S3_ENDPOINT`에 `http://` 프로토콜을 포함하면 "Could not resolve host: http" 오류가 발생합니다.
+
+---
+
+## 🔄 배포 PC 재부팅 시 자동 시작 (2026-02-03)
+
+### 1. Docker 컨테이너 자동 재시작
+
+모든 주요 서비스에 `restart: always` 정책이 설정되어 있습니다:
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    restart: always
+  worker-metashape:
+    restart: always
+  nginx:
+    restart: always
+  # ... 기타 서비스
+```
+
+### 2. Docker 서비스 자동 시작 확인
+
+시스템 재부팅 시 Docker 서비스가 자동으로 시작되어야 합니다:
+
+```bash
+# Docker 서비스 자동 시작 활성화
+sudo systemctl enable docker
+sudo systemctl enable containerd
+
+# 상태 확인
+sudo systemctl is-enabled docker
+```
+
+### 3. 재부팅 후 확인 명령
+
+```bash
+# 모든 컨테이너 실행 상태 확인
+docker ps
+
+# 특정 서비스 로그 확인
+docker compose logs -f worker-metashape --tail=50
+```
+
+---
+
+## 🔒 Metashape 라이센스 자동 비활성화 (2026-02-03)
+
+### 1. Graceful Shutdown 설정
+
+컨테이너 종료 시 Metashape 라이센스를 자동으로 비활성화하기 위한 설정:
+
+```yaml
+# docker-compose.yml - worker-metashape 서비스
+worker-metashape:
+  stop_signal: SIGTERM           # 종료 시그널
+  stop_grace_period: 60s         # 종료 대기 시간 (60초)
+```
+
+### 2. 동작 원리
+
+1. `docker compose stop` 또는 `docker compose down` 실행
+2. 컨테이너에 SIGTERM 시그널 전송
+3. 엔트리포인트 스크립트에서 SIGTERM 핸들러 실행
+4. `deactivate.py` 호출하여 라이센스 비활성화
+5. 60초 이내에 완료되지 않으면 강제 종료 (SIGKILL)
+
+### 3. 수동 비활성화
+
+필요 시 수동으로 라이센스를 비활성화할 수 있습니다:
+
+```bash
+docker compose exec worker-metashape python3 /app/engines/metashape/dags/metashape/deactivate.py
+```
+
+### 4. 로그 확인
+
+종료 시 라이센스 비활성화 로그 확인:
+
+```bash
+docker compose logs worker-metashape | grep -i "deactivat"
+```
+
+### 5. 주의사항
+
+- **SIGKILL 종료 시 비활성화 안됨**: `docker kill` 명령이나 시스템 강제 종료 시 라이센스가 비활성화되지 않습니다
+- **정상 종료 권장**: 항상 `docker compose stop` 또는 `docker compose down` 사용
+- **시스템 종료**: 리눅스 시스템의 정상 종료 (`shutdown`, `reboot`)는 SIGTERM을 전송하므로 안전합니다
+
+---
+
+## 🗺️ 오프라인 타일맵 설정 (2026-02-04 업데이트)
+
+### 1. 환경변수 설정
+
+오프라인 타일맵을 사용하려면 `.env` 파일에서 다음을 설정합니다:
+
+```bash
+# .env
+VITE_MAP_OFFLINE=true
+VITE_TILE_URL=/tiles/{z}/{x}/{y}.jpg   # 타일 파일 확장자에 맞게 설정 (.jpg 또는 .png)
+TILES_PATH=/media/innopam/InnoPAM-8TB/data/vworld_tiles/  # 호스트의 타일 디렉토리
+```
+
+> ⚠️ **중요**: `VITE_TILE_URL`의 확장자는 실제 타일 파일 확장자와 **정확히 일치**해야 합니다!
+> - VWorld 타일: `.jpg`
+> - OpenStreetMap 타일: `.png`
+
+### 2. 타일 디렉토리 구조
+
+타일은 `z/x/y.확장자` 형식이어야 합니다:
+
+```
+/path/to/tiles/
+├── 5/
+│   ├── 27/
+│   │   └── 12.jpg
+│   └── 28/
+│       └── 12.jpg
+├── 6/
+│   └── ...
+└── 15/
+    └── ...
+```
+
+타일 구조 확인 명령:
+```bash
+# 특정 줌 레벨의 타일 확인
+ls /path/to/tiles/7/109/
+# 출력 예: 49.jpg  50.jpg  51.jpg
+```
+
+### 3. 환경변수별 적용 방법
+
+| 환경변수 | 적용 시점 | 변경 시 필요한 작업 |
+|----------|----------|-------------------|
+| `VITE_MAP_OFFLINE` | 빌드 타임 | 프론트엔드 **재빌드** 필요 |
+| `VITE_TILE_URL` | 빌드 타임 | 프론트엔드 **재빌드** 필요 |
+| `TILES_PATH` | 런타임 (볼륨 마운트) | nginx **재시작**만 필요 |
+
+### 4. 설정 변경 후 적용 명령
+
+```bash
+# VITE_* 변수 변경 시: 프론트엔드 재빌드 + nginx 재시작
+docker compose build frontend --no-cache && docker compose up -d frontend nginx
+
+# TILES_PATH만 변경 시: nginx 재시작만
+docker compose up -d nginx
+```
+
+### 5. Docker Compose 설정
+
+```yaml
+# docker-compose.yml
+nginx:
+  volumes:
+    - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
+```
+
+### 6. Nginx 설정
+
+```nginx
+# nginx.conf
+location /tiles/ {
+    alias /data/tiles/;
+    expires 30d;
+    add_header Cache-Control "public, immutable";
+    add_header Access-Control-Allow-Origin "*";
+    try_files $uri =404;
+}
+```
+
+### 7. 온라인/오프라인 전환
+
+| VITE_MAP_OFFLINE | 동작 |
+|------------------|------|
+| `false` (기본값) | OpenStreetMap 온라인 타일 사용 |
+| `true` | 로컬 `/tiles/` 경로에서 타일 로드 |
+
+### 8. 트러블슈팅
+
+#### 증상: 지도가 회색 배경만 표시됨
+```
+원인 1: VITE_MAP_OFFLINE=true인데 타일 파일이 없음
+확인: curl http://localhost:8081/tiles/7/109/49.jpg
+해결: TILES_PATH가 올바른 경로인지 확인
+
+원인 2: 확장자 불일치 (.png vs .jpg)
+확인: ls /path/to/tiles/7/109/  # 실제 파일 확장자 확인
+해결: VITE_TILE_URL의 확장자를 실제 파일에 맞게 변경 후 재빌드
+```
+
+#### 증상: 타일 요청이 404 반환
+```bash
+# 타일 경로 확인
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/tiles/7/109/49.jpg
+
+# 컨테이너 내부에서 타일 파일 확인
+docker compose exec nginx ls -la /data/tiles/7/109/
+```
+
+#### 증상: 빌드 후에도 온라인 타일 사용
+```
+원인: 브라우저 캐시
+해결: Ctrl+Shift+R (하드 리프레시) 또는 시크릿 모드에서 확인
+```
+
+### 9. 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `src/config/mapConfig.js` | 타일 설정 로직 |
+| `Dockerfile.frontend` | VITE_MAP_OFFLINE 빌드 인자 |
+| `nginx.conf` | `/tiles/` 라우팅 |
+| `.env` | 환경변수 설정 |
+
+---
+
+## 📷 카메라 모델 확장 필드 (2026-02-03)
+
+### 1. 새로 추가된 필드
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `ppa_x` | Float | 주점 X 오프셋 (mm) |
+| `ppa_y` | Float | 주점 Y 오프셋 (mm) |
+| `sensor_width_px` | Integer | 이미지 가로 픽셀 수 |
+| `sensor_height_px` | Integer | 이미지 세로 픽셀 수 |
+
+### 2. 사용 위치
+
+- **카메라 모델 추가 폼**: 업로드 위자드 3단계에서 입력
+- **카메라 정보 표시**: 처리 옵션 사이드바의 IO 패널
+- **API 응답**: `/api/v1/camera-models` 엔드포인트
+
+### 3. 기존 데이터 마이그레이션
+
+기존 카메라 모델에 새 필드가 없으면 기본값(0 또는 null)으로 표시됩니다.
+필요시 DB에서 직접 업데이트:
+
+```bash
+docker compose exec db psql -U postgres -d aerial_survey -c \
+  "UPDATE camera_models SET ppa_x = 0, ppa_y = 0, sensor_width_px = 17310, sensor_height_px = 11310 WHERE name = 'UltraCam Eagle';"
+```
+
+---
+
+## 📤 스토리지 엔드포인트 분리 (2026-02-03)
+
+### 1. 아키텍처 변경
+
+업로드와 다운로드가 서로 다른 엔드포인트를 사용합니다:
+
+| 용도 | 엔드포인트 | 포트 | 경로 |
+|------|----------|------|------|
+| 업로드 (S3 Multipart) | nginx 프록시 | 8081 | `/storage/` |
+| 다운로드 (썸네일, projects/) | 직접 MinIO | 9002 | 없음 (직접 접근) |
+
+### 2. 환경변수 설정
+
+```bash
+# .env
+# 업로드용 nginx 프록시 주소
+MINIO_PUBLIC_ENDPOINT=192.168.10.203:8081
+```
+
+### 3. storage.py 로직
+
+```python
+def get_presigned_url(self, object_name, ...):
+    # projects/ 경로: 직접 MinIO 접근 (port 9002)
+    if object_name.startswith("projects/"):
+        host = public_endpoint.split(':')[0]
+        return f"http://{host}:9002/{bucket}/{object_name}"
+
+    # 그 외: nginx 프록시 presigned URL
+    return presigned_url_via_nginx
+```
+
+### 4. 왜 분리했나?
+
+1. **업로드**: nginx의 `/storage/` 프록시 필요 (path rewriting, CORS)
+2. **다운로드 (public)**: presigned URL signature 문제 회피
+   - S3 V4 서명은 Host 헤더를 포함하므로, nginx 프록시와 MinIO 직접 접근 시 서명 불일치 발생
+   - `projects/` 버킷 정책을 public으로 설정하고 직접 접근하면 서명 불필요
+
+### 5. 트러블슈팅
+
+#### 증상: 업로드 실패 (ERR_CONNECTION_RESET)
+```
+PUT http://192.168.10.203:9002/storage/aerial-survey/... net::ERR_CONNECTION_RESET
+```
+
+**원인**: MINIO_PUBLIC_ENDPOINT가 9002로 설정되어 nginx 프록시를 거치지 않음
+
+**해결**:
+```bash
+# .env
+MINIO_PUBLIC_ENDPOINT=192.168.10.203:8081
+
+# API 컨테이너 재생성
+docker compose up -d --force-recreate api
+```
+
+#### 증상: 썸네일 403 Forbidden
+```
+원인: presigned URL 서명 불일치
+해결: storage.py에서 projects/ 경로는 직접 MinIO 접근 (이미 적용됨)
+```

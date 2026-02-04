@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, Image
+from app.models.project import Project, Image, CameraModel
 from app.schemas.project import ImageResponse, ImageUploadResponse
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.config import get_settings
@@ -209,11 +209,14 @@ async def list_project_images(
         )
 
     from sqlalchemy.orm import joinedload
-    from app.models.project import ExteriorOrientation
+    from app.models.project import ExteriorOrientation, CameraModel
 
     result = await db.execute(
         select(Image)
-        .options(joinedload(Image.exterior_orientation))
+        .options(
+            joinedload(Image.exterior_orientation),
+            joinedload(Image.camera_model)
+        )
         .where(Image.project_id == project_id)
         .order_by(Image.created_at)
     )
@@ -243,6 +246,11 @@ async def list_project_images(
             "has_error": img.has_error,
             "upload_status": img.upload_status,
             "created_at": img.created_at,
+            # Image dimensions
+            "image_width": img.image_width,
+            "image_height": img.image_height,
+            # Camera model
+            "camera_model": img.camera_model,
             "exterior_orientation": img.exterior_orientation,
         }
         response.append(ImageResponse.model_validate(img_dict))
@@ -347,6 +355,7 @@ class MultipartInitRequest(BaseModel):
     """Request body for multipart upload initialization."""
     files: List[FileInfo]
     part_size: Optional[int] = 10 * 1024 * 1024  # 10MB default
+    camera_model_name: Optional[str] = None  # Link images to camera model
 
 
 class PartInfo(BaseModel):
@@ -449,6 +458,16 @@ async def init_multipart_upload(
     s3_service = get_s3_multipart_service()
     uploads = []
 
+    # Look up camera model if provided
+    camera_model_id = None
+    if request.camera_model_name:
+        cam_result = await db.execute(
+            select(CameraModel).where(CameraModel.name == request.camera_model_name)
+        )
+        camera_model = cam_result.scalar_one_or_none()
+        if camera_model:
+            camera_model_id = camera_model.id
+
     for file_info in request.files:
         # Create or update image record
         existing_result = await db.execute(
@@ -462,6 +481,8 @@ async def init_multipart_upload(
         if existing_image:
             existing_image.upload_status = "uploading"
             existing_image.file_size = file_info.size
+            if camera_model_id:
+                existing_image.camera_model_id = camera_model_id
             await db.flush()
             image = existing_image
         else:
@@ -470,6 +491,7 @@ async def init_multipart_upload(
                 filename=file_info.filename,
                 file_size=file_info.size,
                 upload_status="uploading",
+                camera_model_id=camera_model_id,
             )
             db.add(image)
             await db.flush()

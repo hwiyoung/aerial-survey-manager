@@ -27,7 +27,18 @@ export function useProjects(options = {}) {
             if (params.search) queryParams.search = params.search;
 
             const response = await api.getProjects(queryParams);
-            setProjects(response.items || []);
+            const fetchedProjects = response.items || [];
+
+            // Merge: Keep locally-created projects that aren't in the response yet
+            // This prevents projects from "disappearing" due to timing issues
+            setProjects(prev => {
+                const fetchedIds = new Set(fetchedProjects.map(p => p.id));
+                // Find locally-created projects not in response (likely just created)
+                const localOnly = prev.filter(p => !fetchedIds.has(p.id));
+                // Return fetched projects + local-only projects at the start
+                return [...localOnly, ...fetchedProjects];
+            });
+
             setPagination({
                 total: response.total,
                 page: response.page,

@@ -55,6 +55,8 @@ minio_data/
 
 # Release packages
 releases/
+*.tar.gz
+*.zip
 
 # SSL certificates
 ssl/*.pem

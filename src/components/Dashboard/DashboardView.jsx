@@ -103,10 +103,10 @@ function StatsSummary({ stats, isCompact = false }) {
                 {/* 총 원본 사진 */}
                 <DashboardStatsCard
                     icon={<Camera size={18} />}
-                    value={stats.photoCount?.toLocaleString() || '7,305'}
+                    value={(stats.photoCount ?? 0).toLocaleString()}
                     unit="장"
                     label="총 원본 사진"
-                    subLabel={`평균 ${stats.avgPhotos || 292}장 / 블록`}
+                    subLabel={stats.total > 0 ? `평균 ${stats.avgPhotos}장 / 블록` : '프로젝트 없음'}
                 />
             </div>
         </div>
@@ -176,7 +176,7 @@ function ProjectDetailView({ project, onBack }) {
                             <h3 className="text-lg font-bold text-slate-800">{project.title}</h3>
                             <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded font-mono uppercase tracking-tighter">ID: {project.id?.slice(0, 8)}...</span>
                         </div>
-                        <p className="text-sm text-slate-500">{project.region} · {project.company}</p>
+                        <p className="text-sm text-slate-500">{project.region}</p>
                     </div>
                 </div>
                 <div className="flex flex-col items-end gap-2">
@@ -281,10 +281,12 @@ export default function DashboardView({
                 }));
                 setMonthlyData(transformedMonthly);
 
-                // Transform regional data for charts
-                const transformedRegional = regionalRes.data.map(item => ({
+                // Transform regional data for charts (경기 관련 권역 제외 + 퍼센트 재계산)
+                const filteredRegions = regionalRes.data.filter(item => !item.region.includes('경기'));
+                const filteredTotal = filteredRegions.reduce((sum, item) => sum + item.count, 0);
+                const transformedRegional = filteredRegions.map(item => ({
                     name: item.region,
-                    value: item.percentage
+                    value: filteredTotal > 0 ? Math.round((item.count / filteredTotal) * 100) : 0
                 }));
                 setRegionalData(transformedRegional);
             } catch (error) {

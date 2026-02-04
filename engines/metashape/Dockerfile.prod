@@ -101,5 +101,13 @@ COPY --from=builder /app/app /app/app
 # Metashape 스크립트 복사 (subprocess 실행을 위해 .py 소스 유지)
 COPY --from=builder /app/engines /app/engines
 
+# 엔트리포인트 스크립트 복사 (라이센스 비활성화를 위한 SIGTERM 핸들러)
+COPY engines/metashape/entrypoint.sh /app/engines/metashape/entrypoint.sh
+RUN chmod +x /app/engines/metashape/entrypoint.sh
+
+# 엔트리포인트 설정 (SIGTERM 수신 시 라이센스 비활성화)
+ENTRYPOINT ["/app/engines/metashape/entrypoint.sh"]
+
+
 # 기본 명령어
 CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "metashape", "--loglevel=info"]

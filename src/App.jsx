@@ -33,7 +33,7 @@ import DashboardView from './components/Dashboard/DashboardView';
 
 
 // --- 1. CONSTANTS ---
-const REGIONS = ['경기 권역', '충청 권역', '강원 권역', '전라 권역', '경상 권역'];
+const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역', '제주 권역'];
 const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
 
 // Status mapping for display
@@ -93,22 +93,36 @@ function Dashboard() {
   // Use API hook for projects
   const { projects: apiProjects, loading: projectsLoading, error: projectsError, refresh: refreshProjects, createProject, deleteProject } = useProjects();
 
+  // 멀티 프로젝트 업로드 지원: 프로젝트별로 업로드 상태 관리 (projects useMemo보다 먼저 선언)
+  const [uploadsByProject, setUploadsByProject] = useState({}); // { projectId: [uploads...] }
+  const [uploaderControllers, setUploaderControllers] = useState({}); // { projectId: controller }
+
   // Transform API projects to match UI expectations
   const projects = useMemo(() => {
-    return apiProjects.map(p => ({
-      ...p,
-      status: STATUS_MAP[p.status] || p.status,
-      imageCount: p.image_count || 0,
-      startDate: p.created_at?.slice(0, 10) || '',
-      // Use real bounds from backend, don't mock it!
-      bounds: p.bounds,
-      orthoResult: (p.status === 'completed' || p.status === '완료') ? {
-        resolution: '5cm GSD',
-        fileSize: p.ortho_path ? 'Loading...' : 'Check storage',
-        generatedAt: p.updated_at?.slice(0, 10)
-      } : null,
-    }));
-  }, [apiProjects]);
+    return apiProjects.map(p => {
+      // 프론트엔드 업로드 상태 병합
+      const projectUploads = uploadsByProject[p.id] || [];
+      const hasActiveUpload = projectUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+      const completedUploadCount = projectUploads.filter(u => u.status === 'completed').length;
+
+      return {
+        ...p,
+        status: STATUS_MAP[p.status] || p.status,
+        imageCount: p.image_count || 0,
+        startDate: p.created_at?.slice(0, 10) || '',
+        // Use real bounds from backend, don't mock it!
+        bounds: p.bounds,
+        orthoResult: (p.status === 'completed' || p.status === '완료') ? {
+          resolution: '5cm GSD',
+          fileSize: p.ortho_path ? 'Loading...' : 'Check storage',
+          generatedAt: p.updated_at?.slice(0, 10)
+        } : null,
+        // 프론트엔드 업로드 상태 (백엔드 값보다 우선)
+        upload_in_progress: hasActiveUpload || p.upload_in_progress,
+        upload_completed_count: hasActiveUpload ? completedUploadCount : (p.upload_completed_count ?? p.image_count),
+      };
+    });
+  }, [apiProjects, uploadsByProject]);
 
   // Groups state for folder organization
   const [groups, setGroups] = useState([]);
@@ -213,9 +227,6 @@ function Dashboard() {
   // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
   // 로고 클릭 시 전체 대시보드를 보여주기 위해 자동 선택 비활성화
   const [projectImages, setProjectImages] = useState([]); // Store fetched images
-  // 멀티 프로젝트 업로드 지원: 프로젝트별로 업로드 상태 관리
-  const [uploadsByProject, setUploadsByProject] = useState({}); // { projectId: [uploads...] }
-  const [uploaderControllers, setUploaderControllers] = useState({}); // { projectId: controller }
 
   // 모든 프로젝트의 업로드를 평탄화 (대시보드용)
   const allUploads = useMemo(() => {
@@ -379,6 +390,12 @@ function Dashboard() {
   }, [activeProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
+
+  // Reset selected image when project changes or when leaving processing mode
+  useEffect(() => {
+    setSelectedImageId(null);
+  }, [selectedProjectId, viewMode]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
   const [sidebarWidth, setSidebarWidth] = useState(800);
@@ -419,6 +436,7 @@ function Dashboard() {
       setViewMode('dashboard');
       setProcessingProject(null);
       setSelectedProjectId(null);
+      setSelectedImageId(null);
       setShowInspector(false);
       setHighlightProjectId(null);
       // 업로드는 유지 (글로벌 업로드)
@@ -461,6 +479,17 @@ function Dashboard() {
 
     return () => clearInterval(intervalId);
   }, [projects, refreshProjects]);
+
+  // Periodic refresh while uploads are active (sidebar upload status update)
+  useEffect(() => {
+    if (!hasAnyActiveUploads) return;
+
+    const intervalId = setInterval(() => {
+      refreshProjects();
+    }, 3000); // 3초마다 갱신
+
+    return () => clearInterval(intervalId);
+  }, [hasAnyActiveUploads, refreshProjects]);
 
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
@@ -599,31 +628,56 @@ function Dashboard() {
         console.log('Uploading EO data...');
         try {
           await api.uploadEoData(created.id, eoFile, eoConfig);
-          // Wait briefly (500ms) for DB commit and fetch real images
-          await new Promise(resolve => setTimeout(resolve, 500));
-          const fetchedImages = await api.getProjectImages(created.id);
-          if (fetchedImages && fetchedImages.length > 0) {
-            const points = fetchedImages.map(img => {
-              const eo = img.exterior_orientation;
-              return {
-                id: img.id,
-                name: img.filename,
-                // If EO exists, use it. Otherwise 0
-                wx: eo ? eo.x : 0,
-                wy: eo ? eo.y : 0,
-                z: eo ? eo.z : null,
-                omega: eo ? eo.omega : null,
-                phi: eo ? eo.phi : null,
-                kappa: eo ? eo.kappa : null,
-                hasEo: !!eo,
-                thumbnail_url: img.thumbnail_url || null,
-                file_size: img.file_size || null,
-                thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
-              };
-            });
-            imagesToUse = points.filter(p => p.hasEo);
-            setProjectImages(imagesToUse); // Update global state for map
+
+          // Retry fetching images with EO data (with exponential backoff)
+          const maxRetries = 5;
+          const baseDelay = 800; // Start with 800ms delay
+
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const delay = baseDelay * attempt; // 800, 1600, 2400, 3200, 4000ms
+            console.log(`Fetching images (attempt ${attempt}/${maxRetries}) after ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            const fetchedImages = await api.getProjectImages(created.id);
+            if (fetchedImages && fetchedImages.length > 0) {
+              const points = fetchedImages.map(img => {
+                const eo = img.exterior_orientation;
+                return {
+                  id: img.id,
+                  name: img.filename,
+                  // If EO exists, use it. Otherwise 0
+                  wx: eo ? eo.x : 0,
+                  wy: eo ? eo.y : 0,
+                  z: eo ? eo.z : null,
+                  omega: eo ? eo.omega : null,
+                  phi: eo ? eo.phi : null,
+                  kappa: eo ? eo.kappa : null,
+                  hasEo: !!eo,
+                  thumbnail_url: img.thumbnail_url || null,
+                  file_size: img.file_size || null,
+                  thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
+                };
+              });
+
+              const imagesWithEo = points.filter(p => p.hasEo);
+
+              // If we have images with EO data, use them and break
+              if (imagesWithEo.length > 0) {
+                console.log(`Found ${imagesWithEo.length} images with EO data`);
+                imagesToUse = imagesWithEo;
+                setProjectImages(imagesToUse); // Update global state for map
+                break;
+              }
+
+              // If no EO data yet but this is last attempt, use all images
+              if (attempt === maxRetries) {
+                console.warn('No EO data found after all retries, using images without EO');
+                imagesToUse = points;
+                setProjectImages(imagesToUse);
+              }
+            }
           }
+
           alert("EO data uploaded successfully.");
         } catch (e) {
           console.error(e);
@@ -657,6 +711,7 @@ function Dashboard() {
           concurrency: 6,
           partConcurrency: 4,
           partSize: 10 * 1024 * 1024, // 10MB parts
+          cameraModelName: cameraModel, // Link images to camera model
           onFileProgress: (idx, name, progress) => {
             setUploadsByProject(prev => {
               const projectUploads = prev[projectId] || [];
@@ -683,16 +738,52 @@ function Dashboard() {
               }
               return { ...prev, [projectId]: next };
             });
+
+            // Update processing project's completed count
+            setProcessingProject(prev => {
+              if (prev && prev.id === projectId) {
+                const currentCompleted = (prev.upload_completed_count || 0) + 1;
+                return {
+                  ...prev,
+                  upload_completed_count: currentCompleted
+                };
+              }
+              return prev;
+            });
           },
           onAllComplete: async () => {
             console.log(`All uploads finished for project ${projectId}`);
+
+            // Mark all uploads as completed to enable processing button
+            setUploadsByProject(prev => {
+              const projectUploads = prev[projectId] || [];
+              const allCompleted = projectUploads.map(u => ({
+                ...u,
+                status: 'completed',
+                progress: 100
+              }));
+              return { ...prev, [projectId]: allCompleted };
+            });
+
+            // Update processing project with completed upload count
+            setProcessingProject(prev => {
+              if (prev && prev.id === projectId) {
+                return {
+                  ...prev,
+                  upload_completed_count: files.length,
+                  upload_in_progress: false
+                };
+              }
+              return prev;
+            });
+
             // 해당 프로젝트의 컨트롤러만 제거
             setUploaderControllers(prev => {
               const { [projectId]: _, ...rest } = prev;
               return rest;
             });
 
-            // 썸네일 생성 대기
+            // 썸네일 생성 대기 및 프로젝트 목록 갱신
             const attempts = 8;
             const intervalMs = 4000;
             for (let i = 1; i <= attempts; i += 1) {
@@ -701,6 +792,9 @@ function Dashboard() {
                 setImageRefreshKey(prev => prev + 1);
               }, delay);
             }
+
+            // Refresh project list after uploads complete
+            await refreshProjects();
           },
           onError: (idx, name, err) => {
             console.error(`Failed ${name}`, err);
@@ -722,13 +816,18 @@ function Dashboard() {
       }
 
       // 5. Update UI State (Switch to Processing View immediately)
+      const hasFilesToUpload = files && files.length > 0;
       const projectForProcessing = {
         ...created,
         status: '대기',
         imageCount: files?.length || 0,
+        image_count: files?.length || 0,
         images: imagesToUse, // Use real images if fetched, else placeholders
         bounds: { x: 30, y: 30, w: 40, h: 40 },
-        cameraModel: cameraModel
+        cameraModel: cameraModel,
+        // Upload tracking
+        upload_in_progress: hasFilesToUpload, // Will be set to false when uploads complete
+        upload_completed_count: hasFilesToUpload ? 0 : (files?.length || 0), // 0 initially, updated as uploads complete
       };
 
       setProcessingProject(projectForProcessing);
@@ -746,7 +845,7 @@ function Dashboard() {
     }
   };
 
-  const handleStartProcessing = async (options = {}, force = false) => {
+  const handleStartProcessing = async (options = {}, forceRestart = false) => {
     if (!processingProject) return;
 
     const projectId = processingProject.id;
@@ -762,8 +861,8 @@ function Dashboard() {
     };
 
     try {
-      // Start processing via API
-      const result = await api.startProcessing(projectId, processingOptions, force);
+      // Start processing via API (force=false for incomplete uploads, forceRestart for existing jobs)
+      const result = await api.startProcessing(projectId, processingOptions, false, forceRestart);
       console.log('Processing started:', result);
 
       // 해당 프로젝트의 업로드 패널 자동 숨김 (처리 시작 시)
@@ -790,14 +889,26 @@ function Dashboard() {
         );
 
         if (shouldProceed) {
-          // force=true로 다시 시도
-          return handleStartProcessing(options, true);
+          // force=true로 다시 시도 (incomplete uploads bypass)
+          try {
+            const result = await api.startProcessing(projectId, processingOptions, true, forceRestart);
+            console.log('Processing started with force:', result);
+            setUploadsByProject(prev => {
+              const { [projectId]: _, ...rest } = prev;
+              return rest;
+            });
+            setProcessingProject(prev => prev ? ({ ...prev, status: '대기', progress: 0 }) : prev);
+            alert('처리가 시작되었습니다.');
+            refreshProjects();
+          } catch (retryErr) {
+            alert('처리 시작 실패: ' + retryErr.message);
+          }
         }
         return;
       }
 
-      alert('처리 시작 실패: ' + err.message);
-      return;
+      // job_already_running 에러는 ProcessingSidebar에서 처리하므로 여기서는 그냥 throw
+      throw err;
     }
 
     // Refresh project list to update status
@@ -1132,18 +1243,22 @@ function Dashboard() {
           onAbortAll={() => {
             if (window.confirm('모든 업로드를 취소하시겠습니까?')) {
               // 모든 컨트롤러 중단
-              Object.values(uploaderControllers).forEach(ctrl => ctrl?.abortAll());
+              Object.values(uploaderControllers).forEach(ctrl => ctrl?.abort());
               setUploaderControllers({});
               setUploadsByProject({});
+              // 취소 완료 메시지 표시
+              alert('업로드가 취소되었습니다.');
             }
           }}
           onRestore={() => {
             // 업로드가 완료된 경우에만 패널 닫기 허용
             if (hasAnyActiveUploads) {
               if (window.confirm('업로드가 진행 중입니다. 패널을 닫으면 업로드가 취소됩니다.\n\n계속하시겠습니까?')) {
-                Object.values(uploaderControllers).forEach(ctrl => ctrl?.abortAll());
+                Object.values(uploaderControllers).forEach(ctrl => ctrl?.abort());
                 setUploaderControllers({});
                 setUploadsByProject({});
+                // 취소 완료 메시지 표시
+                alert('업로드가 취소되었습니다.');
               }
             } else {
               setUploaderControllers({});

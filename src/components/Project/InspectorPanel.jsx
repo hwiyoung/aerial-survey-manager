@@ -41,7 +41,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                     <div className="flex items-center gap-2 mb-2"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">BLOCK</span><span className="text-xs text-slate-400 font-mono">{project.id}</span></div>
                     <h2 className="text-2xl font-bold leading-tight mb-6">{project.title}</h2>
                     <div className="space-y-4 text-sm">
-                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역/업체</span><span className="font-medium">{project.region}/{project.company}</span></div>
+                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역</span><span className="font-medium">{project.region}</span></div>
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">상태</span><span className={`font-bold ${project.status === '완료' || project.status === 'completed' ? 'text-emerald-600' : project.status === '오류' || project.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>{project.status === 'completed' ? '완료' : project.status}</span></div>
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">원본사진</span><span className="font-medium">{project.image_count || project.imageCount || 0}장</span></div>
                         {project.source_size && (
@@ -138,16 +138,82 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                         <div className="relative w-full h-full flex items-center justify-center">
                             <img src={image.thumbnail_url} alt={image.name} className="max-w-full max-h-full object-contain shadow-2xl transition-transform duration-500 hover:scale-[1.02]" />
                             <div className="absolute inset-x-0 bottom-0 p-8 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                                <div className="flex gap-10 text-white">
-                                    <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Coordinates</span><span className="font-mono text-sm">{image.wy.toFixed(6)}, {image.wx.toFixed(6)}</span></div>
+                                <div className="flex gap-8 text-white flex-wrap">
+                                    <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Coordinates</span><span className="font-mono text-sm">{image.wy?.toFixed(6)}, {image.wx?.toFixed(6)}</span></div>
                                     <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Altitude</span><span className="font-mono text-sm">{image.z}m</span></div>
-                                    <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Rotation (ω/φ/κ)</span><span className="font-mono text-sm">{image.omega.toFixed(2)}° / {image.phi.toFixed(2)}° / {image.kappa.toFixed(2)}°</span></div>
+                                    <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Rotation (ω/φ/κ)</span><span className="font-mono text-sm">{image.omega?.toFixed(2)}° / {image.phi?.toFixed(2)}° / {image.kappa?.toFixed(2)}°</span></div>
+                                    {(image.image_width && image.image_height) && (
+                                        <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Image Size</span><span className="font-mono text-sm">{image.image_width} x {image.image_height} px</span></div>
+                                    )}
+                                    {image.camera_model && (
+                                        <div><span className="text-[10px] text-white/50 block font-bold uppercase tracking-widest mb-1">Camera</span><span className="font-mono text-sm">{image.camera_model.name}</span></div>
+                                    )}
                                 </div>
                             </div>
                         </div>
                     )}
                 </div>
                 <div className="w-80 border-l border-slate-200 p-6 overflow-y-auto bg-white space-y-8">
+                    {/* Camera / Interior Orientation 섹션 */}
+                    {(image.camera_model || image.image_width) && (
+                        <section>
+                            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Camera / Interior Orientation</h4>
+                            <div className="space-y-3 text-sm">
+                                {image.camera_model && (
+                                    <>
+                                        <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                            <span className="text-slate-500">모델명</span>
+                                            <span className="font-medium text-slate-700">{image.camera_model.name}</span>
+                                        </div>
+                                        {image.camera_model.focal_length && (
+                                            <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                                <span className="text-slate-500">초점거리</span>
+                                                <span className="font-mono font-medium text-slate-700">{image.camera_model.focal_length} mm</span>
+                                            </div>
+                                        )}
+                                        {(image.camera_model.sensor_width && image.camera_model.sensor_height) && (
+                                            <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                                <span className="text-slate-500">센서 크기</span>
+                                                <span className="font-mono font-medium text-slate-700">
+                                                    {image.camera_model.sensor_width} x {image.camera_model.sensor_height} mm
+                                                </span>
+                                            </div>
+                                        )}
+                                        {image.camera_model.pixel_size && (
+                                            <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                                <span className="text-slate-500">픽셀 크기</span>
+                                                <span className="font-mono font-medium text-slate-700">{image.camera_model.pixel_size} μm</span>
+                                            </div>
+                                        )}
+                                        {(image.camera_model.sensor_width_px && image.camera_model.sensor_height_px) && (
+                                            <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                                <span className="text-slate-500">이미지 크기</span>
+                                                <span className="font-mono font-medium text-slate-700">
+                                                    {image.camera_model.sensor_width_px} x {image.camera_model.sensor_height_px} px
+                                                </span>
+                                            </div>
+                                        )}
+                                        {(image.camera_model.ppa_x != null || image.camera_model.ppa_y != null) && (
+                                            <div className="flex justify-between p-2 bg-blue-50 rounded border border-blue-100">
+                                                <span className="text-blue-600">PPA (주점 오프셋)</span>
+                                                <span className="font-mono font-medium text-blue-700">
+                                                    ({image.camera_model.ppa_x?.toFixed(3) || '0.000'}, {image.camera_model.ppa_y?.toFixed(3) || '0.000'}) mm
+                                                </span>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                                {(image.image_width && image.image_height) && (
+                                    <div className="flex justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                        <span className="text-slate-500">이미지 해상도</span>
+                                        <span className="font-mono font-medium text-slate-700">
+                                            {image.image_width} x {image.image_height} px
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        </section>
+                    )}
                     <section>
                         <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Quality Control (QC)</h4>
                         <div className="space-y-4">

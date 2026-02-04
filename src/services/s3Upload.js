@@ -17,23 +17,65 @@ export class S3MultipartUploader {
      * @param {File[]} files - Array of files to upload
      * @param {string} projectId - Project ID
      * @param {Object} callbacks - Callback functions
-     * @returns {Object} Controller with abort method
+     * @returns {Object} Controller with abort method (returned synchronously)
      */
-    async uploadFiles(files, projectId, {
+    uploadFiles(files, projectId, {
         onFileProgress,
         onFileComplete,
         onAllComplete,
         onError,
         concurrency = 6,      // Files in parallel
         partConcurrency = 4,  // Parts per file in parallel
-        partSize = 10 * 1024 * 1024  // 10MB
+        partSize = 10 * 1024 * 1024,  // 10MB
+        cameraModelName = null  // Camera model to link to images
     } = {}) {
         const abortController = { aborted: false };
         const fileArray = Array.from(files);
 
+        // 컨트롤러를 동기적으로 반환하고, 실제 업로드는 비동기로 진행
+        const controller = {
+            abort: () => {
+                abortController.aborted = true;
+                this.activeUploads.forEach(ctrl => {
+                    ctrl.abort?.();
+                });
+                this.activeUploads.clear();
+            }
+        };
+
+        // 비동기 업로드 시작 (백그라운드에서 실행)
+        this._startUpload(fileArray, projectId, {
+            abortController,
+            onFileProgress,
+            onFileComplete,
+            onAllComplete,
+            onError,
+            concurrency,
+            partConcurrency,
+            partSize,
+            cameraModelName
+        });
+
+        return controller;
+    }
+
+    /**
+     * Internal async upload method
+     */
+    async _startUpload(fileArray, projectId, {
+        abortController,
+        onFileProgress,
+        onFileComplete,
+        onAllComplete,
+        onError,
+        concurrency,
+        partConcurrency,
+        partSize,
+        cameraModelName
+    }) {
         try {
             // 1. Initialize all uploads at once (batch API call)
-            const initResponse = await this.initMultipartUploads(projectId, fileArray, partSize);
+            const initResponse = await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelName);
 
             if (!initResponse.uploads || initResponse.uploads.length === 0) {
                 throw new Error('Failed to initialize uploads');
@@ -88,7 +130,12 @@ export class S3MultipartUploader {
                             }).catch((error) => {
                                 activeCount--;
                                 completedCount++;
-                                onError?.(index, file.name, error);
+                                // AbortError는 정상적인 취소이므로 에러로 처리하지 않음
+                                if (error.name === 'AbortError' || abortController.aborted) {
+                                    console.log(`Upload cancelled: ${file.name}`);
+                                } else {
+                                    onError?.(index, file.name, error);
+                                }
                                 uploadNext();
                             });
                         }
@@ -112,16 +159,6 @@ export class S3MultipartUploader {
             console.error('Upload initialization failed:', error);
             onError?.(0, 'initialization', error);
         }
-
-        return {
-            abort: () => {
-                abortController.aborted = true;
-                this.activeUploads.forEach(controller => {
-                    controller.abort?.();
-                });
-                this.activeUploads.clear();
-            }
-        };
     }
 
     /**
@@ -241,21 +278,27 @@ export class S3MultipartUploader {
     /**
      * Initialize multipart uploads via backend API
      */
-    async initMultipartUploads(projectId, files, partSize) {
+    async initMultipartUploads(projectId, files, partSize, cameraModelName = null) {
+        const body = {
+            files: files.map(f => ({
+                filename: f.name,
+                size: f.size,
+                content_type: f.type || 'application/octet-stream'
+            })),
+            part_size: partSize
+        };
+
+        if (cameraModelName) {
+            body.camera_model_name = cameraModelName;
+        }
+
         const response = await fetch(`${API_BASE}/upload/projects/${projectId}/multipart/init`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${this.authToken}`
             },
-            body: JSON.stringify({
-                files: files.map(f => ({
-                    filename: f.name,
-                    size: f.size,
-                    content_type: f.type || 'application/octet-stream'
-                })),
-                part_size: partSize
-            })
+            body: JSON.stringify(body)
         });
 
         if (!response.ok) {

@@ -31,7 +31,8 @@ celery_app.conf.update(
         "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
         "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
         "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
-        "app.workers.tasks.generate_thumbnail": {"queue": "odm"},  # lightweight task, use ODM queue
+        "app.workers.tasks.generate_thumbnail": {"queue": "metashape"},  # Use metashape queue (ODM worker is disabled)
+        "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "metashape"},  # Use metashape queue
     },
 )
 
@@ -234,7 +235,21 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 )
             finally:
                 loop.close()
-            
+
+            # Read result_gsd from status.json (Metashape engine)
+            if engine_name == "metashape":
+                status_json_path = output_dir / "status.json"
+                if status_json_path.exists():
+                    try:
+                        with open(status_json_path, "r") as f:
+                            status_data = json.load(f)
+                        if "result_gsd" in status_data:
+                            job.result_gsd = status_data["result_gsd"]
+                            print(f"📊 Result GSD saved to job: {job.result_gsd} cm/pixel")
+                            db.commit()
+                    except Exception as e:
+                        print(f"Failed to read result_gsd from status.json: {e}")
+
             update_progress(90, "결과물 업로드 중...")
             
             # Upload result to storage
@@ -248,12 +263,14 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             try:
                 import subprocess
                 # Use GDAL to create COG with proper tiling and overviews
+                # Note: TILING_SCHEME 제거하여 원본 GSD 유지
                 gdal_cmd = [
                     "gdal_translate",
                     "-of", "COG",
                     "-co", "COMPRESS=LZW",
-                    "-co", "TILING_SCHEME=GoogleMapsCompatible",
+                    "-co", "BLOCKSIZE=256",
                     "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+                    "-co", "BIGTIFF=YES",
                     str(result_path),
                     str(cog_path)
                 ]
@@ -391,6 +408,8 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
         force: If True, regenerate even if thumbnail already exists
     """
     from PIL import Image as PILImage
+    # Increase limit for large aerial images (e.g., UltraCam Eagle: 17310x11310 = 195MP)
+    PILImage.MAX_IMAGE_PIXELS = 300000000  # 300 megapixels
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from app.models.project import Image

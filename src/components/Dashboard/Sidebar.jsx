@@ -163,8 +163,6 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                     <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                         <span className="bg-slate-100 px-1.5 py-0.5 rounded">{project.region}</span>
                         <span className="text-slate-300">|</span>
-                        <span className="truncate max-w-[100px]">{project.company}</span>
-                        <span className="text-slate-300">|</span>
                         <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
                         {project.area && <><span className="text-slate-300">|</span><span className="font-bold text-blue-600"> {project.area.toFixed(2)} km²</span></>}
                         {project.startDate && <><span className="text-slate-300">|</span><span>📅 {project.startDate}</span></>}
@@ -243,7 +241,7 @@ export function ProjectItem({ project, isSelected, isChecked, sizeMode = 'normal
                             <button onClick={handleDelete} className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all" title="프로젝트 삭제"><Trash2 size={14} /></button>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span><span className="text-slate-300">|</span><span>{project.company}</span></div>
+                    <div className="flex items-center gap-2 text-xs text-slate-500 mt-1"><span className="bg-slate-100 px-1.5 rounded">{project.region}</span></div>
                 </div>
             </div>
             <div className={`flex gap-2 pl-7 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>

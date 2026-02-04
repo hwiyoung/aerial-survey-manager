@@ -119,7 +119,9 @@ def check_success(output_path):
         return False
 
     # 99% 이상이면 완료로 간주 (Metashape가 99.9%로 끝나는 경우 대응)
-    incomplete = {k: v for k, v in state.items() if v < 99}
+    # result_gsd는 GSD 값이므로 진행률 체크에서 제외
+    progress_keys = [k for k in state.keys() if k != 'result_gsd']
+    incomplete = {k: v for k, v in state.items() if k in progress_keys and v < 99}
 
     if incomplete:
         print(f"⚠️ 일부 작업이 아직 완료되지 않았습니다: {incomplete}")
@@ -196,3 +198,33 @@ def deactivate_metashape_license():
         print("✅ Metashape 라이선스가 성공적으로 비활성화되었습니다.")
     except Exception as e:
         print(f"⚠️ 라이선스 비활성화 중 오류 발생: {e}")
+
+
+def save_result_gsd(output_path, gsd_meters):
+    """
+    처리 결과 GSD를 status.json에 저장하는 함수.
+
+    Args:
+        output_path: 출력 디렉토리 경로
+        gsd_meters: GSD 값 (미터 단위)
+    """
+    status_file = os.path.join(output_path, "status.json")
+    gsd_cm = round(gsd_meters * 100, 4)  # cm 단위로 변환
+
+    with lock:
+        if os.path.exists(status_file):
+            with open(status_file, "r") as f:
+                try:
+                    status = json.load(f)
+                except Exception:
+                    status = {}
+        else:
+            status = {}
+
+        # 결과 GSD 저장 (cm 단위)
+        status["result_gsd"] = gsd_cm
+
+        with open(status_file, "w") as f:
+            json.dump(status, f)
+
+    print(f"📊 결과 GSD 저장: {gsd_cm:.2f} cm/pixel")
