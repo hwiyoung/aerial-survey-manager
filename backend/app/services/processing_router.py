@@ -365,6 +365,23 @@ class MetashapeEngine(ProcessingEngine):
     Engine using Agisoft Metashape Python SDK.
     Runs locally on worker-metashape.
     """
+
+    @staticmethod
+    def _get_script_path(script_base: Path, script_name: str) -> Path:
+        """
+        스크립트 경로를 반환합니다. .pyc (바이트코드) 우선, .py 폴백.
+        프로덕션 환경에서는 소스 코드 보호를 위해 .pyc만 존재합니다.
+        """
+        pyc_path = script_base / script_name.replace(".py", ".pyc")
+        py_path = script_base / script_name
+
+        if pyc_path.exists():
+            return pyc_path
+        elif py_path.exists():
+            return py_path
+        else:
+            raise FileNotFoundError(f"Script not found: {script_name} (checked .pyc and .py)")
+
     async def process(
         self,
         project_id: str,
@@ -378,14 +395,14 @@ class MetashapeEngine(ProcessingEngine):
         import os
         import json
         import shutil
-        
+
         if progress_callback:
             await progress_callback(0, "엔진 초기화 중...")
-            
+
         # 1. 사이클 시작: 라이선스 활성화
         script_base = Path("/app/engines/metashape/dags/metashape")
-        activate_script = script_base / "activate.py"
-        deactivate_script = script_base / "deactivate.py"
+        activate_script = self._get_script_path(script_base, "activate.py")
+        deactivate_script = self._get_script_path(script_base, "deactivate.py")
         
         try:
             if activate_script.exists():
@@ -467,10 +484,11 @@ class MetashapeEngine(ProcessingEngine):
                 if progress_callback:
                     step_progress = (i / len(steps)) * 100
                     await progress_callback(step_progress, message)
-                    
-                script_path = script_base / script_name
-                if not script_path.exists():
-                    logger.error(f"Metashape script not found: {script_path}")
+
+                try:
+                    script_path = self._get_script_path(script_base, script_name)
+                except FileNotFoundError as e:
+                    logger.error(f"Metashape script not found: {e}")
                     raise RuntimeError(f"Metashape 필수 스크립트를 찾을 수 없습니다: {script_name}")
                     
                 cmd = [

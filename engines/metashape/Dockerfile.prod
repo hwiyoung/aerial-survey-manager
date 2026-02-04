@@ -60,10 +60,15 @@ COPY backend/app /app/app
 COPY engines/metashape/dags /app/engines/metashape/dags
 
 # Python 바이트코드 컴파일 (-b: .py와 같은 위치에 .pyc 생성)
+# 1. 백엔드 앱 코드 컴파일
 RUN python3 -m compileall -b /app/app/
+# 2. Metashape DAGs 스크립트 컴파일 (subprocess로 실행되는 스크립트 포함)
+RUN python3 -m compileall -b /app/engines/metashape/dags/
+
 # 소스 코드(.py) 제거, 바이트코드(.pyc)만 유지
-# 주의: engines 디렉토리는 subprocess로 직접 실행되므로 .py 유지
+# 모든 Python 소스를 제거하여 코드 보호
 RUN find /app/app/ -name "*.py" -type f -delete
+RUN find /app/engines/metashape/dags/ -name "*.py" -type f -delete
 
 # ============================================================
 # Production stage - 최소 이미지
@@ -98,7 +103,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # 컴파일된 앱 코드 복사 (바이트코드만)
 COPY --from=builder /app/app /app/app
 
-# Metashape 스크립트 복사 (subprocess 실행을 위해 .py 소스 유지)
+# Metashape 스크립트 복사 (바이트코드만 - 소스 코드 보호됨)
 COPY --from=builder /app/engines /app/engines
 
 # 엔트리포인트 스크립트 복사 (라이센스 비활성화를 위한 SIGTERM 핸들러)
