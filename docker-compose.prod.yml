@@ -3,7 +3,9 @@
 # 외부 기관 배포용
 # ============================================================
 #
-# 사용법: docker compose -f docker-compose.prod.yml up -d
+# 사용법:
+#   기본 (Metashape 제외): docker compose -f docker-compose.prod.yml up -d
+#   Metashape 포함:        docker compose -f docker-compose.prod.yml --profile metashape up -d
 #
 # 개발용과 차이점:
 # - 소스 코드 마운트 제거 (이미지에 내장)
@@ -84,8 +86,11 @@ services:
 
   # ============================================================
   # Celery Worker - Metashape (GPU)
+  # 선택적 서비스: --profile metashape 옵션으로 활성화
   # ============================================================
   worker-metashape:
+    profiles:
+      - metashape
     build:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod

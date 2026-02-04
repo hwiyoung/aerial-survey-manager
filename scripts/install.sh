@@ -148,9 +148,23 @@ setup_environment() {
     read -p "MinIO 저장소 경로 [./data/minio]: " minio_path
     minio_path=${minio_path:-./data/minio}
 
-    # Metashape 라이선스
+    # Metashape 사용 여부
     echo ""
-    read -p "Metashape 라이선스 키 (없으면 Enter): " metashape_license
+    echo -e "${YELLOW}Metashape 처리 엔진 설정${NC}"
+    echo "Metashape는 GPU 기반 고품질 정사영상 처리를 제공합니다."
+    read -p "Metashape를 사용하시겠습니까? (y/N): " use_metashape
+
+    if [[ "$use_metashape" =~ ^[Yy]$ ]]; then
+        USE_METASHAPE="true"
+        read -p "Metashape 라이선스 키: " metashape_license
+        if [ -z "$metashape_license" ]; then
+            log_warn "라이선스 키가 없으면 Metashape가 작동하지 않습니다."
+        fi
+    else
+        USE_METASHAPE="false"
+        metashape_license=""
+        log_info "Metashape 없이 설치합니다. (나중에 활성화 가능)"
+    fi
 
     # 비밀번호 자동 생성
     echo ""
@@ -268,6 +282,15 @@ start_services() {
         compose_file="docker-compose.prod.yml"
     fi
 
+    # Metashape profile 설정
+    profile_option=""
+    if [ "$USE_METASHAPE" = "true" ]; then
+        profile_option="--profile metashape"
+        log_info "Metashape 포함 모드로 설치합니다."
+    else
+        log_info "Metashape 제외 모드로 설치합니다."
+    fi
+
     # 배포 패키지인지 확인 (images 디렉토리 존재)
     if [ -d "images" ]; then
         # 배포 패키지: 이미지 로드 확인
@@ -284,14 +307,21 @@ start_services() {
     else
         # 소스 코드: 이미지 빌드
         log_info "Docker 이미지 빌드 중... (최초 실행 시 시간이 소요됩니다)"
-        docker compose -f "$compose_file" build
+        docker compose -f "$compose_file" $profile_option build
     fi
 
     log_info "서비스 시작 중..."
-    docker compose -f "$compose_file" up -d
+    docker compose -f "$compose_file" $profile_option up -d
 
     log_info "서비스 초기화 대기 중..."
     sleep 10
+
+    # USE_METASHAPE 설정 저장 (.env에 추가)
+    if ! grep -q "^USE_METASHAPE=" .env 2>/dev/null; then
+        echo "USE_METASHAPE=$USE_METASHAPE" >> .env
+    else
+        sed -i "s|^USE_METASHAPE=.*|USE_METASHAPE=$USE_METASHAPE|" .env
+    fi
 }
 
 # 헬스체크
@@ -345,11 +375,19 @@ print_completion() {
     domain=$(grep "^DOMAIN=" .env | cut -d'=' -f2)
     web_port=$(grep "^WEB_PORT=" .env | cut -d'=' -f2)
     web_port=${web_port:-8081}
+    use_metashape=$(grep "^USE_METASHAPE=" .env | cut -d'=' -f2)
 
     echo ""
     echo -e "${GREEN}=============================================="
     echo "         설치가 완료되었습니다!"
     echo "==============================================${NC}"
+    echo ""
+    echo -e "${BLUE}설치 모드:${NC}"
+    if [ "$use_metashape" = "true" ]; then
+        echo "  Metashape 포함 (GPU 처리 활성화)"
+    else
+        echo "  Metashape 제외 (테스트 모드)"
+    fi
     echo ""
     echo -e "${BLUE}접속 정보:${NC}"
     echo "  웹 UI: http://$domain:$web_port"
@@ -370,6 +408,13 @@ print_completion() {
     echo "  서비스 재시작: docker compose restart"
     echo "  서비스 중지: docker compose down"
     echo "  네트워크 설정: ./scripts/configure-network.sh"
+
+    if [ "$use_metashape" != "true" ]; then
+        echo ""
+        echo -e "${YELLOW}Metashape 활성화 방법:${NC}"
+        echo "  1. .env 파일에 METASHAPE_LICENSE_KEY 설정"
+        echo "  2. docker compose -f docker-compose.prod.yml --profile metashape up -d"
+    fi
     echo ""
 }
 
