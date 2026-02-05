@@ -168,16 +168,16 @@ setup_environment() {
             if [[ ! "$create_tiles_dir" =~ ^[Nn]$ ]]; then
                 mkdir -p "$tiles_path"
                 log_info "타일 디렉토리 생성됨: $tiles_path"
-                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png"
+                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png (또는 .jpg)"
             fi
         else
-            # 타일 파일 존재 확인
-            tile_count=$(find "$tiles_path" -name "*.png" 2>/dev/null | head -10 | wc -l)
+            # 타일 파일 존재 확인 (png, jpg, jpeg 지원)
+            tile_count=$(find "$tiles_path" \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) 2>/dev/null | head -10 | wc -l)
             if [ "$tile_count" -gt 0 ]; then
                 log_info "타일 데이터 확인됨: $tiles_path"
             else
-                log_warn "타일 디렉토리는 있지만 PNG 파일이 없습니다."
-                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png"
+                log_warn "타일 디렉토리는 있지만 이미지 파일이 없습니다."
+                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png (또는 .jpg)"
             fi
         fi
     else
