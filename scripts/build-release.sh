@@ -259,6 +259,8 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
+      # 오프라인 타일맵
+      - \${TILES_PATH:-./data/tiles}:/data/tiles:ro
     depends_on:
       - frontend
       - api
@@ -326,8 +328,10 @@ echo "  - 프로덕션 환경에서는 실제 인증서로 교체하세요."
 mkdir -p "$RELEASE_DIR/data/processing"
 mkdir -p "$RELEASE_DIR/data/minio"
 mkdir -p "$RELEASE_DIR/data/regions"
+mkdir -p "$RELEASE_DIR/data/tiles"
 touch "$RELEASE_DIR/data/processing/.gitkeep"
 touch "$RELEASE_DIR/data/minio/.gitkeep"
+touch "$RELEASE_DIR/data/tiles/.gitkeep"
 
 # 권역 GeoJSON 데이터 복사 (초기 시드용)
 echo "  - 권역 GeoJSON 데이터 복사 중..."
