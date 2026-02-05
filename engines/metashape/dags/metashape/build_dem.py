@@ -34,16 +34,17 @@ def build_dem(output_path, run_id, input_epsg="4326"):
         )
         doc.save(output_path + '/project.psx')
 
-        compression = Metashape.ImageCompression()
-        compression.tiff_big = True
-        compression.tiff_overviews = True
-        compression.tiff_tiled = True
-        chunk.exportRaster(
-            path=os.path.join(output_path, "dem.tif"),
-            source_data=Metashape.DataSource.ElevationData,
-            projection=proj,
-            image_compression=compression
-        )
+        # DEM export (주석 처리 - 저장공간 절약을 위해 비활성화)
+        # compression = Metashape.ImageCompression()
+        # compression.tiff_big = True
+        # compression.tiff_overviews = True
+        # compression.tiff_tiled = True
+        # chunk.exportRaster(
+        #     path=os.path.join(output_path, "dem.tif"),
+        #     source_data=Metashape.DataSource.ElevationData,
+        #     projection=proj,
+        #     image_compression=compression
+        # )
 
         # DEM 결과 요약
         if chunk.elevation:

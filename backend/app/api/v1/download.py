@@ -346,8 +346,39 @@ class BatchExportRequest(BaseModel):
     project_ids: List[UUID]
     format: str = "GeoTiff"
     crs: str = "EPSG:5186"
-    gsd: float | None = None  # Planned GSD in cm/pixel
+    gsd: float | None = None  # Planned GSD in cm/pixel (None = use original)
     custom_filename: str | None = None  # Optional custom filename for ZIP
+
+
+def get_source_gsd_and_crs(file_path: str) -> tuple[float | None, str]:
+    """Extract GSD (m) and CRS from a GeoTIFF file using gdalinfo."""
+    import subprocess
+    import json
+    import re
+
+    try:
+        result = subprocess.run(["gdalinfo", "-json", file_path], capture_output=True, text=True)
+        if result.returncode != 0:
+            return None, "Unknown"
+
+        info = json.loads(result.stdout)
+
+        # Get CRS
+        source_wkt = info.get('coordinateSystem', {}).get('wkt', '') or info.get('stac', {}).get('proj:wkt2', '')
+        epsg_match = re.search(r'ID\["EPSG",(\d+)\]', source_wkt)
+        source_crs = f"EPSG:{epsg_match.group(1)}" if epsg_match else "Unknown"
+
+        # Get GSD (pixel size in meters)
+        geo_transform = info.get('geoTransform', [])
+        if len(geo_transform) >= 2:
+            # geoTransform[1] is pixel width in CRS units (meters for projected CRS)
+            pixel_size = abs(geo_transform[1])
+            return pixel_size, source_crs
+
+        return None, source_crs
+    except Exception as e:
+        print(f"DEBUG: Failed to get GSD/CRS: {e}")
+        return None, "Unknown"
 
 
 # 임시 다운로드 저장소 (download_id -> file_info)
@@ -453,34 +484,39 @@ async def batch_download(
         # --- Handle Re-projection if requested (Fixing the 3857 issue) ---
         target_crs = request.crs
         final_file_path = source_path
-        
+
         try:
             import subprocess
             import json
             import re
             import sys
-            
-            # Using gdalinfo via subprocess to avoid osgeo dependency
-            print(f"DEBUG: Processing re-projection for project {project.id}", flush=True)
-            info_result = subprocess.run(["gdalinfo", "-json", source_path], capture_output=True, text=True)
-            
-            source_epsg = "Unknown"
-            if info_result.returncode == 0:
-                info = json.loads(info_result.stdout)
-                # Try multiple ways to get WKT
-                source_wkt = info.get('coordinateSystem', {}).get('wkt', '') or info.get('stac', {}).get('proj:wkt2', '')
-                
-                # Check EPSG
-                epsg_match = re.search(r'ID\["EPSG",(\d+)\]', source_wkt)
-                source_epsg = f"EPSG:{epsg_match.group(1)}" if epsg_match else "Unknown"
-                print(f"DEBUG: Detected Source EPSG: {source_epsg}", flush=True)
-            else:
-                print(f"ERROR: gdalinfo failed for {source_path}: {info_result.stderr}", flush=True)
 
+            # Get source GSD and CRS from the file
+            source_gsd_m, source_epsg = get_source_gsd_and_crs(source_path)
+            source_gsd_cm = source_gsd_m * 100 if source_gsd_m else None
+
+            print(f"DEBUG: Processing export for project {project.id}", flush=True)
+            print(f"DEBUG: Source GSD: {source_gsd_cm:.2f}cm, Source CRS: {source_epsg}", flush=True)
+
+            # Calculate target resolution
             target_res = float(request.gsd) / 100.0 if request.gsd else None
-            
-            # Re-project if CRS is different OR GSD is specified
-            needs_warp = (target_crs != source_epsg) or (target_res is not None)
+            target_gsd_cm = request.gsd
+
+            # Determine if warp is needed:
+            # 1. CRS must be different, OR
+            # 2. GSD must be significantly different (> 0.1 cm tolerance)
+            crs_changed = (target_crs != source_epsg)
+            gsd_changed = False
+
+            if target_gsd_cm is not None and source_gsd_cm is not None:
+                gsd_diff = abs(target_gsd_cm - source_gsd_cm)
+                gsd_changed = gsd_diff > 0.1  # 0.1cm tolerance
+                print(f"DEBUG: Target GSD: {target_gsd_cm:.2f}cm, Diff: {gsd_diff:.2f}cm, Changed: {gsd_changed}", flush=True)
+
+            needs_warp = crs_changed or gsd_changed
+
+            if not needs_warp:
+                print(f"DEBUG: No changes needed - using existing COG directly", flush=True)
             
             if needs_warp:
                 print(f"DEBUG: Warping starting: {source_path} ({source_epsg}) -> {target_crs} (GSD: {request.gsd}cm)", flush=True)
@@ -725,19 +761,30 @@ async def prepare_batch_download(
             import json
             import re as regex_module
 
-            print(f"DEBUG: [prepare] Processing re-projection for project {project.id}", flush=True)
-            info_result = subprocess.run(["gdalinfo", "-json", source_path], capture_output=True, text=True)
+            # Get source GSD and CRS from the file
+            source_gsd_m, source_epsg = get_source_gsd_and_crs(source_path)
+            source_gsd_cm = source_gsd_m * 100 if source_gsd_m else None
 
-            source_epsg = "Unknown"
-            if info_result.returncode == 0:
-                info = json.loads(info_result.stdout)
-                source_wkt = info.get('coordinateSystem', {}).get('wkt', '') or info.get('stac', {}).get('proj:wkt2', '')
-                epsg_match = regex_module.search(r'ID\["EPSG",(\d+)\]', source_wkt)
-                source_epsg = f"EPSG:{epsg_match.group(1)}" if epsg_match else "Unknown"
-                print(f"DEBUG: [prepare] Detected Source EPSG: {source_epsg}", flush=True)
+            print(f"DEBUG: [prepare] Processing export for project {project.id}", flush=True)
+            print(f"DEBUG: [prepare] Source GSD: {source_gsd_cm:.2f}cm, Source CRS: {source_epsg}" if source_gsd_cm else f"DEBUG: [prepare] Source CRS: {source_epsg}", flush=True)
 
+            # Calculate target resolution
             target_res = float(request.gsd) / 100.0 if request.gsd else None
-            needs_warp = (target_crs != source_epsg) or (target_res is not None)
+            target_gsd_cm = request.gsd
+
+            # Determine if warp is needed
+            crs_changed = (target_crs != source_epsg)
+            gsd_changed = False
+
+            if target_gsd_cm is not None and source_gsd_cm is not None:
+                gsd_diff = abs(target_gsd_cm - source_gsd_cm)
+                gsd_changed = gsd_diff > 0.1  # 0.1cm tolerance
+                print(f"DEBUG: [prepare] Target GSD: {target_gsd_cm:.2f}cm, Diff: {gsd_diff:.2f}cm, Changed: {gsd_changed}", flush=True)
+
+            needs_warp = crs_changed or gsd_changed
+
+            if not needs_warp:
+                print(f"DEBUG: [prepare] No changes needed - using existing COG directly", flush=True)
 
             if needs_warp:
                 print(f"DEBUG: [prepare] Warping: {source_epsg} -> {target_crs} (GSD: {request.gsd}cm)", flush=True)

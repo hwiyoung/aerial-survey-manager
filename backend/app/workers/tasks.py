@@ -110,7 +110,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     from app.models.project import Project, ProcessingJob, Image
     from app.services.processing_router import processing_router
     from app.services.storage import StorageService
-    from app.utils.geo import extract_center_from_wkt, get_region_for_point
+    from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
     
     # Use sync database connection for Celery
     sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
@@ -262,6 +262,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             
             try:
                 import subprocess
+                import shutil
                 # Use GDAL to create COG with proper tiling and overviews
                 # Note: TILING_SCHEME 제거하여 원본 GSD 유지
                 gdal_cmd = [
@@ -275,14 +276,41 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     str(cog_path)
                 ]
                 subprocess.run(gdal_cmd, check=True, capture_output=True)
-                
+
                 # Upload COG version
                 cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
                 storage.upload_file(str(cog_path), cog_object_name, "image/tiff")
-                
+
                 # Use COG as primary result
                 result_path = cog_path
                 result_object_name = cog_object_name
+
+                # Clean up intermediate files to save storage space
+                # Keep only: result_cog.tif, status.json
+                update_progress(93, "중간 파일 정리 중...")
+                files_to_keep = {"result_cog.tif", "status.json"}
+
+                # Clean output directory (keep only essential files)
+                for item in output_dir.iterdir():
+                    if item.name not in files_to_keep:
+                        try:
+                            if item.is_dir():
+                                shutil.rmtree(item)
+                                print(f"Cleaned up directory: {item}")
+                            else:
+                                item.unlink()
+                                print(f"Cleaned up file: {item}")
+                        except Exception as cleanup_err:
+                            print(f"Failed to clean up {item}: {cleanup_err}")
+
+                # Clean input directory (downloaded images)
+                if input_dir.exists():
+                    try:
+                        shutil.rmtree(input_dir)
+                        print(f"Cleaned up input directory: {input_dir}")
+                    except Exception as cleanup_err:
+                        print(f"Failed to clean up input directory: {cleanup_err}")
+
             except Exception as cog_error:
                 # COG conversion failed, continue with regular TIF
                 print(f"COG conversion failed: {cog_error}")
@@ -316,11 +344,13 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     # Fallback to point check if no intersection found in regions table
                     lon, lat = extract_center_from_wkt(bounds_wkt)
                     if lon and lat:
-                        region = get_region_for_point(lon, lat)
+                        region = get_region_for_point_sync(db, lon, lat)
                         if region:
                             project.region = region
             
             # Final status update
+            job.status = "completed"
+            job.completed_at = datetime.utcnow()
             project.status = "completed"
             project.progress = 100
             project.ortho_path = result_object_name  # Store ortho path in project

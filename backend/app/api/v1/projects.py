@@ -29,7 +29,7 @@ from app.schemas.project import (
 )
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.services.eo_parser import EOParserService
-from app.utils.geo import get_region_for_point
+from app.utils.geo import get_region_for_point, get_region_for_point_db
 from pyproj import Transformer
 import json
 from sqlalchemy import func
@@ -163,14 +163,27 @@ async def list_projects(
         upload_completed_count = status_counts.get("completed", 0)
         upload_uploading_count = status_counts.get("uploading", 0)
 
-        # Get latest processing job for result_gsd and process_mode
+        # Get latest COMPLETED processing job for result_gsd and process_mode
+        # (Filter by status='completed' to avoid getting cancelled/error jobs with no GSD)
         job_result = await db.execute(
             select(ProcessingJob)
             .where(ProcessingJob.project_id == project.id)
-            .order_by(ProcessingJob.id.desc())
+            .where(ProcessingJob.status == "completed")
+            .order_by(ProcessingJob.started_at.desc())
             .limit(1)
         )
         latest_job = job_result.scalar_one_or_none()
+
+        # Fallback to any job for process_mode if no completed job
+        if not latest_job:
+            fallback_result = await db.execute(
+                select(ProcessingJob)
+                .where(ProcessingJob.project_id == project.id)
+                .order_by(ProcessingJob.started_at.desc())
+                .limit(1)
+            )
+            latest_job = fallback_result.scalar_one_or_none()
+
         result_gsd = latest_job.result_gsd if latest_job else None
         process_mode = latest_job.process_mode if latest_job else None
 
@@ -286,14 +299,26 @@ async def get_project(
     )
     image_count = count_result.scalar()
 
-    # Get latest processing job for result_gsd and process_mode
+    # Get latest COMPLETED processing job for result_gsd and process_mode
     job_result = await db.execute(
         select(ProcessingJob)
         .where(ProcessingJob.project_id == project.id)
-        .order_by(ProcessingJob.id.desc())
+        .where(ProcessingJob.status == "completed")
+        .order_by(ProcessingJob.created_at.desc())
         .limit(1)
     )
     latest_job = job_result.scalar_one_or_none()
+
+    # Fallback to any job for process_mode if no completed job
+    if not latest_job:
+        fallback_result = await db.execute(
+            select(ProcessingJob)
+            .where(ProcessingJob.project_id == project.id)
+            .order_by(ProcessingJob.started_at.desc())
+            .limit(1)
+        )
+        latest_job = fallback_result.scalar_one_or_none()
+
     result_gsd = latest_job.result_gsd if latest_job else None
     process_mode = latest_job.process_mode if latest_job else None
 
@@ -695,10 +720,10 @@ async def upload_eo_data(
                 
                 project.bounds = f"SRID=4326;POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
                 
-                # Auto-assign region based on EO data
+                # Auto-assign region based on EO data (using PostGIS spatial query)
                 center_lon = (min_lon + max_lon) / 2
                 center_lat = (min_lat + max_lat) / 2
-                region = get_region_for_point(center_lon, center_lat)
+                region = await get_region_for_point_db(db, center_lon, center_lat)
                 if region:
                     project.region = region
 

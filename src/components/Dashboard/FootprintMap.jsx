@@ -125,7 +125,7 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
     // Fit to bounds when available
     useEffect(() => {
         if (bounds && map) {
-            map.fitBounds(bounds, { padding: [50, 50] });
+            map.fitBounds(bounds, { padding: [50, 50], maxZoom: getTileConfig().maxZoom });
         }
     }, [bounds, map]);
 
@@ -234,7 +234,7 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
                 // Fit map to layer bounds
                 const bounds = layer.getBounds();
                 if (bounds && bounds.isValid()) {
-                    map.fitBounds(bounds, { padding: [50, 50] });
+                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: getTileConfig().maxZoom });
                 }
 
                 // Invalidate map size to fix gray area on resize
@@ -298,7 +298,7 @@ function MapBoundsFitter({ bounds }) {
     useEffect(() => {
         if (bounds && bounds.length > 0) {
             const leafletBounds = L.latLngBounds(bounds.map(b => [b.lat, b.lng]));
-            map.fitBounds(leafletBounds, { padding: [50, 50] });
+            map.fitBounds(leafletBounds, { padding: [50, 50], maxZoom: getTileConfig().maxZoom });
         }
     }, [map, bounds]);
 
@@ -312,7 +312,7 @@ function HighlightFlyTo({ footprint }) {
     useEffect(() => {
         if (footprint) {
             const bounds = L.latLngBounds(footprint.bounds);
-            map.flyToBounds(bounds, { padding: [100, 100], duration: 1 });
+            map.flyToBounds(bounds, { padding: [100, 100], duration: 1, maxZoom: getTileConfig().maxZoom });
         }
     }, [map, footprint]);
 
@@ -327,7 +327,7 @@ function MapResetController({ resetKey }) {
     useEffect(() => {
         if (resetKey !== prevResetKeyRef.current) {
             prevResetKeyRef.current = resetKey;
-            map.setView([36.5, 127.5], 7, { animate: true, duration: 0.5 });
+            map.setView(MAP_CONFIG.defaultCenter, MAP_CONFIG.defaultZoom, { animate: true, duration: 0.5 });
         }
     }, [map, resetKey]);
 
@@ -611,13 +611,18 @@ export function FootprintMap({
     const isFlexHeight = height === '100%';
 
     // COG overlay - show for highlighted OR selected completed project
-    const [cogOpacity, setCogOpacity] = useState(0.8);
     const [cogLoadStatus, setCogLoadStatus] = useState(null); // 'loading' | 'loaded' | 'error'
     const [cogError, setCogError] = useState(null);
 
     // Region layer visibility
     const [showRegions, setShowRegions] = useState(true);
     const [showFootprints, setShowFootprints] = useState(true);
+
+    // Footprint (bounding box) opacity control
+    const [footprintOpacity, setFootprintOpacity] = useState(0.5);
+
+    // COG (orthophoto) opacity control
+    const [cogOpacity, setCogOpacity] = useState(0.8);
 
     // Selected project for COG overlay (highlighted or selected, if completed)
     const activeProjectId = highlightProjectId || selectedProjectId;
@@ -663,10 +668,9 @@ export function FootprintMap({
 
                 {/* Layer Controls */}
                 <div className="flex items-center gap-4">
-                    {/* COG Status and Opacity Control */}
+                    {/* COG Status indicator */}
                     {selectedCogProject && (
                         <div className="flex items-center gap-2">
-                            {/* Status indicator */}
                             {cogLoadStatus === 'loading' && (
                                 <span className="text-xs text-blue-600 font-medium flex items-center gap-1">
                                     <span className="animate-pulse">●</span> 정사영상 로딩중...
@@ -680,22 +684,22 @@ export function FootprintMap({
                                     ✕ 로딩 실패
                                 </span>
                             )}
+                        </div>
+                    )}
 
-                            {/* Opacity control - only show when loaded */}
-                            {cogLoadStatus === 'loaded' && (
-                                <div className="flex items-center gap-1.5 ml-2">
-                                    <span className="text-xs text-slate-500">투명도</span>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="100"
-                                        value={cogOpacity * 100}
-                                        onChange={(e) => setCogOpacity(e.target.value / 100)}
-                                        className="w-16 h-1 accent-blue-500"
-                                    />
-                                    <span className="text-xs text-slate-400 w-6">{Math.round(cogOpacity * 100)}%</span>
-                                </div>
-                            )}
+                    {/* Footprint Opacity Control */}
+                    {showFootprints && (
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-slate-500">영역 투명도</span>
+                            <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                value={footprintOpacity * 100}
+                                onChange={(e) => setFootprintOpacity(e.target.value / 100)}
+                                className="w-16 h-1 accent-violet-500"
+                            />
+                            <span className="text-xs text-slate-400 w-6">{Math.round(footprintOpacity * 100)}%</span>
                         </div>
                     )}
 
@@ -704,10 +708,10 @@ export function FootprintMap({
                         <button
                             onClick={() => setShowFootprints(!showFootprints)}
                             className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showFootprints ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}
-                            title="프로젝트 바운딩박스 표시 토글"
+                            title="촬영 영역 표시 토글"
                         >
                             {showFootprints ? <Eye size={12} /> : <EyeOff size={12} />}
-                            <span>프로젝트</span>
+                            <span>촬영 영역</span>
                         </button>
                         <button
                             onClick={() => setShowRegions(!showRegions)}
@@ -731,8 +735,10 @@ export function FootprintMap({
 
             <div className={`${isFlexHeight ? 'flex-1' : ''} ${hoveredProjectId ? 'project-hovered' : ''}`} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0 }}>
                 <MapContainer
-                    center={[36.5, 127.5]}
-                    zoom={7}
+                    center={MAP_CONFIG.defaultCenter}
+                    zoom={MAP_CONFIG.defaultZoom}
+                    maxZoom={getTileConfig().maxZoom}
+                    minZoom={MAP_CONFIG.minZoom}
                     style={{ height: '100%', width: '100%' }}
                     zoomControl={true}
                     preferCanvas={true}
@@ -763,7 +769,7 @@ export function FootprintMap({
                                 attribution={tileConfig.attribution}
                                 url={tileConfig.url}
                                 {...(tileConfig.subdomains ? { subdomains: tileConfig.subdomains } : {})}
-                                maxZoom={MAP_CONFIG.maxZoom}
+                                maxZoom={tileConfig.maxZoom}
                                 minZoom={MAP_CONFIG.minZoom}
                             />
                         );
@@ -823,7 +829,7 @@ export function FootprintMap({
                                 pathOptions={{
                                     color: getStrokeColor(),
                                     fillColor: getFillColor(),
-                                    fillOpacity: (isHighlighted || isSelected || isHovered) ? 0.7 : 0.5,
+                                    fillOpacity: (isHighlighted || isSelected || isHovered) ? Math.min(footprintOpacity + 0.2, 1) : footprintOpacity,
                                     weight: (isHighlighted || isSelected || isHovered) ? 4 : 2,
                                     bubblingMouseEvents: false, // 권역 레이어로 이벤트 전파 방지
                                 }}
@@ -933,32 +939,34 @@ export function FootprintMap({
     );
 }
 
+// Helper functions for bounds comparison (moved outside component)
+const boundsArea = (bounds) => {
+    const minLat = Math.min(bounds[0][0], bounds[1][0]);
+    const maxLat = Math.max(bounds[0][0], bounds[1][0]);
+    const minLng = Math.min(bounds[0][1], bounds[1][1]);
+    const maxLng = Math.max(bounds[0][1], bounds[1][1]);
+    return Math.max(0, maxLat - minLat) * Math.max(0, maxLng - minLng);
+};
+
+const boundsIntersectionArea = (a, b) => {
+    const minLat = Math.max(Math.min(a[0][0], a[1][0]), Math.min(b[0][0], b[1][0]));
+    const maxLat = Math.min(Math.max(a[0][0], a[1][0]), Math.max(b[0][0], b[1][0]));
+    const minLng = Math.max(Math.min(a[0][1], a[1][1]), Math.min(b[0][1], b[1][1]));
+    const maxLng = Math.min(Math.max(a[0][1], a[1][1]), Math.max(b[0][1], b[1][1]));
+    const h = Math.max(0, maxLat - minLat);
+    const w = Math.max(0, maxLng - minLng);
+    return h * w;
+};
+
+const isNearlySameBounds = (a, b) => {
+    const areaA = boundsArea(a);
+    const areaB = boundsArea(b);
+    if (areaA === 0 || areaB === 0) return false;
+    const inter = boundsIntersectionArea(a, b);
+    const union = areaA + areaB - inter;
+    const iou = union > 0 ? inter / union : 0;
+    const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
+    return iou >= 0.9 && areaRatio >= 0.95;
+};
+
 export default FootprintMap;
-    const boundsArea = (bounds) => {
-        const minLat = Math.min(bounds[0][0], bounds[1][0]);
-        const maxLat = Math.max(bounds[0][0], bounds[1][0]);
-        const minLng = Math.min(bounds[0][1], bounds[1][1]);
-        const maxLng = Math.max(bounds[0][1], bounds[1][1]);
-        return Math.max(0, maxLat - minLat) * Math.max(0, maxLng - minLng);
-    };
-
-    const boundsIntersectionArea = (a, b) => {
-        const minLat = Math.max(Math.min(a[0][0], a[1][0]), Math.min(b[0][0], b[1][0]));
-        const maxLat = Math.min(Math.max(a[0][0], a[1][0]), Math.max(b[0][0], b[1][0]));
-        const minLng = Math.max(Math.min(a[0][1], a[1][1]), Math.min(b[0][1], b[1][1]));
-        const maxLng = Math.min(Math.max(a[0][1], a[1][1]), Math.max(b[0][1], b[1][1]));
-        const h = Math.max(0, maxLat - minLat);
-        const w = Math.max(0, maxLng - minLng);
-        return h * w;
-    };
-
-    const isNearlySameBounds = (a, b) => {
-        const areaA = boundsArea(a);
-        const areaB = boundsArea(b);
-        if (areaA === 0 || areaB === 0) return false;
-        const inter = boundsIntersectionArea(a, b);
-        const union = areaA + areaB - inter;
-        const iou = union > 0 ? inter / union : 0;
-        const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
-        return iou >= 0.9 && areaRatio >= 0.95;
-    };
