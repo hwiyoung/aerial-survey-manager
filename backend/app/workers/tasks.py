@@ -31,8 +31,9 @@ celery_app.conf.update(
         "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
         "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
         "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
-        "app.workers.tasks.generate_thumbnail": {"queue": "metashape"},  # Use metashape queue (ODM worker is disabled)
-        "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "metashape"},  # Use metashape queue
+        # 썸네일은 처리 엔진과 분리 - 별도 celery 워커에서 처리
+        "app.workers.tasks.generate_thumbnail": {"queue": "celery"},
+        "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "celery"},
     },
 )
 

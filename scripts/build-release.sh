@@ -45,6 +45,7 @@ docker tag ${IMAGE_PREFIX}-frontend:latest ${IMAGE_PREFIX}:frontend-${VERSION}
 docker tag ${IMAGE_PREFIX}-api:latest ${IMAGE_PREFIX}:api-${VERSION}
 docker tag ${IMAGE_PREFIX}-worker-metashape:latest ${IMAGE_PREFIX}:worker-metashape-${VERSION}
 docker tag ${IMAGE_PREFIX}-celery-beat:latest ${IMAGE_PREFIX}:celery-beat-${VERSION}
+docker tag ${IMAGE_PREFIX}-celery-worker:latest ${IMAGE_PREFIX}:celery-worker-${VERSION}
 docker tag ${IMAGE_PREFIX}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
 
 echo ""
@@ -160,6 +161,26 @@ services:
       - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     depends_on:
       - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  celery-worker:
+    image: ${IMAGE_PREFIX}:celery-worker-${VERSION}
+    pull_policy: never
+    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+    depends_on:
+      - redis
+      - minio
     networks:
       - aerial-network
     logging: *default-logging
@@ -368,6 +389,9 @@ docker save ${IMAGE_PREFIX}:worker-metashape-${VERSION} | gzip > "$RELEASE_DIR/i
 
 echo "  - celery-beat 저장 중..."
 docker save ${IMAGE_PREFIX}:celery-beat-${VERSION} | gzip > "$RELEASE_DIR/images/celery-beat.tar.gz"
+
+echo "  - celery-worker 저장 중..."
+docker save ${IMAGE_PREFIX}:celery-worker-${VERSION} | gzip > "$RELEASE_DIR/images/celery-worker.tar.gz"
 
 echo "  - flower 저장 중..."
 docker save ${IMAGE_PREFIX}:flower-${VERSION} | gzip > "$RELEASE_DIR/images/flower.tar.gz"

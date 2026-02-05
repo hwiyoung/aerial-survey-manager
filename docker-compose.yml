@@ -226,6 +226,30 @@ services:
       - aerial-network
     logging: *default-logging
 
+  # === Celery Worker (썸네일 등 경량 작업용) ===
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=aerial-survey
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis
+      - minio
+    networks:
+      - aerial-network
+    logging: *default-logging
+
   # === PostgreSQL + PostGIS ===
   db:
     image: postgis/postgis:15-3.3
