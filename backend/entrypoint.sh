@@ -46,49 +46,18 @@ if [ "$HEAD_COUNT" -gt 1 ]; then
     alembic merge heads -m "auto_merge_$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
 fi
 
-# 마이그레이션 적용
-alembic upgrade heads 2>/dev/null || {
-    echo "  Migration via alembic failed, trying direct table creation..."
-    # regions 테이블 직접 생성 (마이그레이션 실패 시 폴백)
-    python -c "
-import asyncio
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
-import os
+# 마이그레이션 적용 (에러 발생 시 로그 출력)
+echo "  Applying migrations..."
+if alembic upgrade head; then
+    echo "  Migrations applied successfully."
+else
+    echo "  WARNING: Migration encountered an error. Checking current state..."
+    alembic current || true
 
-async def ensure_tables():
-    engine = create_async_engine(os.environ.get('DATABASE_URL'))
-    async with engine.begin() as conn:
-        # regions 테이블 존재 확인 및 생성
-        result = await conn.execute(text(\"\"\"
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = 'regions'
-            )
-        \"\"\"))
-        exists = result.scalar()
-
-        if not exists:
-            print('  Creating regions table directly...')
-            await conn.execute(text(\"\"\"
-                CREATE TABLE IF NOT EXISTS regions (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    name VARCHAR(100),
-                    layer VARCHAR(100),
-                    geom geometry(MULTIPOLYGON, 5179) NOT NULL
-                )
-            \"\"\"))
-            await conn.execute(text(\"\"\"
-                CREATE INDEX IF NOT EXISTS idx_regions_geom ON regions USING gist(geom)
-            \"\"\"))
-            print('  regions table created.')
-        else:
-            print('  regions table already exists.')
-    await engine.dispose()
-
-asyncio.run(ensure_tables())
-" || echo "  Warning: Could not ensure tables, continuing..."
-}
+    # 마이그레이션이 부분적으로 실패해도 계속 진행
+    # (regions 테이블 충돌 등은 무시하고 다른 테이블은 생성됨)
+    echo "  Attempting to continue despite migration error..."
+fi
 echo "Migrations completed."
 
 # 초기 데이터 시드 (최초 실행 시에만)
