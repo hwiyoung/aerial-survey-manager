@@ -304,7 +304,7 @@ async def get_project(
         select(ProcessingJob)
         .where(ProcessingJob.project_id == project.id)
         .where(ProcessingJob.status == "completed")
-        .order_by(ProcessingJob.created_at.desc())
+        .order_by(ProcessingJob.started_at.desc())
         .limit(1)
     )
     latest_job = job_result.scalar_one_or_none()
