@@ -67,7 +67,9 @@ services:
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
     volumes:
       - ./backend:/app
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
+      # 권역 GeoJSON 데이터 (초기 시드용)
+      - ./data:/app/data:ro
     depends_on:
       db:
         condition: service_healthy
@@ -105,7 +107,7 @@ services:
   #     - aerial-network
   #   logging: *worker-logging
 
-  # === Celery Worker - ODM Queue (DISABLED - using Metashape only) ===
+  # === Celery Worker - ODM Queue (DISABLED - using GPU engine only) ===
   # worker-odm:
   #   build:
   #     context: .
@@ -122,7 +124,7 @@ services:
   #     - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
   #   volumes:
   #     - ./backend/app:/app/app
-  #     - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+  #     - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
   #     - /var/run/docker.sock:/var/run/docker.sock
   #   depends_on:
   #     - redis
@@ -133,7 +135,7 @@ services:
   #     - aerial-network
   #   logging: *worker-logging
 
-  # === Celery Worker - External API Queue (DISABLED - using Metashape only) ===
+  # === Celery Worker - External API Queue (DISABLED - using GPU engine only) ===
   # worker-external:
   #   build:
   #     context: ./backend
@@ -151,7 +153,7 @@ services:
   #     - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
   #   volumes:
   #     - ./backend/app:/app/app
-  #     - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+  #     - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
   #   depends_on:
   #     - redis
   #     - db
@@ -159,13 +161,14 @@ services:
   #     - aerial-network
   #   logging: *default-logging
 
-  # === Celery Worker - Metashape Queue ===
-  worker-metashape:
+  # === Celery Worker - GPU Processing Engine ===
+  worker-engine:
+    container_name: aerial-worker-engine
     build:
       context: .
       dockerfile: engines/metashape/Dockerfile
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info --concurrency=4 -n worker-metashape@%h
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info --concurrency=4 -n worker-engine@%h
     restart: always
     # 라이센스 비활성화를 위한 graceful shutdown 설정
     stop_signal: SIGTERM
@@ -185,15 +188,15 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - METASHAPE_LICENSE_KEY=${METASHAPE_LICENSE_KEY:-}
+      - METASHAPE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
     volumes:
       - ./backend/app:/app/app
       - ./engines/metashape:/app/engines/metashape
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - metashape-license:/var/tmp/agisoft/licensing
+      - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
+      - engine-license:/var/tmp/agisoft/licensing
     depends_on:
       - redis
       - db
@@ -201,7 +204,7 @@ services:
     networks:
       aerial-network:
         aliases:
-          - worker-metashape
+          - worker-engine
     mac_address: "02:42:AC:17:00:64"  # Static MAC for stable Machine ID
     logging: *worker-logging
 
@@ -272,7 +275,7 @@ services:
       - "9002:9000"
       - "9003:9001"  # Console UI
     volumes:
-      - ${MINIO_DATA_PATH:-./data/minio}:/data
+      - ${MINIO_DATA_PATH:-${DATA_PATH:-./data}}:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -372,4 +375,4 @@ networks:
 volumes:
   pgdata:
   redis_data:
-  metashape-license:
+  engine-license:

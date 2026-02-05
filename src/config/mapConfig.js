@@ -12,8 +12,8 @@ export const MAP_CONFIG = {
 
     // 타일 URL 템플릿
     tileUrl: {
-        // 오프라인: nginx를 통해 제공되는 로컬 타일
-        offline: '/tiles/{z}/{x}/{y}.png',
+        // 오프라인: nginx를 통해 제공되는 로컬 타일 (확장자 없음 - nginx가 자동 감지)
+        offline: '/tiles/{z}/{x}/{y}',
 
         // 온라인: OpenStreetMap
         online: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -28,11 +28,16 @@ export const MAP_CONFIG = {
     // 서브도메인 (온라인 전용)
     subdomains: ['a', 'b', 'c'],
 
-    // 기본 설정 (대한민국 중심)
-    defaultCenter: [36.5, 127.5],
+    // 기본 설정 (대한민국 전체 - 제주도 포함)
+    defaultCenter: [35.5, 127.5],
     defaultZoom: 7,
-    maxZoom: 18,
     minZoom: 5,
+
+    // maxZoom: 오프라인 타일은 14까지만 존재
+    maxZoom: {
+        offline: 14,
+        online: 18,
+    },
 };
 
 /**
@@ -40,6 +45,9 @@ export const MAP_CONFIG = {
  * @returns {Object} url, attribution, subdomains (온라인 전용)
  */
 export const getTileConfig = () => {
+    const isOffline = MAP_CONFIG.offline;
+    const maxZoom = isOffline ? MAP_CONFIG.maxZoom.offline : MAP_CONFIG.maxZoom.online;
+
     // 환경변수로 커스텀 URL이 설정된 경우 우선 사용
     const customUrl = import.meta.env.VITE_TILE_URL;
     if (customUrl) {
@@ -47,14 +55,15 @@ export const getTileConfig = () => {
             url: customUrl,
             attribution: import.meta.env.VITE_TILE_ATTRIBUTION || MAP_CONFIG.attribution.offline,
             subdomains: undefined,
+            maxZoom: maxZoom,
         };
     }
 
-    const isOffline = MAP_CONFIG.offline;
     return {
         url: isOffline ? MAP_CONFIG.tileUrl.offline : MAP_CONFIG.tileUrl.online,
         attribution: isOffline ? MAP_CONFIG.attribution.offline : MAP_CONFIG.attribution.online,
         subdomains: isOffline ? undefined : MAP_CONFIG.subdomains,
+        maxZoom: maxZoom,
     };
 };
 

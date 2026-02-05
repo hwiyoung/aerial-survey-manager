@@ -678,7 +678,7 @@ function Dashboard() {
             }
           }
 
-          alert("EO data uploaded successfully.");
+          alert("프로젝트 생성이 완료되었습니다.");
         } catch (e) {
           console.error(e);
           alert("Failed to upload EO data: " + e.message);
@@ -750,6 +750,11 @@ function Dashboard() {
               }
               return prev;
             });
+
+            // 개별 파일 업로드 완료 시 썸네일 갱신 (3초 후 - 썸네일 생성 대기)
+            setTimeout(() => {
+              setImageRefreshKey(prev => prev + 1);
+            }, 3000);
           },
           onAllComplete: async () => {
             console.log(`All uploads finished for project ${projectId}`);

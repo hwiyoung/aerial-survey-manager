@@ -187,22 +187,22 @@ setup_environment() {
         log_info "온라인 지도를 사용합니다. (인터넷 연결 필요)"
     fi
 
-    # Metashape 사용 여부
+    # 처리 엔진 사용 여부
     echo ""
-    echo -e "${YELLOW}Metashape 처리 엔진 설정${NC}"
-    echo "Metashape는 GPU 기반 고품질 정사영상 처리를 제공합니다."
-    read -p "Metashape를 사용하시겠습니까? (y/N): " use_metashape
+    echo -e "${YELLOW}GPU 처리 엔진 설정${NC}"
+    echo "GPU 기반 고품질 정사영상 처리를 제공합니다."
+    read -p "처리 엔진을 사용하시겠습니까? (y/N): " use_engine
 
-    if [[ "$use_metashape" =~ ^[Yy]$ ]]; then
-        USE_METASHAPE="true"
-        read -p "Metashape 라이선스 키: " metashape_license
-        if [ -z "$metashape_license" ]; then
-            log_warn "라이선스 키가 없으면 Metashape가 작동하지 않습니다."
+    if [[ "$use_engine" =~ ^[Yy]$ ]]; then
+        USE_ENGINE="true"
+        read -p "처리 엔진 라이선스 키: " engine_license
+        if [ -z "$engine_license" ]; then
+            log_warn "라이선스 키가 없으면 처리 엔진이 작동하지 않습니다."
         fi
     else
-        USE_METASHAPE="false"
-        metashape_license=""
-        log_info "Metashape 없이 설치합니다. (나중에 활성화 가능)"
+        USE_ENGINE="false"
+        engine_license=""
+        log_info "처리 엔진 없이 설치합니다. (나중에 활성화 가능)"
     fi
 
     # 비밀번호 자동 생성
@@ -222,7 +222,7 @@ setup_environment() {
     sed -i "s|^MINIO_PUBLIC_ENDPOINT=.*|MINIO_PUBLIC_ENDPOINT=$minio_endpoint|" .env
     sed -i "s|^PROCESSING_DATA_PATH=.*|PROCESSING_DATA_PATH=$processing_path|" .env
     sed -i "s|^MINIO_DATA_PATH=.*|MINIO_DATA_PATH=$minio_path|" .env
-    sed -i "s|^METASHAPE_LICENSE_KEY=.*|METASHAPE_LICENSE_KEY=$metashape_license|" .env
+    sed -i "s|^ENGINE_LICENSE_KEY=.*|ENGINE_LICENSE_KEY=$engine_license|" .env
 
     # 타일 경로 설정
     if ! grep -q "^TILES_PATH=" .env; then
@@ -335,13 +335,13 @@ start_services() {
         compose_file="docker-compose.prod.yml"
     fi
 
-    # Metashape profile 설정
+    # 처리 엔진 profile 설정
     profile_option=""
-    if [ "$USE_METASHAPE" = "true" ]; then
-        profile_option="--profile metashape"
-        log_info "Metashape 포함 모드로 설치합니다."
+    if [ "$USE_ENGINE" = "true" ]; then
+        profile_option="--profile engine"
+        log_info "처리 엔진 포함 모드로 설치합니다."
     else
-        log_info "Metashape 제외 모드로 설치합니다."
+        log_info "처리 엔진 제외 모드로 설치합니다."
     fi
 
     # 배포 패키지인지 확인 (images 디렉토리 존재)
@@ -369,11 +369,11 @@ start_services() {
     log_info "서비스 초기화 대기 중..."
     sleep 10
 
-    # USE_METASHAPE 설정 저장 (.env에 추가)
-    if ! grep -q "^USE_METASHAPE=" .env 2>/dev/null; then
-        echo "USE_METASHAPE=$USE_METASHAPE" >> .env
+    # USE_ENGINE 설정 저장 (.env에 추가)
+    if ! grep -q "^USE_ENGINE=" .env 2>/dev/null; then
+        echo "USE_ENGINE=$USE_ENGINE" >> .env
     else
-        sed -i "s|^USE_METASHAPE=.*|USE_METASHAPE=$USE_METASHAPE|" .env
+        sed -i "s|^USE_ENGINE=.*|USE_ENGINE=$USE_ENGINE|" .env
     fi
 }
 
@@ -428,7 +428,7 @@ print_completion() {
     domain=$(grep "^DOMAIN=" .env | cut -d'=' -f2)
     web_port=$(grep "^WEB_PORT=" .env | cut -d'=' -f2)
     web_port=${web_port:-8081}
-    use_metashape=$(grep "^USE_METASHAPE=" .env | cut -d'=' -f2)
+    use_engine=$(grep "^USE_ENGINE=" .env | cut -d'=' -f2)
 
     echo ""
     echo -e "${GREEN}=============================================="
@@ -436,10 +436,10 @@ print_completion() {
     echo "==============================================${NC}"
     echo ""
     echo -e "${BLUE}설치 모드:${NC}"
-    if [ "$use_metashape" = "true" ]; then
-        echo "  Metashape 포함 (GPU 처리 활성화)"
+    if [ "$use_engine" = "true" ]; then
+        echo "  처리 엔진 포함 (GPU 처리 활성화)"
     else
-        echo "  Metashape 제외 (테스트 모드)"
+        echo "  처리 엔진 제외 (테스트 모드)"
     fi
     echo ""
     echo -e "${BLUE}접속 정보:${NC}"
@@ -462,11 +462,11 @@ print_completion() {
     echo "  서비스 중지: docker compose down"
     echo "  네트워크 설정: ./scripts/configure-network.sh"
 
-    if [ "$use_metashape" != "true" ]; then
+    if [ "$use_engine" != "true" ]; then
         echo ""
-        echo -e "${YELLOW}Metashape 활성화 방법:${NC}"
-        echo "  1. .env 파일에 METASHAPE_LICENSE_KEY 설정"
-        echo "  2. docker compose -f docker-compose.prod.yml --profile metashape up -d"
+        echo -e "${YELLOW}처리 엔진 활성화 방법:${NC}"
+        echo "  1. .env 파일에 ENGINE_LICENSE_KEY 설정"
+        echo "  2. docker compose -f docker-compose.prod.yml --profile engine up -d"
     fi
     echo ""
 }

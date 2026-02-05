@@ -3,17 +3,19 @@ import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap } from 'r
 import L from 'leaflet';
 import { Loader2, Camera, Layers, X } from 'lucide-react';
 import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
+import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 
-function FitBounds({ images, projectId }) {
+function FitBounds({ images, projectId, maxZoom }) {
     const map = useMap();
     useEffect(() => {
         if (images && images.length > 0) {
             const bounds = L.latLngBounds(images.map(img => [img.wy, img.wx]));
             if (bounds.isValid()) {
-                map.fitBounds(bounds, { padding: [50, 50] });
+                // maxZoom을 초과하지 않도록 제한
+                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 14 });
             }
         }
-    }, [images, map, projectId]); // Add projectId to re-trigger on project change
+    }, [images, map, projectId, maxZoom]); // Add projectId to re-trigger on project change
     return null;
 }
 
@@ -45,18 +47,24 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
         </div>
     );
 
+    const tileConfig = getTileConfig();
+
     return (
         <div className="w-full h-full relative bg-slate-200" style={{ isolation: 'isolate', zIndex: 0 }}>
             <MapContainer
-                center={[36.5, 127.5]}
-                zoom={7}
+                center={MAP_CONFIG.defaultCenter}
+                zoom={MAP_CONFIG.defaultZoom}
+                maxZoom={tileConfig.maxZoom}
+                minZoom={MAP_CONFIG.minZoom}
                 style={{ height: '100%', width: '100%', background: '#f1f5f9' }}
                 zoomControl={false}
             >
                 <MapPanes />
                 <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    attribution={tileConfig.attribution}
+                    url={tileConfig.url}
+                    {...(tileConfig.subdomains && { subdomains: tileConfig.subdomains })}
+                    maxZoom={tileConfig.maxZoom}
                 />
 
                 {(project?.status === '완료' || project?.status === 'completed') && (
@@ -71,7 +79,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
 
                 <RegionBoundaryLayer visible={true} interactive={!isProcessingMode} />
 
-                {images.length > 0 && <FitBounds images={images} projectId={project?.id} />}
+                {images.length > 0 && <FitBounds images={images} projectId={project?.id} maxZoom={tileConfig.maxZoom} />}
 
                 {images.map(img => (
                     <CircleMarker

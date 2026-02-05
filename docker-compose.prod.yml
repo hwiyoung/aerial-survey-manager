@@ -4,8 +4,8 @@
 # ============================================================
 #
 # 사용법:
-#   기본 (Metashape 제외): docker compose -f docker-compose.prod.yml up -d
-#   Metashape 포함:        docker compose -f docker-compose.prod.yml --profile metashape up -d
+#   기본 (처리 엔진 제외): docker compose -f docker-compose.prod.yml up -d
+#   처리 엔진 포함:        docker compose -f docker-compose.prod.yml --profile engine up -d
 #
 # 개발용과 차이점:
 # - 소스 코드 마운트 제거 (이미지에 내장)
@@ -91,17 +91,18 @@ services:
     logging: *default-logging
 
   # ============================================================
-  # Celery Worker - Metashape (GPU)
-  # 선택적 서비스: --profile metashape 옵션으로 활성화
+  # Celery Worker - GPU Processing Engine
+  # 선택적 서비스: --profile engine 옵션으로 활성화
   # ============================================================
-  worker-metashape:
+  worker-engine:
+    container_name: aerial-worker-engine
     profiles:
-      - metashape
+      - engine
     build:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-metashape@%h
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-engine@%h
     restart: always
     deploy:
       resources:
@@ -118,15 +119,15 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - METASHAPE_LICENSE_KEY=${METASHAPE_LICENSE_KEY:-}
+      - METASHAPE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
     volumes:
       # 프로덕션: 데이터 디렉토리 마운트
       - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - metashape-license:/var/tmp/agisoft/licensing
-      # Metashape 스크립트 마운트 (subprocess 실행용)
+      - engine-license:/var/tmp/agisoft/licensing
+      # 처리 엔진 스크립트 마운트 (subprocess 실행용)
       - ./engines/metashape/dags:/app/engines/metashape/dags:ro
     depends_on:
       - redis
@@ -135,7 +136,7 @@ services:
     networks:
       aerial-network:
         aliases:
-          - worker-metashape
+          - worker-engine
     mac_address: "02:42:AC:17:00:64"
     logging: *worker-logging
 
@@ -318,4 +319,4 @@ networks:
 volumes:
   pgdata:
   redis_data:
-  metashape-license:
+  engine-license:

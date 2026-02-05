@@ -1,6 +1,9 @@
-from typing import Optional
+from typing import Optional, Union
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
-# Region definitions matching frontend koreaRegions.js
+# Region definitions - FALLBACK only (prefer using get_region_for_point_db)
 # Each region is defined by a bounding box [min_lon, min_lat, max_lon, max_lat]
 KOREA_REGIONS = {
     "gyeonggi": {
@@ -26,12 +29,68 @@ KOREA_REGIONS = {
 }
 
 def get_region_for_point(lon: float, lat: float) -> Optional[str]:
-    """Determine the region name for a given longitude and latitude."""
+    """Determine the region name for a given longitude and latitude (FALLBACK - uses hardcoded bboxes)."""
     for region_id, info in KOREA_REGIONS.items():
         min_lon, min_lat, max_lon, max_lat = info["bbox"]
         if min_lon <= lon <= max_lon and min_lat <= lat <= max_lat:
             return info["name"]
     return None
+
+
+async def get_region_for_point_db(db: AsyncSession, lon: float, lat: float) -> Optional[str]:
+    """Determine the region name using PostGIS spatial query against regions table."""
+    try:
+        # Query regions table using ST_Contains
+        # Regions are stored in EPSG:5179, so we transform the point
+        result = await db.execute(
+            text("""
+                SELECT r.layer
+                FROM regions r
+                WHERE ST_Contains(
+                    ST_Transform(r.geom, 4326),
+                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
+                )
+                LIMIT 1
+            """),
+            {"lon": lon, "lat": lat}
+        )
+        row = result.fetchone()
+        if row:
+            return row[0]
+    except Exception as e:
+        # Log error but don't fail - fall back to hardcoded regions
+        import logging
+        logging.warning(f"PostGIS region query failed: {e}")
+
+    # Fallback to hardcoded bounding boxes
+    return get_region_for_point(lon, lat)
+
+
+def get_region_for_point_sync(db: Session, lon: float, lat: float) -> Optional[str]:
+    """Determine the region name using PostGIS spatial query (sync version for Celery workers)."""
+    try:
+        result = db.execute(
+            text("""
+                SELECT r.layer
+                FROM regions r
+                WHERE ST_Contains(
+                    ST_Transform(r.geom, 4326),
+                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
+                )
+                LIMIT 1
+            """),
+            {"lon": lon, "lat": lat}
+        )
+        row = result.fetchone()
+        if row:
+            return row[0]
+    except Exception as e:
+        import logging
+        logging.warning(f"PostGIS region query failed: {e}")
+
+    # Fallback to hardcoded bounding boxes
+    return get_region_for_point(lon, lat)
+
 
 def extract_center_from_wkt(wkt_polygon: str) -> tuple[Optional[float], Optional[float]]:
     """Extract center point (lon, lat) from a WKT Polygon string."""
