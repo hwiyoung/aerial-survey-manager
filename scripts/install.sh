@@ -123,10 +123,9 @@ setup_environment() {
     echo ""
 
     # 도메인/IP 설정
-    read -p "접속 도메인 또는 IP (예: app.example.com 또는 192.168.1.100): " domain
-    if [ -z "$domain" ]; then
-        domain="localhost"
-    fi
+    # 외부 접속이 필요하면 IP 또는 도메인 입력, 로컬만 사용하면 Enter
+    read -p "접속 도메인 또는 IP [localhost]: " domain
+    domain=${domain:-localhost}
 
     # 포트 설정
     read -p "웹 서비스 포트 [8081]: " web_port
