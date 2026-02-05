@@ -99,6 +99,8 @@ services:
       - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     volumes:
       - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      # 권역 GeoJSON 데이터 (초기 시드용)
+      - ./data/regions:/app/data:ro
     depends_on:
       db:
         condition: service_healthy
@@ -323,8 +325,18 @@ echo "  - 프로덕션 환경에서는 실제 인증서로 교체하세요."
 # data 디렉토리 생성
 mkdir -p "$RELEASE_DIR/data/processing"
 mkdir -p "$RELEASE_DIR/data/minio"
+mkdir -p "$RELEASE_DIR/data/regions"
 touch "$RELEASE_DIR/data/processing/.gitkeep"
 touch "$RELEASE_DIR/data/minio/.gitkeep"
+
+# 권역 GeoJSON 데이터 복사 (초기 시드용)
+echo "  - 권역 GeoJSON 데이터 복사 중..."
+if [ -f "./data/전국_권역_5K_5179.geojson" ]; then
+    cp "./data/전국_권역_5K_5179.geojson" "$RELEASE_DIR/data/regions/"
+    echo "    ✓ 전국_권역_5K_5179.geojson 복사 완료"
+else
+    echo "    ⚠ 권역 GeoJSON 파일을 찾을 수 없습니다."
+fi
 
 echo ""
 echo "5. Docker 이미지 저장 중..."
