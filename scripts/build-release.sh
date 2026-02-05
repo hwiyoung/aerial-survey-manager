@@ -342,6 +342,15 @@ else
     echo "    ⚠ 권역 GeoJSON 파일을 찾을 수 없습니다."
 fi
 
+# 카메라 모델 데이터 복사 (초기 시드용)
+echo "  - 카메라 모델 데이터 복사 중..."
+if [ -f "./data/io.csv" ]; then
+    cp "./data/io.csv" "$RELEASE_DIR/data/regions/"
+    echo "    ✓ io.csv 복사 완료"
+else
+    echo "    ⚠ io.csv 파일을 찾을 수 없습니다."
+fi
+
 echo ""
 echo "5. Docker 이미지 저장 중..."
 
