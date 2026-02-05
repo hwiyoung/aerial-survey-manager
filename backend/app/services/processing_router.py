@@ -479,7 +479,13 @@ class MetashapeEngine(ProcessingEngine):
                 if len(text) <= limit:
                     return text
                 return text[:limit] + "\n... (truncated)"
-            
+
+            # 이미지 목록을 파일로 저장 (ARG_MAX 제한 우회)
+            images_list_file = output_dir / "images_list.txt"
+            with open(images_list_file, "w") as f:
+                f.write("\n".join(image_files))
+            logger.info(f"[Metashape] Saved {len(image_files)} image paths to {images_list_file}")
+
             for i, (script_name, message) in enumerate(steps):
                 if progress_callback:
                     step_progress = (i / len(steps)) * 100
@@ -493,7 +499,7 @@ class MetashapeEngine(ProcessingEngine):
                     
                 cmd = [
                     sys.executable, str(script_path),
-                    "--input_images", ",".join(image_files),
+                    "--input_images_file", str(images_list_file),
                     "--image_folder", str(input_dir),
                     "--output_path", str(output_dir),
                     "--run_id", project_id,

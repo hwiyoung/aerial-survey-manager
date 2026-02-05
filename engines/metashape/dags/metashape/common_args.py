@@ -8,13 +8,18 @@ def parse_arguments():
     print(f"DEBUG: sys.argv = {sys.argv}")
     parser = argparse.ArgumentParser(description="Process images using Metashape.")
     parser.add_argument(
-        "--input_images", 
-        required=False, 
+        "--input_images",
+        required=False,
         help="Comma-separated list of input image file paths (e.g., 'image1.jpg,image2.jpg')."
     )
     parser.add_argument(
-        "--image_folder", 
-        required=False, 
+        "--input_images_file",
+        required=False,
+        help="Path to a file containing image file paths (one per line). Use this for large number of images to avoid 'Argument list too long' error."
+    )
+    parser.add_argument(
+        "--image_folder",
+        required=False,
         help="Path to the folder containing input images. Required if --input_images is not provided."
     )
     parser.add_argument(
@@ -64,8 +69,16 @@ def parse_arguments():
 
     args = parser.parse_args()
 
-    # input_images를 쉼표로 구분된 문자열에서 리스트로 변환
-    input_images = args.input_images.split(",") if args.input_images else []
+    # input_images 처리: 파일 또는 쉼표 구분 문자열에서 리스트로 변환
+    input_images = []
+    if args.input_images_file:
+        # 파일에서 이미지 목록 읽기 (대용량 이미지 처리용 - ARG_MAX 제한 우회)
+        with open(args.input_images_file, 'r') as f:
+            input_images = [line.strip() for line in f if line.strip()]
+        print(f"Loaded {len(input_images)} images from file: {args.input_images_file}")
+    elif args.input_images:
+        # 기존 방식: 쉼표로 구분된 문자열 (소량 이미지용)
+        input_images = args.input_images.split(",")
 
     return args, input_images
 
