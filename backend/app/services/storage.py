@@ -111,7 +111,7 @@ class StorageService:
         """
         Generate a URL for downloading.
 
-        For public paths (projects/), returns a simple public URL via direct MinIO access.
+        For public paths (projects/), returns a relative URL via nginx /storage/ proxy.
         For private paths, generates a presigned URL via nginx proxy.
 
         Args:
@@ -122,20 +122,16 @@ class StorageService:
         Returns:
             URL accessible from browser
         """
-        protocol = "https" if settings.MINIO_SECURE else "http"
-
         # Objects under projects/ are publicly accessible (bucket policy set)
-        # Use direct MinIO access (port 9002) to avoid signature issues
+        # Use nginx /storage/ proxy to avoid exposing MinIO port directly
+        # This works in both development and production environments
         if object_name.startswith("projects/"):
-            # MINIO_PUBLIC_ENDPOINT is for nginx proxy (uploads)
-            # For direct public access, use the same host but port 9002
-            public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
-            # Extract host from endpoint and use direct MinIO port
-            host = public_endpoint.split(':')[0]
-            direct_endpoint = f"{host}:9002"
-            return f"{protocol}://{direct_endpoint}/{self.bucket}/{object_name}"
+            # Return relative URL that nginx will proxy to MinIO
+            # nginx rewrites /storage/{path} to /aerial-survey/{path}
+            return f"/storage/{object_name}"
 
         # For private objects, generate presigned URL via nginx proxy
+        protocol = "https" if settings.MINIO_SECURE else "http"
         public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
 
         # For private objects, generate presigned URL using internal client

@@ -50,21 +50,36 @@ export const getTileConfig = () => {
 
     // 환경변수로 커스텀 URL이 설정된 경우 우선 사용
     const customUrl = import.meta.env.VITE_TILE_URL;
+
+    let config;
     if (customUrl) {
-        return {
+        config = {
             url: customUrl,
             attribution: import.meta.env.VITE_TILE_ATTRIBUTION || MAP_CONFIG.attribution.offline,
             subdomains: undefined,
             maxZoom: maxZoom,
         };
+    } else {
+        config = {
+            url: isOffline ? MAP_CONFIG.tileUrl.offline : MAP_CONFIG.tileUrl.online,
+            attribution: isOffline ? MAP_CONFIG.attribution.offline : MAP_CONFIG.attribution.online,
+            subdomains: isOffline ? undefined : MAP_CONFIG.subdomains,
+            maxZoom: maxZoom,
+        };
     }
 
-    return {
-        url: isOffline ? MAP_CONFIG.tileUrl.offline : MAP_CONFIG.tileUrl.online,
-        attribution: isOffline ? MAP_CONFIG.attribution.offline : MAP_CONFIG.attribution.online,
-        subdomains: isOffline ? undefined : MAP_CONFIG.subdomains,
-        maxZoom: maxZoom,
-    };
+    // 디버깅용 로그 (첫 호출시에만)
+    if (!getTileConfig._logged) {
+        console.log('[MapConfig] Tile settings:', {
+            VITE_MAP_OFFLINE: import.meta.env.VITE_MAP_OFFLINE,
+            VITE_TILE_URL: import.meta.env.VITE_TILE_URL,
+            isOffline,
+            tileUrl: config.url,
+        });
+        getTileConfig._logged = true;
+    }
+
+    return config;
 };
 
 export default MAP_CONFIG;

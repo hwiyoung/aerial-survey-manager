@@ -41,13 +41,15 @@ services:
         - VITE_API_URL=
         - VITE_TUS_URL=/files/
         - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-true}
-        - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}.png}
+        # 확장자 없음 - nginx try_files가 자동으로 .jpg/.png 감지
+        - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}}
     restart: always
     environment:
       - VITE_API_URL=
       - VITE_TUS_URL=/files/
       - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-true}
-      - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}.png}
+      # 확장자 없음 - nginx try_files가 자동으로 .jpg/.png 감지
+      - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}}
     # 프로덕션: 소스 마운트 제거, 빌드된 이미지 사용
     depends_on:
       - api
@@ -264,6 +266,7 @@ services:
         mc alias set myminio http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin}
         mc mb --ignore-existing myminio/aerial-survey
         mc anonymous set download myminio/aerial-survey/public
+        mc anonymous set download myminio/aerial-survey/projects
         echo "MinIO bucket initialized successfully"
     environment:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}

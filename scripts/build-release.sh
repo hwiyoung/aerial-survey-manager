@@ -43,7 +43,7 @@ echo ""
 echo "2. 이미지 태깅 중..."
 docker tag ${IMAGE_PREFIX}-frontend:latest ${IMAGE_PREFIX}:frontend-${VERSION}
 docker tag ${IMAGE_PREFIX}-api:latest ${IMAGE_PREFIX}:api-${VERSION}
-docker tag ${IMAGE_PREFIX}-worker-metashape:latest ${IMAGE_PREFIX}:worker-metashape-${VERSION}
+docker tag ${IMAGE_PREFIX}-worker-engine:latest ${IMAGE_PREFIX}:worker-engine-${VERSION}
 docker tag ${IMAGE_PREFIX}-celery-beat:latest ${IMAGE_PREFIX}:celery-beat-${VERSION}
 docker tag ${IMAGE_PREFIX}-celery-worker:latest ${IMAGE_PREFIX}:celery-worker-${VERSION}
 docker tag ${IMAGE_PREFIX}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
@@ -113,9 +113,11 @@ services:
       - aerial-network
     logging: *default-logging
 
-  worker-metashape:
-    image: ${IMAGE_PREFIX}:worker-metashape-${VERSION}
+  worker-engine:
+    container_name: aerial-worker-engine
+    image: ${IMAGE_PREFIX}:worker-engine-${VERSION}
     pull_policy: never
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-engine@%h
     restart: always
     deploy:
       resources:
@@ -132,13 +134,15 @@ services:
       - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - METASHAPE_LICENSE_KEY=\${METASHAPE_LICENSE_KEY:-}
+      - METASHAPE_LICENSE_KEY=\${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=\${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
     volumes:
       - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - metashape-license:/var/tmp/agisoft/licensing
+      - engine-license:/var/tmp/agisoft/licensing
+      # 처리 엔진 스크립트 마운트 (subprocess 실행용)
+      - ./engines/metashape/dags:/app/engines/metashape/dags:ro
     depends_on:
       - redis
       - db
@@ -146,7 +150,7 @@ services:
     networks:
       aerial-network:
         aliases:
-          - worker-metashape
+          - worker-engine
     mac_address: "02:42:AC:17:00:64"
     logging: *worker-logging
 
@@ -246,6 +250,7 @@ services:
         mc alias set myminio http://minio:9000 \$\${MINIO_ACCESS_KEY:-minioadmin} \$\${MINIO_SECRET_KEY:-minioadmin}
         mc mb --ignore-existing myminio/aerial-survey
         mc anonymous set download myminio/aerial-survey/public
+        mc anonymous set download myminio/aerial-survey/projects
         echo "MinIO bucket initialized successfully"
     environment:
       - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
@@ -315,7 +320,7 @@ networks:
 volumes:
   pgdata:
   redis_data:
-  metashape-license:
+  engine-license:
 EOF
 
 echo ""
@@ -345,14 +350,8 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 echo "  - 자체 서명 SSL 인증서가 생성되었습니다."
 echo "  - 프로덕션 환경에서는 실제 인증서로 교체하세요."
 
-# data 디렉토리 생성
-mkdir -p "$RELEASE_DIR/data/processing"
-mkdir -p "$RELEASE_DIR/data/minio"
+# data/regions 디렉토리 생성 (시드 데이터용)
 mkdir -p "$RELEASE_DIR/data/regions"
-mkdir -p "$RELEASE_DIR/data/tiles"
-touch "$RELEASE_DIR/data/processing/.gitkeep"
-touch "$RELEASE_DIR/data/minio/.gitkeep"
-touch "$RELEASE_DIR/data/tiles/.gitkeep"
 
 # 권역 GeoJSON 데이터 복사 (초기 시드용)
 echo "  - 권역 GeoJSON 데이터 복사 중..."
@@ -372,6 +371,16 @@ else
     echo "    ⚠ io.csv 파일을 찾을 수 없습니다."
 fi
 
+# 처리 엔진 스크립트 복사 (worker-engine subprocess 실행용)
+echo "  - 처리 엔진 스크립트 복사 중..."
+if [ -d "./engines/metashape/dags" ]; then
+    mkdir -p "$RELEASE_DIR/engines/metashape"
+    cp -r ./engines/metashape/dags "$RELEASE_DIR/engines/metashape/"
+    echo "    ✓ engines/metashape/dags 복사 완료"
+else
+    echo "    ⚠ engines/metashape/dags 디렉토리를 찾을 수 없습니다."
+fi
+
 echo ""
 echo "5. Docker 이미지 저장 중..."
 
@@ -384,8 +393,8 @@ docker save ${IMAGE_PREFIX}:frontend-${VERSION} | gzip > "$RELEASE_DIR/images/fr
 echo "  - api 저장 중..."
 docker save ${IMAGE_PREFIX}:api-${VERSION} | gzip > "$RELEASE_DIR/images/api.tar.gz"
 
-echo "  - worker-metashape 저장 중..."
-docker save ${IMAGE_PREFIX}:worker-metashape-${VERSION} | gzip > "$RELEASE_DIR/images/worker-metashape.tar.gz"
+echo "  - worker-engine 저장 중..."
+docker save ${IMAGE_PREFIX}:worker-engine-${VERSION} | gzip > "$RELEASE_DIR/images/worker-engine.tar.gz"
 
 echo "  - celery-beat 저장 중..."
 docker save ${IMAGE_PREFIX}:celery-beat-${VERSION} | gzip > "$RELEASE_DIR/images/celery-beat.tar.gz"
