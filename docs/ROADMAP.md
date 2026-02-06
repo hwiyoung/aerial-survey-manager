@@ -1,35 +1,50 @@
-# 개발 로드맵 (Roadmap)
+# 개발 로드맵
 
-> 📌 이 문서는 [README.md](../README.md)와 연계된 상세 개발 이력 및 향후 계획입니다.
+## 현재 상태
 
----
-
-## 현재 진행 상황
+모든 핵심 기능이 완료되었습니다.
 
 | Phase | 상태 | 설명 |
 |-------|------|------|
-| Phase 1: Foundation | ✅ 완료 | 백엔드 구조, DB 스키마, JWT 인증 |
-| Phase 2: File Transfer | ✅ 완료 | S3 Multipart Upload, Resumable Download |
-| Phase 3: Processing | ✅ 완료 | Metashape GPU 엔진, Celery 워커 |
-| Phase 4: Dashboard | ✅ 완료 | 지도 시각화, EO 파싱, 프로젝트 관리 |
-| Phase 5: Advanced | ✅ 완료 | TiTiler 통합, 통계 API, 내보내기, 그루핑 |
-| Phase 6: Hardening | ✅ 완료 | TB급 업로드, 라이선스 안정화, Monorepo 구조 |
-| Phase 7: UX Polish | ✅ 완료 | 멀티 프로젝트 업로드, UI 개선, 버그 수정 |
+| Phase 1: Foundation | ✅ | 백엔드, DB, JWT 인증 |
+| Phase 2: File Transfer | ✅ | S3 Multipart Upload, Resumable Download |
+| Phase 3: Processing | ✅ | Metashape GPU 엔진, Celery 워커 |
+| Phase 4: Dashboard | ✅ | 지도 시각화, EO 파싱, 프로젝트 관리 |
+| Phase 5: Advanced | ✅ | TiTiler 통합, 통계 API, 내보내기 |
+| Phase 6: Hardening | ✅ | TB급 업로드, 라이선스 안정화 |
+| Phase 7: UX Polish | ✅ | 멀티 프로젝트 업로드, UI 개선 |
 
 ---
 
 ## 향후 개선 예정
 
 ### 고우선순위
-- [ ] 다중 사용자 권한 관리 (관리자/편집자/뷰어 역할 분리)
-- [ ] 그룹 단위 일괄 작업 (다중 프로젝트 처리/내보내기)
+- [ ] 다중 사용자 권한 관리 (관리자/편집자/뷰어)
+- [ ] 그룹 단위 일괄 작업
 
 ### 중우선순위
-- [ ] 조직 스토리지 할당량 관리 (버킷별 용량 제한)
-- [ ] COG 로딩 성능 개선 (Web Worker 재활성화)
+- [ ] 조직 스토리지 할당량 관리
+- [ ] COG 로딩 성능 개선 (Web Worker)
 
 ### 저우선순위
-- [ ] ODM/External 엔진 재활성화 (현재 Metashape 전용)
+- [ ] ODM/External 엔진 재활성화
+
+---
+
+## Known Issues
+
+### 지도
+- **권역 툴팁 우선순위**: 권역과 프로젝트 중첩 시 일부 상황에서 권역 툴팁 표시됨
+- **오프라인 타일**: `VITE_MAP_OFFLINE=true` 설정 시 로컬 타일 필요
+
+### 시스템
+- **COG Loading**: MinIO 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
+- **처리 중단 후 재시작**: `Empty DEM` 오류 발생 가능 (EO 재업로드 권장)
+
+### 저장소
+- **MinIO 용량 부족**: 디스크 여유 10% 미만 시 HTTP 507 오류
+  - 해결: `MINIO_DATA_PATH`를 대용량 드라이브로 설정
+  - 상세: [ADMIN_GUIDE.md](./ADMIN_GUIDE.md#minio-저장소-관리)
 
 ---
 
@@ -37,79 +52,26 @@
 
 | 영역 | 기술 |
 |------|------|
-| Frontend | React + Vite + TailwindCSS + Leaflet + Recharts |
-| Backend | FastAPI + PostgreSQL + PostGIS + MinIO |
-| Upload | S3 Multipart (Presigned URLs via nginx) |
-| Processing | Metashape 2.2.0 (GPU, Celery Worker) |
-| Tiles | TiTiler (COG 타일 스트리밍) |
+| Frontend | React, Vite, TailwindCSS, Leaflet |
+| Backend | FastAPI, PostgreSQL, PostGIS, MinIO |
+| Processing | Metashape 2.2.0 (GPU, Celery) |
+| Tiles | TiTiler (COG 스트리밍) |
 
 ---
 
-## ⚠️ Known Issues
+## 주요 변경 이력
 
-### 지도 및 상호작용
-- **권역 툴팁 우선순위**: 권역과 프로젝트 중첩 시 일부 상황에서 권역 툴팁 표시됨
-
-### 시스템
-- **COG Loading**: MinIO 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
-- **처리 중단 후 재시작**: Metashape에서 `Empty DEM` 오류 발생 가능 (EO 재업로드 권장)
-
-### 저장소
-- **MinIO 용량 부족**: 디스크 여유 10% 미만 시 HTTP 507 오류
-  - 해결: `MINIO_DATA_PATH`를 대용량 드라이브로 설정
-
----
-
-## 최근 변경 이력
-
-| 날짜 | 항목 | 내용 |
-|------|------|------|
-| 2026-02-05 | result_gsd 표시 수정 | 내보내기 다이얼로그에서 실제 생성된 정사영상의 GSD 표시 (completed job 기준) |
-| 2026-02-05 | 조건부 내보내기 | GSD/CRS 변경 없으면 gdalwarp 스킵, COG 직접 다운로드 (성능 개선) |
-| 2026-02-05 | 저장공간 최적화 | 처리 완료 후 중간 파일 자동 삭제 (result_cog.tif, status.json만 유지) |
-| 2026-02-05 | DEM export 비활성화 | 저장공간 절약을 위해 DEM 파일 생성 비활성화 (코드 주석처리) |
-| 2026-02-05 | cogOpacity 버그 수정 | 지도에서 프로젝트 클릭 시 발생하던 JavaScript 에러 수정 |
-| 2026-02-05 | job.status 수정 | 처리 완료 시 ProcessingJob.status가 'completed'로 정상 업데이트 |
-| 2026-02-04 | 업로드 취소 UX | 취소 시 "업로드가 취소되었습니다" 메시지 표시 후 패널 닫힘 |
-| 2026-02-04 | EO 구분자 순서 | 공백(Space) → 탭(Tab) → 콤마(,) 순서, 기본값 공백으로 변경 |
-| 2026-02-04 | UI 텍스트 | "그래도 진행" → "계속 진행"으로 변경 (데이터 불일치 경고) |
-| 2026-02-04 | 내보내기 ESC | 내보내기 창에서 ESC 키로 닫기 지원 |
-| 2026-02-04 | 업체 정보 제거 | 프로젝트 정보에서 "업체" 필드 표시 제거 |
-| 2026-02-04 | 프리셋 간소화 | "정밀 처리", "고속 처리" 2개로 축소 (고해상도 프리셋 제거) |
-| 2026-02-04 | 출력 좌표계 | 정사영상 출력 좌표계를 입력 좌표계와 동일하게 자동 설정 |
-| 2026-02-04 | COG GSD 유지 | TILING_SCHEME 제거로 원본 GSD 유지 |
-| 2026-02-03 | 썸네일 생성 | PIL MAX_IMAGE_PIXELS 확장 (300MP), task queue 라우팅 수정 |
-| 2026-02-03 | TiTiler 수정 | GDAL S3 환경변수 최적화 (VSI_CACHE, CPL_VSIL_CURL 등) |
-| 2026-02-03 | 스토리지 URL | 업로드/다운로드 엔드포인트 분리 (nginx 8081, MinIO 9002) |
-| 2026-02-03 | 오프라인 지도 | mapConfig.js 추가, VITE_MAP_OFFLINE 환경변수 지원 |
-| 2026-02-03 | 자동 재시작 | docker-compose에 restart: always 설정 (재부팅 시 컨테이너 자동 시작) |
-| 2026-02-03 | 라이센스 관리 | SIGTERM 핸들러 추가 (컨테이너 종료 시 Metashape 라이센스 비활성화) |
-| 2026-02-03 | 카메라 모델 | PPA (ppa_x, ppa_y), 이미지 크기 (sensor_width_px, sensor_height_px) 필드 추가 |
-| 2026-02-03 | EO 좌표계 | TM 중부/서부/동부, UTM-K, WGS84 옵션 추가 |
-| 2026-02-03 | 지도 줌인 | 프로젝트 재진입 시 EO 포인트로 자동 줌인 (FitBounds 수정) |
-| 2026-02-03 | UI 상태 초기화 | 화면 전환 시 선택된 이미지 상태 리셋 |
-| 2026-02-02 | 권역명 표준화 | "충청권역" → "충청 권역" 등 공백 추가 |
-| 2026-02-02 | 스토리지 정리 | TUS 청크 파일 완전 삭제 (`delete_recursive`) |
-| 2026-02-02 | 고아 파일 정리 | `cleanup_orphaned_data.py` 스크립트 추가 |
-| 2026-02-02 | 대시보드 UI | 지도 높이 2배 증가, 파이차트 레전드 하단 배치 |
-| 2026-02-02 | 헤더 클릭 리셋 | 로고 클릭 시 지도 초기 뷰로 리셋 |
-| 2026-02-02 | 멀티 프로젝트 업로드 | 단일 탭에서 여러 프로젝트 동시 업로드 지원 |
-| 2026-02-02 | 글로벌 업로드 | 앱 내 네비게이션 중 업로드 유지 |
-| 2026-02-02 | 업로드 검증 | 처리 시작 전 불완전한 업로드 감지 |
-| 2026-02-02 | Metashape | Point Cloud 선택적 생성, Alignment 로깅 개선 |
-| 2026-01-30 | 처리 상태 복구 | 재진입 시 마지막 진행률 즉시 동기화 |
-| 2026-01-29 | 대시보드 메타데이터 | 단일 클릭으로 상세 통계 표시 |
-| 2026-01-29 | 썸네일 시스템 | 업로드 즉시 생성 및 백필 자동화 |
-| 2026-01-29 | 지도 상호작용 | 중첩 프로젝트 선택 팝업, 레이어 우선순위 조정 |
-| 2026-01-29 | Metashape 2.2.0 | 호환성 패치, 라이선스 볼륨 영속화 |
-| 2026-01-27 | Metashape 통합 | Celery 워커 기반 통합, GPU 가속 |
-| 2026-01-23 | 내보내기 고도화 | 단일 TIF 직접 다운로드, ZIP 손상 수정 |
-| 2026-01-22 | TiTiler 통합 | COG 타일 스트리밍 (메모리 90%+ 절감) |
-| 2026-01-19 | 업로드 최적화 | TB급 업로드, Nginx 버퍼링 해제 |
-| 2026-01-19 | 일괄 내보내기 | 다중 프로젝트 ZIP 다운로드 |
-| 2026-01-12 | 통계 API | 월별/지역별 통계 엔드포인트 구현 |
-| 2026-01-12 | 프로젝트 그루핑 | 폴더 트리, 드래그앤드롭 구현 |
+| 날짜 | 내용 |
+|------|------|
+| 2026-02-06 | 개발/배포 이미지 분리, 코드 보호 (.pyc) |
+| 2026-02-05 | result_gsd 표시 수정, 조건부 내보내기, 저장공간 최적화 |
+| 2026-02-04 | 출력 좌표계 자동 설정, COG 원본 GSD 유지 |
+| 2026-02-03 | 썸네일 생성 분리, 오프라인 지도, 라이센스 관리 |
+| 2026-02-02 | 멀티 프로젝트 업로드, 글로벌 업로드 상태 |
+| 2026-01-29 | 대시보드 메타데이터, 썸네일 시스템 |
+| 2026-01-27 | Metashape Celery 통합, GPU 가속 |
+| 2026-01-22 | TiTiler 통합 (메모리 90% 절감) |
 
 ---
 
-*마지막 업데이트: 2026-02-05*
+*마지막 업데이트: 2026-02-06*
