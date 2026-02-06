@@ -29,8 +29,10 @@ COPY . .
 
 # Python 바이트코드 컴파일 (-b: .py와 같은 위치에 .pyc 생성)
 RUN python -m compileall -b app/
+RUN python -m compileall -b scripts/
 # 소스 코드(.py) 제거, 바이트코드(.pyc)만 유지
 RUN find app/ -name "*.py" -type f -delete
+RUN find scripts/ -name "*.py" -type f -delete
 
 # ============================================================
 # Production stage - 최소 이미지
@@ -57,6 +59,9 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code (compiled bytecode)
 COPY --from=builder /app/app /app/app
+
+# Copy scripts (compiled bytecode for seed_camera_models, import_regions, etc.)
+COPY --from=builder /app/scripts /app/scripts
 
 # Copy other necessary files
 COPY alembic.ini .

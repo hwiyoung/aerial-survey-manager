@@ -63,10 +63,17 @@ echo "Migrations completed."
 # 초기 데이터 시드 (최초 실행 시에만)
 echo "Seeding initial data..."
 
-# 카메라 모델 시드
-if [ -f "scripts/seed_camera_models.py" ]; then
+# 카메라 모델 시드 (.pyc 우선, .py 폴백)
+SEED_SCRIPT=""
+if [ -f "scripts/seed_camera_models.pyc" ]; then
+    SEED_SCRIPT="scripts/seed_camera_models.pyc"
+elif [ -f "scripts/seed_camera_models.py" ]; then
+    SEED_SCRIPT="scripts/seed_camera_models.py"
+fi
+
+if [ -n "$SEED_SCRIPT" ]; then
     echo "  - Seeding camera models..."
-    python scripts/seed_camera_models.py 2>/dev/null || echo "    (camera models may already exist)"
+    python "$SEED_SCRIPT" 2>/dev/null || echo "    (camera models may already exist)"
 fi
 
 # 권역 데이터 시드 (GeoJSON 파일이 있는 경우)
@@ -101,11 +108,19 @@ if [ "$REGION_COUNT" -eq 0 ] || [ -z "$REGION_COUNT" ]; then
         fi
     done
 
-    if [ -n "$REGION_FILE" ] && [ -f "scripts/import_regions.py" ]; then
+    # import_regions 스크립트 찾기 (.pyc 우선, .py 폴백)
+    IMPORT_SCRIPT=""
+    if [ -f "scripts/import_regions.pyc" ]; then
+        IMPORT_SCRIPT="scripts/import_regions.pyc"
+    elif [ -f "scripts/import_regions.py" ]; then
+        IMPORT_SCRIPT="scripts/import_regions.py"
+    fi
+
+    if [ -n "$REGION_FILE" ] && [ -n "$IMPORT_SCRIPT" ]; then
         echo "  - Importing regions from $REGION_FILE..."
-        python scripts/import_regions.py "$REGION_FILE" 2>&1 || echo "    (regions import failed, will retry later)"
+        python "$IMPORT_SCRIPT" "$REGION_FILE" 2>&1 || echo "    (regions import failed, will retry later)"
     else
-        echo "  - No regions GeoJSON file found, skipping..."
+        echo "  - No regions GeoJSON file or import script found, skipping..."
         echo "    Searched paths: /app/data/*.geojson, data/*.geojson"
     fi
 else

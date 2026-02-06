@@ -378,7 +378,7 @@ docker compose exec db pg_isready -U postgres
 curl http://localhost:9002/minio/health/live
 
 # GPU 확인
-docker compose exec worker-metashape nvidia-smi
+docker compose exec worker-engine nvidia-smi
 ```
 
 ### 3. 기능 테스트
@@ -422,10 +422,10 @@ docker compose exec minio mc rm --recursive --force /data/.minio.sys/tmp/
 ```bash
 # 라이선스 볼륨 초기화
 docker volume rm aerial-survey-manager_metashape-license
-docker compose up -d worker-metashape
+docker compose up -d worker-engine
 
 # 로그 확인
-docker compose logs worker-metashape | grep -i license
+docker compose logs worker-engine | grep -i license
 ```
 
 ### 데이터베이스 연결 실패

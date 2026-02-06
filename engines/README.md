@@ -81,5 +81,40 @@ gdal_translate \
 
 > ⚠️ 이전에는 `TILING_SCHEME=GoogleMapsCompatible` 옵션이 있어 GSD가 Google Maps 타일 스킴에 맞게 변경되었으나, 2026-02-04부터 제거되어 원본 해상도를 유지합니다.
 
+## 배포 패키지 빌드 (2026-02-06)
+
+배포 시 Python 소스코드(.py)가 바이트코드(.pyc)로 컴파일되어 코드가 보호됩니다.
+
+### 개발/배포 이미지 분리
+
+| 환경 | 이미지 프리픽스 | 설명 |
+|------|----------------|------|
+| 개발 | `aerial-survey-manager-*` | 개발용 이미지 (.py 포함) |
+| 배포 빌드 | `aerial-prod-*` | 프로덕션 이미지 (.pyc만) |
+| 배포 패키지 | `aerial-survey-manager:*-VERSION` | 최종 태그된 이미지 |
+
+### 빌드 명령
+
+```bash
+# 배포 패키지 생성 (개발 이미지에 영향 없음)
+./scripts/build-release.sh v1.0.3
+```
+
+빌드 스크립트가 자동으로:
+1. 기존 배포 이미지(`aerial-prod-*`)만 삭제
+2. 별도 프로젝트명으로 프로덕션 이미지 빌드
+3. `.py` → `.pyc` 컴파일 후 소스 제거
+
+### 검증
+
+```bash
+# .pyc만 있는지 확인
+docker run --rm aerial-prod-worker-engine:latest \
+  find /app/engines -name "*.py" -type f
+# 결과가 비어있어야 정상
+```
+
+> 자세한 내용은 [ADMIN_GUIDE.md](../docs/ADMIN_GUIDE.md)의 "배포 패키지 생성" 섹션 참조
+
 ---
-*Created on 2026-01-27 / Updated on 2026-02-04*
+*Created on 2026-01-27 / Updated on 2026-02-06*

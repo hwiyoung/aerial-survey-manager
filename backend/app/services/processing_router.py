@@ -363,7 +363,7 @@ class ExternalAPIEngine(ProcessingEngine):
 class MetashapeEngine(ProcessingEngine):
     """
     Engine using Agisoft Metashape Python SDK.
-    Runs locally on worker-metashape.
+    Runs locally on worker-engine (aerial-worker-engine container).
     """
 
     @staticmethod

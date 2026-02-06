@@ -28,7 +28,7 @@ echo "1. Docker 서비스 상태 수집..."
 docker compose -f "$compose_file" ps > "$OUTPUT_DIR/docker-ps.txt" 2>&1 || true
 
 # 각 서비스 로그 수집
-services="api frontend db redis minio nginx worker-metashape celery-beat titiler flower"
+services="api frontend db redis minio nginx worker-engine celery-beat celery-worker titiler flower"
 
 for service in $services; do
     echo "2. $service 로그 수집..."

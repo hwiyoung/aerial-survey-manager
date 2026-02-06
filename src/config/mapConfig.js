@@ -33,10 +33,10 @@ export const MAP_CONFIG = {
     defaultZoom: 7,
     minZoom: 5,
 
-    // maxZoom: 오프라인 타일은 14까지만 존재
+    // maxZoom: 모든 환경에서 15로 통일
     maxZoom: {
-        offline: 14,
-        online: 18,
+        offline: 15,
+        online: 15,
     },
 };
 

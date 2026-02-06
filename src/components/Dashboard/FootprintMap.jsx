@@ -139,7 +139,7 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
             opacity={opacity}
             tileSize={512}
             zoomOffset={-1}
-            maxZoom={22}
+            maxZoom={15}
             attribution="&copy; TiTiler"
         />
     );

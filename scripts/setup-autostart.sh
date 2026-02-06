@@ -17,15 +17,23 @@ sudo systemctl enable containerd
 echo "[2/4] Docker 서비스 상태 확인..."
 sudo systemctl status docker --no-pager || true
 
-# 3. docker-compose.prod.yml의 restart 정책 확인
-echo "[3/4] docker-compose.prod.yml restart 정책 확인..."
-COMPOSE_FILE="${1:-./docker-compose.prod.yml}"
+# 3. docker-compose 파일의 restart 정책 확인
+echo "[3/4] docker-compose restart 정책 확인..."
+# Compose 파일 자동 감지 (개발환경: docker-compose.prod.yml 우선, 배포 패키지: docker-compose.yml)
+if [ -n "$1" ]; then
+    COMPOSE_FILE="$1"
+elif [ -f "./docker-compose.prod.yml" ]; then
+    COMPOSE_FILE="./docker-compose.prod.yml"
+else
+    COMPOSE_FILE="./docker-compose.yml"
+fi
+echo "  사용 파일: $COMPOSE_FILE"
 if [ -f "$COMPOSE_FILE" ]; then
     RESTART_COUNT=$(grep -c "restart: always" "$COMPOSE_FILE" 2>/dev/null || echo "0")
     if [ "$RESTART_COUNT" -gt 0 ]; then
         echo "  restart: always 설정 $RESTART_COUNT개 확인됨"
     else
-        echo "  restart: always 설정이 없습니다. docker-compose.prod.yml을 확인하세요."
+        echo "  restart: always 설정이 없습니다. $COMPOSE_FILE을 확인하세요."
     fi
 else
     echo "  $COMPOSE_FILE 파일을 찾을 수 없습니다."
@@ -41,7 +49,7 @@ echo "시스템 재부팅 후 Docker와 모든 컨테이너가 자동으로 시�
 echo ""
 echo "수동 재시작이 필요한 경우:"
 echo "  cd $(pwd)"
-echo "  docker compose -f docker-compose.prod.yml up -d"
+echo "  docker compose -f $COMPOSE_FILE up -d"
 echo ""
 echo "Docker 자동 시작 확인:"
 echo "  sudo systemctl is-enabled docker"

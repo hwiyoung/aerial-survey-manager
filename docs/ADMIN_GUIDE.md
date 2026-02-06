@@ -4,6 +4,96 @@
 
 ---
 
+## 📦 배포 패키지 생성 (2026-02-06 업데이트)
+
+### 1. 개요
+
+외부 기관에 배포할 패키지를 생성하는 절차입니다. **개발 PC**에서 실행합니다.
+
+### 2. 배포 패키지 빌드
+
+```bash
+# 버전을 지정하여 빌드 (예: v1.0.3)
+./scripts/build-release.sh v1.0.3
+```
+
+빌드 스크립트가 **자동으로** 다음 작업을 수행합니다:
+1. 기존 **배포 이미지만** 삭제 (개발 이미지 `aerial-survey-manager-*`는 유지)
+2. 별도 프로젝트명(`aerial-prod`)으로 프로덕션 이미지 빌드
+3. `--no-cache` 옵션으로 항상 최신 코드 반영
+4. `--profile engine` 옵션으로 worker-engine 포함
+5. Python 소스코드(.py)를 바이트코드(.pyc)로 컴파일 후 소스 제거
+
+> ℹ️ **개발 환경 영향 없음**: 배포 빌드는 `aerial-prod-*` 이미지를 사용하므로 개발용 이미지(`aerial-survey-manager-*`)는 그대로 유지됩니다.
+
+### 3. 빌드 결과 확인
+
+```bash
+# 이미지 생성 시간 확인 (방금 만들어졌는지)
+docker images | grep aerial-prod
+
+# .pyc만 있는지 확인 (핵심!)
+docker run --rm aerial-prod-worker-engine:latest ls -la /app/engines/metashape/dags/metashape/
+
+# .py 파일 없는지 확인 (결과 비어있어야 정상)
+docker run --rm aerial-prod-worker-engine:latest find /app/engines -name "*.py" -type f
+
+# .pyc 파일 있는지 확인 (파일 목록 나와야 정상)
+docker run --rm aerial-prod-worker-engine:latest find /app/engines -name "*.pyc" -type f
+```
+
+**정상 결과:**
+- `.pyc` 파일만 보임
+- `.py` 파일 검색 결과 없음
+
+### 4. 배포 패키지 파일
+
+빌드 완료 후 `releases/` 폴더에 생성됩니다:
+
+```
+releases/aerial-survey-manager-v1.0.3/
+├── docker-compose.yml      # 배포용 (image: 사용)
+├── .env.example            # 환경변수 템플릿
+├── images.tar              # Docker 이미지 (대용량)
+├── load-images.sh          # 이미지 로드 스크립트
+├── nginx.conf              # Nginx 설정
+├── init.sql                # DB 초기화
+├── scripts/                # 관리 스크립트
+└── data/                   # 초기 데이터
+```
+
+압축 파일: `releases/aerial-survey-manager-v1.0.3.tar.gz`
+
+### 5. 배포 패키지 전달
+
+생성된 `.tar.gz` 파일을 배포 PC로 전달합니다.
+
+### 6. 문제 해결
+
+#### 이미지에 여전히 .py 파일이 있음
+```bash
+# 원인: 스크립트 자동 정리가 실패했거나 빌드 중 오류 발생
+# 해결: 배포 이미지만 수동 삭제 후 재빌드
+docker rmi $(docker images | grep aerial-prod | awk '{print $3}') -f
+docker builder prune -af
+./scripts/build-release.sh v1.0.3
+```
+
+#### worker-engine 이미지가 없음
+```bash
+# 원인: --profile engine 옵션 누락
+# 해결: build-release.sh가 최신인지 확인
+cat scripts/build-release.sh | grep "profile engine"
+```
+
+#### 이미지 생성 시간이 오래됨
+```bash
+# 원인: 빌드가 실패하고 이전 이미지 사용
+# 해결: 빌드 로그 확인 후 오류 수정
+```
+
+---
+
 ## 💾 MinIO 저장소 관리
 
 ### 1. 저장소 위치 설정의 중요성
@@ -205,7 +295,7 @@ x-logging-worker: &worker-logging
 | 서비스 유형 | 로그 설정 | 최대 용량 | 적용 대상 |
 |------------|---------|----------|---------|
 | 기본 | `*default-logging` | 30MB | frontend, api, celery-beat, db, redis, minio, nginx, flower |
-| 처리 워커 | `*worker-logging` | 250MB | worker-metashape, worker-odm, tusd |
+| 처리 워커 | `*worker-logging` | 250MB | worker-engine, worker-odm, tusd |
 
 > 💡 **팁**: 처리 워커는 이미지 처리 시 상세한 로그를 남기므로, 오류 분석을 위해 더 큰 로그 용량을 확보합니다.
 
@@ -216,7 +306,7 @@ x-logging-worker: &worker-logging
 docker logs aerial-survey-manager-api-1 --tail 100
 
 # 실시간 로그 스트리밍
-docker logs -f aerial-survey-manager-worker-metashape-1
+docker logs -f aerial-survey-manager-worker-engine-1
 
 # 로그 파일 크기 확인
 du -sh /var/lib/docker/containers/*/
@@ -330,7 +420,7 @@ docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
 
 ## 🔑 Metashape Licensing Management
 
-`worker-metashape` 컨테이너의 라이선스 관리 전략에 대한 상세 기술 문서입니다.
+`worker-engine` 컨테이너의 라이선스 관리 전략에 대한 상세 기술 문서입니다.
 
 ### 1. Persistence Strategy (불사조 전략)
 Docker 환경 특성상 컨테이너가 빈번하게 생성/삭제되므로, 라이선스 유실 방지를 위해 다음 두 가지 방어 기제를 적용했습니다.
@@ -354,20 +444,23 @@ Metashape 엔진이 로컬에 저장하는 라이선스 파일(`.lic`)을 영구
    - 사유: "Docker 컨테이너 교체 중 기존 인스턴스 소실로 인한 재설정"
 2. **Force Recreate**: 리셋 승인 후, 컨테이너를 강제로 재생성하여 정해진 MAC 주소로 다시 시작합니다.
    ```bash
-   docker-compose up -d --force-recreate worker-metashape
+   docker-compose up -d --force-recreate worker-engine
    ```
 3. **수동 활성화**: 컨테이너 시작 후 `activate.py`를 실행하여 라이선스를 활성화합니다.
    ```bash
-   docker exec worker-metashape python3 /app/engines/metashape/dags/metashape/activate.py
+   docker exec worker-engine python3 /app/engines/metashape/dags/metashape/activate.py
    ```
    성공 시 `.lic` 파일이 `/var/tmp/agisoft/licensing/licenses/` 폴더에 생성되며, 이후에는 영구적으로 유지됩니다.
 
 ### 3. 수동 복구 (Manual Recovery)
 컨테이너가 실수로 삭제되었으나 라이선스를 다른 물리 서버로 옮기고 싶은 경우:
 1. `docker-compose.yml`에 정의된 것과 동일한 MAC 주소로 임시 컨테이너를 실행합니다.
-2. `deactivate.py`를 실행하여 명시적으로 라이선스를 반납합니다.
+2. `deactivate.py` (또는 배포환경에서는 `deactivate.pyc`)를 실행하여 명시적으로 라이선스를 반납합니다.
    ```bash
-   docker exec worker-metashape python3 /app/engines/metashape/dags/metashape/deactivate.py
+   # 배포 환경 (.pyc)
+   docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.pyc
+   # 개발 환경 (.py)
+   docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.py
    ```
 
 ---
@@ -388,7 +481,7 @@ Metashape 엔진이 로컬에 저장하는 라이선스 파일(`.lic`)을 영구
 - 동일 프로젝트에서 **처리 중단 직후 재시작**할 경우 Metashape 파이프라인에서 `Empty DEM` 등의 오류가 발생할 수 있습니다.
 - 이 경우 EO 파일명 매칭 실패/metadata.txt 불일치 가능성이 높으므로, 아래를 우선 확인하세요:
   - `/data/processing/{project_id}/images/metadata.txt`의 이미지 파일명과 실제 이미지 파일명이 일치하는지
-  - `worker-metashape` 로그에서 `reference_normalized.txt exists=True` 여부
+  - `worker-engine` 로그에서 `reference_normalized.txt exists=True` 여부
   - 필요 시 EO 재업로드 또는 프로젝트 재생성
 
 ---
@@ -812,7 +905,7 @@ environment:
 services:
   api:
     restart: always
-  worker-metashape:
+  worker-engine:
     restart: always
   nginx:
     restart: always
@@ -839,7 +932,7 @@ sudo systemctl is-enabled docker
 docker ps
 
 # 특정 서비스 로그 확인
-docker compose logs -f worker-metashape --tail=50
+docker compose logs -f worker-engine --tail=50
 ```
 
 ---
@@ -851,8 +944,8 @@ docker compose logs -f worker-metashape --tail=50
 컨테이너 종료 시 Metashape 라이센스를 자동으로 비활성화하기 위한 설정:
 
 ```yaml
-# docker-compose.yml - worker-metashape 서비스
-worker-metashape:
+# docker-compose.yml - worker-engine 서비스
+worker-engine:
   stop_signal: SIGTERM           # 종료 시그널
   stop_grace_period: 60s         # 종료 대기 시간 (60초)
 ```
@@ -870,7 +963,10 @@ worker-metashape:
 필요 시 수동으로 라이센스를 비활성화할 수 있습니다:
 
 ```bash
-docker compose exec worker-metashape python3 /app/engines/metashape/dags/metashape/deactivate.py
+# 배포 환경 (.pyc)
+docker compose exec worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.pyc
+# 개발 환경 (.py)
+docker compose exec worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.py
 ```
 
 ### 4. 로그 확인
@@ -878,7 +974,7 @@ docker compose exec worker-metashape python3 /app/engines/metashape/dags/metasha
 종료 시 라이센스 비활성화 로그 확인:
 
 ```bash
-docker compose logs worker-metashape | grep -i "deactivat"
+docker compose logs worker-engine | grep -i "deactivat"
 ```
 
 ### 5. 주의사항

@@ -20,6 +20,7 @@ VERSION=${1:-$(date +%Y%m%d)}
 RELEASE_NAME="aerial-survey-manager-${VERSION}"
 RELEASE_DIR="./releases/${RELEASE_NAME}"
 IMAGE_PREFIX="aerial-survey-manager"
+PROD_PROJECT="aerial-prod"  # 개발 이미지와 분리하기 위한 별도 프로젝트명
 
 echo -e "${BLUE}=============================================="
 echo "     Aerial Survey Manager Release Builder"
@@ -33,23 +34,53 @@ echo ""
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 
-echo "1. Docker 이미지 빌드 중..."
+echo "1. 기존 배포 이미지 정리 중..."
+
+# 배포용 이미지만 삭제 (개발용 aerial-survey-manager-*는 유지)
+# - aerial-prod-* (프로덕션 빌드 이미지)
+# - aerial-survey-manager:*-v* (버전 태그된 이미지)
+PROD_IMAGES=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^${PROD_PROJECT}-" || true)
+VERSIONED_IMAGES=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^${IMAGE_PREFIX}:.*-v" || true)
+ALL_RELEASE_IMAGES=$(echo -e "${PROD_IMAGES}\n${VERSIONED_IMAGES}" | grep -v "^$" | sort -u || true)
+
+if [ -n "$ALL_RELEASE_IMAGES" ]; then
+    echo "   배포 이미지 삭제:"
+    echo "$ALL_RELEASE_IMAGES" | sed 's/^/     - /'
+    echo "$ALL_RELEASE_IMAGES" | xargs docker rmi -f 2>/dev/null || true
+    echo -e "   ${GREEN}✓ 삭제 완료${NC}"
+else
+    echo "   삭제할 배포 이미지 없음"
+fi
+
+echo -e "   ${BLUE}ℹ 개발용 이미지 (aerial-survey-manager-*)는 유지됨${NC}"
+
+# 빌드 캐시 정리 (오래된 레이어 제거)
+echo "   빌드 캐시 정리 중..."
+docker builder prune -f > /dev/null 2>&1 || true
+
+echo ""
+echo "2. Docker 이미지 빌드 중 (캐시 없이)..."
 
 # 프로덕션 이미지 빌드
-docker compose -f docker-compose.prod.yml build
+# -p: 개발 이미지(aerial-survey-manager-*)와 분리된 프로젝트명 사용
+# --no-cache: 항상 최신 코드 반영
+# --profile engine: worker-engine 서비스 포함
+docker compose -p ${PROD_PROJECT} -f docker-compose.prod.yml --profile engine build --no-cache
 
 # 이미지 태깅 (버전 포함)
+# 소스: aerial-prod-* (프로덕션 빌드)
+# 타겟: aerial-survey-manager:*-VERSION (배포 패키지용)
 echo ""
-echo "2. 이미지 태깅 중..."
-docker tag ${IMAGE_PREFIX}-frontend:latest ${IMAGE_PREFIX}:frontend-${VERSION}
-docker tag ${IMAGE_PREFIX}-api:latest ${IMAGE_PREFIX}:api-${VERSION}
-docker tag ${IMAGE_PREFIX}-worker-engine:latest ${IMAGE_PREFIX}:worker-engine-${VERSION}
-docker tag ${IMAGE_PREFIX}-celery-beat:latest ${IMAGE_PREFIX}:celery-beat-${VERSION}
-docker tag ${IMAGE_PREFIX}-celery-worker:latest ${IMAGE_PREFIX}:celery-worker-${VERSION}
-docker tag ${IMAGE_PREFIX}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
+echo "3. 이미지 태깅 중..."
+docker tag ${PROD_PROJECT}-frontend:latest ${IMAGE_PREFIX}:frontend-${VERSION}
+docker tag ${PROD_PROJECT}-api:latest ${IMAGE_PREFIX}:api-${VERSION}
+docker tag ${PROD_PROJECT}-worker-engine:latest ${IMAGE_PREFIX}:worker-engine-${VERSION}
+docker tag ${PROD_PROJECT}-celery-beat:latest ${IMAGE_PREFIX}:celery-beat-${VERSION}
+docker tag ${PROD_PROJECT}-celery-worker:latest ${IMAGE_PREFIX}:celery-worker-${VERSION}
+docker tag ${PROD_PROJECT}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
 
 echo ""
-echo "3. 배포용 docker-compose.yml 생성 중..."
+echo "4. 배포용 docker-compose.yml 생성 중..."
 
 # 배포용 docker-compose.yml 생성 (build 대신 image 사용)
 cat > "$RELEASE_DIR/docker-compose.yml" << EOF
@@ -141,8 +172,7 @@ services:
     volumes:
       - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
       - engine-license:/var/tmp/agisoft/licensing
-      # 처리 엔진 스크립트 마운트 (subprocess 실행용)
-      - ./engines/metashape/dags:/app/engines/metashape/dags:ro
+      # 처리 엔진 스크립트는 Docker 이미지 내부에 포함됨 (Python 버전 호환성)
     depends_on:
       - redis
       - db
@@ -324,7 +354,7 @@ volumes:
 EOF
 
 echo ""
-echo "4. 기타 배포 파일 복사 중..."
+echo "5. 기타 배포 파일 복사 중..."
 
 # 필수 파일 복사
 cp .env.production.example "$RELEASE_DIR/.env.example"
@@ -371,18 +401,12 @@ else
     echo "    ⚠ io.csv 파일을 찾을 수 없습니다."
 fi
 
-# 처리 엔진 스크립트 복사 (worker-engine subprocess 실행용)
-echo "  - 처리 엔진 스크립트 복사 중..."
-if [ -d "./engines/metashape/dags" ]; then
-    mkdir -p "$RELEASE_DIR/engines/metashape"
-    cp -r ./engines/metashape/dags "$RELEASE_DIR/engines/metashape/"
-    echo "    ✓ engines/metashape/dags 복사 완료"
-else
-    echo "    ⚠ engines/metashape/dags 디렉토리를 찾을 수 없습니다."
-fi
+# 처리 엔진 스크립트는 Docker 이미지 내부에 포함됨
+# Python 버전 호환성 문제로 외부 마운트 제거됨
+echo "  - 처리 엔진 스크립트: Docker 이미지 내부에 포함 (외부 마운트 없음)"
 
 echo ""
-echo "5. Docker 이미지 저장 중..."
+echo "6. Docker 이미지 저장 중..."
 
 mkdir -p "$RELEASE_DIR/images"
 
@@ -422,7 +446,7 @@ docker save nginx:alpine | gzip > "$RELEASE_DIR/images/nginx.tar.gz" 2>/dev/null
 docker save ghcr.io/developmentseed/titiler:0.18.0 | gzip > "$RELEASE_DIR/images/titiler.tar.gz" 2>/dev/null || true
 
 echo ""
-echo "6. 이미지 로드 스크립트 생성 중..."
+echo "7. 이미지 로드 스크립트 생성 중..."
 
 cat > "$RELEASE_DIR/load-images.sh" << 'EOF'
 #!/bin/bash
@@ -466,7 +490,7 @@ EOF
 chmod +x "$RELEASE_DIR/load-images.sh"
 
 echo ""
-echo "7. README 생성 중..."
+echo "8. README 생성 중..."
 
 cat > "$RELEASE_DIR/README.txt" << EOF
 ============================================================
@@ -500,7 +524,7 @@ docs/DEPLOYMENT_GUIDE.md 참조
 EOF
 
 echo ""
-echo "8. 패키지 압축 중..."
+echo "9. 패키지 압축 중..."
 
 cd releases
 tar -czvf "${RELEASE_NAME}.tar.gz" "$RELEASE_NAME"

@@ -70,7 +70,17 @@ def export_orthomosaic(output_path, run_id, output_tiff_name, reai_task_id, inpu
         should_delete = check_success(output_path) and alignment_ratio >= 0.95
 
         if should_delete:
-            shutil.rmtree(folder_path)
+            # Metashape 문서 닫기 (락 파일 해제)
+            doc.save()
+            doc = None
+            chunk = None
+
+            # 락 파일 해제 대기
+            import time
+            time.sleep(1)
+
+            # ignore_errors=True로 남은 락 파일 무시
+            shutil.rmtree(folder_path, ignore_errors=True)
             print(f"✅ 프로젝트 파일 삭제됨: {folder_path}")
         else:
             print(f"⚠️ 프로젝트 파일 보존됨 (디버깅용): {folder_path}")

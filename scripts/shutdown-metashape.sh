@@ -4,8 +4,15 @@
 # docker-compose down 전에 라이센스 비활성화
 # ============================================================
 
-COMPOSE_FILE="${1:-./docker-compose.prod.yml}"
-WORKER_SERVICE="worker-metashape"
+# Compose 파일 자동 감지 (개발환경: docker-compose.prod.yml 우선, 배포 패키지: docker-compose.yml)
+if [ -n "$1" ]; then
+    COMPOSE_FILE="$1"
+elif [ -f "./docker-compose.prod.yml" ]; then
+    COMPOSE_FILE="./docker-compose.prod.yml"
+else
+    COMPOSE_FILE="./docker-compose.yml"
+fi
+WORKER_SERVICE="worker-engine"
 
 echo "=== Metashape 안전 종료 프로세스 ==="
 echo "Compose 파일: $COMPOSE_FILE"
@@ -30,8 +37,9 @@ fi
 # 2. 라이센스 비활성화
 echo "[2/4] Metashape 라이센스 비활성화 중..."
 if [ -n "$WORKER_STATUS" ]; then
+    # .pyc 우선, .py 폴백
     docker compose -f "$COMPOSE_FILE" exec -T "$WORKER_SERVICE" \
-        python3 /app/engines/metashape/dags/metashape/deactivate.py 2>&1 || \
+        bash -c 'if [ -f /app/engines/metashape/dags/metashape/deactivate.pyc ]; then python3 /app/engines/metashape/dags/metashape/deactivate.pyc; else python3 /app/engines/metashape/dags/metashape/deactivate.py; fi' 2>&1 || \
         echo "  라이센스 비활성화 실패 (워커가 응답하지 않음)"
 else
     echo "  워커가 실행 중이 아니므로 비활성화 스킵"
@@ -54,7 +62,7 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
     docker compose -f "$COMPOSE_FILE" down
     echo "전체 시스템이 종료되었습니다."
 else
-    echo "worker-metashape만 종료되었습니다."
+    echo "worker-engine만 종료되었습니다."
     echo "다른 서비스는 계속 실행 중입니다."
 fi
 

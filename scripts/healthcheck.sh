@@ -60,7 +60,7 @@ if [ -z "$services" ]; then
     check_fail "Docker 서비스가 실행되지 않았습니다"
 else
     # 각 서비스 상태 확인
-    for service in api frontend db redis minio nginx worker-metashape celery-beat titiler flower; do
+    for service in api frontend db redis minio nginx worker-engine celery-beat celery-worker titiler flower; do
         status=$(docker compose -f "$compose_file" ps "$service" --format "{{.Status}}" 2>/dev/null || echo "not found")
         if [[ "$status" == *"Up"* ]] || [[ "$status" == *"running"* ]]; then
             check_pass "$service: 실행 중"
@@ -163,7 +163,7 @@ else
 fi
 
 # Worker에서 GPU 접근 확인
-worker_gpu=$(docker compose -f "$compose_file" exec -T worker-metashape nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "failed")
+worker_gpu=$(docker compose -f "$compose_file" exec -T worker-engine nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "failed")
 if [ "$worker_gpu" != "failed" ] && [ -n "$worker_gpu" ]; then
     check_pass "Worker GPU 접근: $worker_gpu"
 else
@@ -178,7 +178,7 @@ echo ""
 echo -e "${BLUE}[Celery Workers]${NC}"
 
 celery_workers=$(docker compose -f "$compose_file" exec -T api celery -A app.workers.tasks inspect active --json 2>/dev/null || echo "{}")
-if [[ "$celery_workers" == *"worker-metashape"* ]]; then
+if [[ "$celery_workers" == *"worker-engine"* ]]; then
     check_pass "Metashape Worker: 활성"
 else
     check_warn "Metashape Worker: 비활성 또는 연결 불가"

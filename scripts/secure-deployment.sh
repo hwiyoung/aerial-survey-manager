@@ -101,10 +101,11 @@ WorkingDirectory=$SCRIPT_DIR
 EnvironmentFile=$SCRIPT_DIR/.env
 
 # 서비스 시작: docker compose up
-ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
+# 개발환경: docker-compose.prod.yml 우선, 배포 패키지: docker-compose.yml
+ExecStart=/bin/bash -c 'if [ -f docker-compose.prod.yml ]; then /usr/bin/docker compose -f docker-compose.prod.yml up -d; else /usr/bin/docker compose up -d; fi'
 
 # 서비스 중지: docker compose down
-ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+ExecStop=/bin/bash -c 'if [ -f docker-compose.prod.yml ]; then /usr/bin/docker compose -f docker-compose.prod.yml down; else /usr/bin/docker compose down; fi'
 
 # 재시작 정책
 Restart=on-failure
