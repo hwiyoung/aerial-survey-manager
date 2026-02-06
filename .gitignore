@@ -53,6 +53,9 @@ pgdata/
 redis_data/
 minio_data/
 
+# Celery runtime
+celerybeat-schedule
+
 # Release packages
 releases/
 *.tar.gz
