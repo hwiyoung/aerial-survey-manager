@@ -452,16 +452,12 @@ async def delete_project(
 
     await db.delete(project)
 
-    # Clean up local processing data
-    import shutil
-    from app.config import get_settings
-    settings = get_settings()
-    local_path = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id)
-    if local_path.exists():
-        try:
-            shutil.rmtree(local_path)
-        except Exception as e:
-            print(f"Failed to delete local project data {local_path}: {e}")
+    # Clean up local processing data via Celery task (worker-engine has root permission)
+    from app.workers.tasks import delete_project_data
+    try:
+        delete_project_data.delay(str(project_id))
+    except Exception as e:
+        print(f"Failed to queue delete task for {project_id}: {e}")
 
     # Clean up MinIO storage
     try:
@@ -733,22 +729,18 @@ async def upload_eo_data(
                 detail=f"EO 파일의 이미지명이 업로드된 이미지와 일치하지 않습니다. (matched 0/{len(parsed_rows)})"
             )
 
-        # Save normalized EO reference file to local processing path for Metashape
+        # Save normalized EO reference file via Celery task (worker-engine has root permission)
         if reference_rows:
             try:
-                from app.config import get_settings
-                settings = get_settings()
-                reference_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id) / "images"
-                reference_dir.mkdir(parents=True, exist_ok=True)
-                reference_path = reference_dir / "metadata.txt"
-                with open(reference_path, "w", encoding="utf-8") as f:
-                    if reference_crs:
-                        f.write(f"# CRS {reference_crs}\n")
-                    for name, x_val, y_val, z_val, omega, phi, kappa in reference_rows:
-                        f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
-                print(f"EO Upload: Saved reference file at {reference_path}")
+                from app.workers.tasks import save_eo_metadata
+                save_eo_metadata.delay(
+                    str(project_id),
+                    reference_crs,
+                    reference_rows
+                )
+                print(f"EO Upload: Queued metadata save task for project {project_id}")
             except Exception as e:
-                logger.warning(f"EO Upload: Failed to save reference file: {e}")
+                logger.warning(f"EO Upload: Failed to queue save task: {e}")
 
         await db.commit()
     except Exception as e:

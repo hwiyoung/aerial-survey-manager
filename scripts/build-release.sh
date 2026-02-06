@@ -531,6 +531,16 @@ tar -czvf "${RELEASE_NAME}.tar.gz" "$RELEASE_NAME"
 rm -rf "$RELEASE_NAME"
 
 echo ""
+echo "10. 로컬 .pyc 파일 정리 중..."
+# 배포 빌드에서 생성된 .pyc 파일이 개발 환경에 영향을 주지 않도록 정리
+cd ..
+find engines/ -name "*.pyc" -delete 2>/dev/null || true
+find engines/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+find backend/ -name "*.pyc" -delete 2>/dev/null || true
+find backend/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+echo -e "   ${GREEN}✓ .pyc 파일 정리 완료${NC}"
+
+echo ""
 echo -e "${GREEN}=============================================="
 echo "              빌드 완료!"
 echo "==============================================${NC}"

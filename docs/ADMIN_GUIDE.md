@@ -68,7 +68,18 @@ releases/aerial-survey-manager-v1.0.3/
 
 생성된 `.tar.gz` 파일을 배포 PC로 전달합니다.
 
-### 6. 문제 해결
+### 6. 빌드 후 로컬 .pyc 정리 (2026-02-06)
+
+빌드 스크립트는 배포 패키지 생성 후 **로컬 디렉토리의 .pyc 파일을 자동 정리**합니다.
+이는 개발 환경에서 배포용 .pyc 파일로 인한 "Bad magic number" 오류를 방지합니다.
+
+```bash
+# build-release.sh 10단계에서 자동 실행
+find engines/ -name "*.pyc" -delete
+find backend/ -name "*.pyc" -delete
+```
+
+### 7. 문제 해결
 
 #### 이미지에 여전히 .py 파일이 있음
 ```bash
@@ -209,20 +220,18 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 
 > 💡 **팁**: 항공 이미지 1장당 약 50~200MB, 프로젝트당 수백~수천 장을 업로드하므로, 여유롭게 TB 단위 스토리지를 확보하는 것이 좋습니다.
 
-### 7. 프로젝트 삭제 시 스토리지 정리 (2026-02-02 업데이트)
+### 7. 프로젝트 삭제 시 스토리지 정리 (2026-02-06 업데이트)
 
 프로젝트 삭제 시 다음 데이터가 자동으로 삭제됩니다:
 
-| 경로 | 설명 |
-|------|------|
-| `images/{project_id}/` | S3 Multipart로 업로드된 원본 이미지 |
-| `uploads/{upload_id}/` | TUS로 업로드된 원본 이미지 (레거시, 재귀 삭제) |
-| `uploads/{upload_id}.info/` | TUS 메타데이터 파일 (재귀 삭제) |
-| `projects/{project_id}/thumbnails/` | 생성된 썸네일 |
-| `projects/{project_id}/ortho/` | 정사영상 결과물 |
-| `/data/processing/{project_id}/` | 로컬 처리 캐시 |
+| 경로 | 설명 | 삭제 주체 |
+|------|------|----------|
+| `images/{project_id}/` | S3 Multipart로 업로드된 원본 이미지 | API |
+| `uploads/{upload_id}/` | TUS로 업로드된 원본 이미지 (레거시) | API |
+| `projects/{project_id}/` | 썸네일, 정사영상 결과물 | API |
+| `/data/processing/{project_id}/` | 로컬 처리 캐시 | **worker-engine (Celery)** |
 
-> ⚠️ **주의**: 2026-02-02 이전 버전에서는 TUS 청크 파일이 폴더 구조로 저장된 경우 완전히 삭제되지 않는 버그가 있었습니다. 최신 버전에서는 `delete_recursive()`를 사용하여 폴더 내 모든 파일을 삭제합니다.
+> ⚠️ **2026-02-06 변경**: 로컬 처리 데이터(`/data/processing/`)는 worker-engine이 root 권한으로 생성하므로, 삭제도 Celery 태스크(`delete_project_data`)를 통해 worker-engine에서 수행합니다. API(appuser)는 권한 부족으로 직접 삭제할 수 없습니다.
 
 ### 8. 고아 파일 정리 스크립트 (2026-02-02)
 
@@ -267,6 +276,40 @@ Found 243 orphaned upload bases.
 Dry run finished. Would delete 243 upload groups (100.70 GB).
 Run with --execute to actually delete these files.
 ```
+
+---
+
+## 🔄 환경변수 변경 반영 (2026-02-06)
+
+### 1. reload-env.sh 스크립트
+
+`.env` 파일 수정 후 컨테이너에 반영하려면 `reload-env.sh` 스크립트를 사용합니다.
+
+```bash
+# 모든 앱 컨테이너에 반영 (api, frontend, worker-engine 등)
+./scripts/reload-env.sh
+
+# 특정 서비스만 반영
+./scripts/reload-env.sh worker-engine
+./scripts/reload-env.sh api worker-engine
+```
+
+### 2. 동작 원리
+
+Docker Compose의 환경변수는 컨테이너 **생성 시**에만 적용됩니다.
+`docker compose restart`는 환경변수를 갱신하지 않으므로, `--force-recreate` 옵션이 필요합니다.
+
+```bash
+# reload-env.sh 내부 동작
+docker compose up -d --force-recreate $SERVICES
+```
+
+### 3. 적용 대상 서비스
+
+| 서비스 유형 | 서비스명 | reload 대상 |
+|------------|---------|------------|
+| 앱 서비스 | api, frontend, worker-engine, celery-* | ✅ 기본 대상 |
+| 외부 서비스 | db, redis, minio, nginx, titiler | ❌ 제외 (환경변수 변경 드묾) |
 
 ---
 
@@ -735,7 +778,7 @@ $END_CAMERA
 
 > ⚠️ **변경사항**: "표준 정사영상"→"정밀 처리", "빠른 미리보기"→"고속 처리"로 이름 변경, "고해상도 정사영상" 프리셋 제거
 
-### 3. EO 파일 설정 (2026-02-04 업데이트)
+### 3. EO 파일 설정 (2026-02-06 업데이트)
 
 업로드 위자드에서 EO 파일 구분자 및 좌표계를 설정할 수 있습니다:
 
@@ -745,7 +788,10 @@ $END_CAMERA
 | **좌표계** | TM 중부/서부/동부, UTM-K, WGS84 | TM 중부 (EPSG:5186) |
 | **헤더 행** | 첫 줄 제외 / 포함 | 첫 줄 제외 |
 
-> ⚠️ **변경사항 (2026-02-04)**: 구분자 기본값이 콤마(,)에서 공백(Space)으로 변경됨. 옵션 순서도 공백 → 탭 → 콤마 순으로 변경됨.
+**EO 메타데이터 저장 (2026-02-06 변경)**:
+- EO 업로드 시 `metadata.txt` 파일이 `/data/processing/{project_id}/images/`에 저장됨
+- 저장은 **Celery 태스크**(`save_eo_metadata`)를 통해 worker-engine에서 수행
+- 이유: `/data/processing` 디렉토리가 root 소유이므로 API(appuser)가 직접 파일 생성 불가
 
 **데이터 불일치 경고**: 이미지 수와 EO 데이터 수가 일치하지 않으면 경고 다이얼로그가 표시됩니다:
 - "계속 진행하시겠습니까?" 메시지와 함께 "돌아가기" / "계속 진행" 버튼 제공

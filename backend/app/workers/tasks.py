@@ -34,6 +34,10 @@ celery_app.conf.update(
         # 썸네일은 처리 엔진과 분리 - 별도 celery 워커에서 처리
         "app.workers.tasks.generate_thumbnail": {"queue": "celery"},
         "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "celery"},
+        # 프로젝트 데이터 삭제는 worker-engine에서 처리 (root 권한 필요)
+        "app.workers.tasks.delete_project_data": {"queue": "metashape"},
+        # EO 메타데이터 저장 (root 권한 필요)
+        "app.workers.tasks.save_eo_metadata": {"queue": "metashape"},
     },
 )
 
@@ -550,3 +554,62 @@ def regenerate_missing_thumbnails(self, project_id: str = None):
             "total_missing": len(images),
             "triggered": triggered_count,
         }
+
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.delete_project_data",
+)
+def delete_project_data(self, project_id: str):
+    """
+    프로젝트의 로컬 처리 데이터를 삭제합니다.
+    worker-engine에서 root 권한으로 실행됩니다.
+    """
+    import shutil
+
+    local_path = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id
+
+    if local_path.exists():
+        try:
+            shutil.rmtree(local_path)
+            print(f"✓ 프로젝트 데이터 삭제 완료: {local_path}")
+            return {"status": "deleted", "path": str(local_path)}
+        except Exception as e:
+            print(f"✗ 프로젝트 데이터 삭제 실패 {local_path}: {e}")
+            return {"status": "error", "path": str(local_path), "error": str(e)}
+    else:
+        print(f"ℹ 삭제할 데이터 없음: {local_path}")
+        return {"status": "not_found", "path": str(local_path)}
+
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.save_eo_metadata",
+)
+def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: list):
+    """
+    EO 메타데이터를 로컬 파일로 저장합니다.
+    worker-engine에서 root 권한으로 실행됩니다.
+
+    Args:
+        project_id: 프로젝트 UUID
+        reference_crs: 좌표계 (예: "EPSG:5186")
+        reference_rows: [(name, x, y, z, omega, phi, kappa), ...] 형식의 데이터
+    """
+    reference_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id / "images"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    reference_path = reference_dir / "metadata.txt"
+
+    try:
+        with open(reference_path, "w", encoding="utf-8") as f:
+            if reference_crs:
+                f.write(f"# CRS {reference_crs}\n")
+            for row in reference_rows:
+                name, x_val, y_val, z_val, omega, phi, kappa = row
+                f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
+
+        print(f"✓ EO 메타데이터 저장 완료: {reference_path} ({len(reference_rows)}개 항목)")
+        return {"status": "saved", "path": str(reference_path), "count": len(reference_rows)}
+    except Exception as e:
+        print(f"✗ EO 메타데이터 저장 실패: {e}")
+        return {"status": "error", "path": str(reference_path), "error": str(e)}
