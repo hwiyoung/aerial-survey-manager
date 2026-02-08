@@ -894,7 +894,16 @@ proj = Metashape.OrthoProjection()
 proj.crs = chunk.crs
 ```
 
-### 4. COG 생성 시 원본 GSD 유지 (2026-02-04)
+### 5. Orthomosaic Seamline 설정 (2026-02-08)
+
+정사영상 생성 시 **Seamline Refinement**가 활성화되어 이미지 간 이음선 품질이 향상됩니다:
+
+- `refine_seamlines=True`: 이미지 경계선 최적화 (활성)
+- `refine_roof_edges`: 지붕 경계선 보정 (비활성, 주석 처리)
+
+**관련 파일**: `engines/metashape/dags/metashape/build_orthomosaic.py`
+
+### 6. COG 생성 시 원본 GSD 유지 (2026-02-04)
 
 COG(Cloud Optimized GeoTIFF) 변환 시 **원본 정사영상의 GSD가 유지**됩니다:
 

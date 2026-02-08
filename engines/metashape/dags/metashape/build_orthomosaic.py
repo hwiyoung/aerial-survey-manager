@@ -28,13 +28,13 @@ def build_orthomosaic( output_path, run_id, input_epsg="4326", ):
     # --- Step 6: Build Orthomosaic & Refine Seamlines ---
     try:
         print("🛠 Building orthomosaic...")
-        key = "main/enable_refine_roof_edges"
-        Metashape.app.settings.setValue(key, True)
+        # key = "main/enable_refine_roof_edges"
+        # Metashape.app.settings.setValue(key, True)
         task_name = "Build Orthomosaic"
         chunk.buildOrthomosaic(
             surface_data=Metashape.DataSource.ElevationData,
-            refine_seamlines = False,
-            refine_roof_edges = True,
+            refine_seamlines=True,
+            # refine_roof_edges=True,
             progress=progress_callback_wrapper
         )
         doc.save(output_path + '/project.psx')
