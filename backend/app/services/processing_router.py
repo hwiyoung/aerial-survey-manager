@@ -4,6 +4,7 @@ import subprocess
 import asyncio
 import re
 import logging
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, List, Callable, Awaitable
@@ -367,6 +368,25 @@ class MetashapeEngine(ProcessingEngine):
     """
 
     @staticmethod
+    def _format_elapsed(seconds):
+        """초 단위 시간을 읽기 쉬운 형식으로 변환"""
+        minutes, secs = divmod(int(seconds), 60)
+        if minutes > 0:
+            return f"{minutes}분 {secs:02d}초"
+        return f"{secs}초"
+
+    @staticmethod
+    def _read_log_tail(log_path, lines=20):
+        """로그 파일의 마지막 N줄을 읽어 반환"""
+        try:
+            with open(log_path, 'r') as f:
+                all_lines = f.readlines()
+                tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+                return ''.join(tail)
+        except Exception:
+            return "(로그 파일 읽기 실패)"
+
+    @staticmethod
     def _get_script_path(script_base: Path, script_name: str) -> Path:
         """
         스크립트 경로를 반환합니다. .pyc (바이트코드) 우선, .py 폴백.
@@ -472,23 +492,22 @@ class MetashapeEngine(ProcessingEngine):
             logger.info(f"[Metashape] process_mode={process_mode} gsd={options.get('gsd')} output_crs={options.get('output_crs')}")
             output_epsg = options.get("output_crs", "4326")
 
-            def _truncate(text: str, limit: int = 4000) -> str:
-                if text is None:
-                    return ""
-                text = text.strip()
-                if len(text) <= limit:
-                    return text
-                return text[:limit] + "\n... (truncated)"
-
             # 이미지 목록을 파일로 저장 (ARG_MAX 제한 우회)
             images_list_file = output_dir / "images_list.txt"
             with open(images_list_file, "w") as f:
                 f.write("\n".join(image_files))
             logger.info(f"[Metashape] Saved {len(image_files)} image paths to {images_list_file}")
 
+            # .processing.log 및 타이밍 추적
+            log_file_path = output_dir / ".processing.log"
+            step_timings = []
+            total_start = time.time()
+            total_steps = len(steps)
+
             for i, (script_name, message) in enumerate(steps):
+                step_num = i + 1
                 if progress_callback:
-                    step_progress = (i / len(steps)) * 100
+                    step_progress = (i / total_steps) * 100
                     await progress_callback(step_progress, message)
 
                 try:
@@ -496,7 +515,7 @@ class MetashapeEngine(ProcessingEngine):
                 except FileNotFoundError as e:
                     logger.error(f"Metashape script not found: {e}")
                     raise RuntimeError(f"Metashape 필수 스크립트를 찾을 수 없습니다: {script_name}")
-                    
+
                 cmd = [
                     sys.executable, str(script_path),
                     "--input_images_file", str(images_list_file),
@@ -518,21 +537,43 @@ class MetashapeEngine(ProcessingEngine):
                     if reference_path:
                         logger.info(f"[Metashape] EO reference_path option: {reference_path}")
 
-                logger.info(f"🚀 [DEBUG_v5] Running Metashape step: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                logger.info(f"[Metashape] Step {step_num}/{total_steps}: {message} ({script_name})")
+                step_start = time.time()
 
-                if result.stdout:
-                    logger.info(f"[Metashape:{script_name}] stdout:\n{_truncate(result.stdout)}")
-                if result.stderr:
-                    logger.warning(f"[Metashape:{script_name}] stderr:\n{_truncate(result.stderr)}")
-                
+                # stdout+stderr를 .processing.log에 직접 기록 (실시간)
+                with open(log_file_path, 'a') as log_f:
+                    log_f.write(f"\n{'='*60}\n")
+                    log_f.write(f"[Step {step_num}/{total_steps}] {script_name} - {message}\n")
+                    log_f.write(f"[Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
+                    log_f.write(f"{'='*60}\n")
+                    log_f.flush()
+                    result = subprocess.run(cmd, stdout=log_f, stderr=subprocess.STDOUT, text=True)
+
+                elapsed = time.time() - step_start
+                step_timings.append((script_name, message, elapsed))
+
+                # 타이밍을 로그 파일에도 기록
+                with open(log_file_path, 'a') as log_f:
+                    log_f.write(f"\n[Step {step_num}/{total_steps}] 완료: {self._format_elapsed(elapsed)}\n")
+
                 if result.returncode != 0:
-                    logger.error(f"Metashape step {script_name} failed: {result.stderr}")
-                    raise RuntimeError(f"Metashape 처리 실패 ({script_name}): {result.stderr}")
+                    error_tail = self._read_log_tail(log_file_path)
+                    logger.error(f"[Metashape] Step {step_num}/{total_steps} 실패 ({script_name}):\n{error_tail}")
+                    raise RuntimeError(f"Metashape 처리 실패 ({script_name})")
+
+                logger.info(f"[Metashape] Step {step_num}/{total_steps}: 완료 - {self._format_elapsed(elapsed)}")
 
                 if script_name == "align_photos.py":
                     normalized_reference = output_dir / "reference_normalized.txt"
                     logger.info(f"[Metashape] reference_normalized.txt exists={normalized_reference.exists()} path={normalized_reference}")
+
+            # 전체 처리 요약
+            total_elapsed = time.time() - total_start
+            logger.info(f"[Metashape] {'='*40}")
+            logger.info(f"[Metashape] 전체 처리 완료 - 총 {self._format_elapsed(total_elapsed)}")
+            for idx, (name, msg, elapsed) in enumerate(step_timings, 1):
+                logger.info(f"[Metashape]   {idx}. {name:<25s}: {self._format_elapsed(elapsed)}")
+            logger.info(f"[Metashape] {'='*40}")
                     
             # Result check
             result_tif = output_dir / "result.tif"

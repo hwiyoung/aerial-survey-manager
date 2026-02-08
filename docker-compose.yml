@@ -182,6 +182,7 @@ services:
               capabilities: [gpu]
     environment:
       - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000

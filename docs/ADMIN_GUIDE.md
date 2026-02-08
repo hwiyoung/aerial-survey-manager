@@ -355,6 +355,8 @@ docker logs -f aerial-survey-manager-worker-engine-1
 du -sh /var/lib/docker/containers/*/
 ```
 
+> 💡 **처리 로그 확인**: Metashape 처리의 단계별 소요 시간은 `docker compose logs -f worker-engine`에서 실시간으로 확인할 수 있습니다. 상세한 Metashape 출력은 각 프로젝트의 `.work/.processing.log` 파일을 참조하세요. 자세한 내용은 [Metashape 디버깅](#-metashape-디버깅-2026-02-08-업데이트) 섹션을 참고하세요.
+
 ### 3. 수동 로그 정리
 
 ```bash
@@ -513,7 +515,7 @@ Metashape 엔진이 로컬에 저장하는 라이선스 파일(`.lic`)을 영구
 처리 화면 재진입 시 마지막 단계 메시지와 진행률을 즉시 복구하기 위해,
 워커가 처리 상태를 파일로 캐시합니다.
 
-- 경로: `/data/processing/{project_id}/processing_status.json`
+- 경로: `/data/processing/{project_id}/.work/processing_status.json`
 - 예시 내용:
   ```json
   {"status":"processing","progress":42,"message":"이미지 정렬 (Align Photos)","updated_at":"..."}
@@ -569,9 +571,88 @@ POST /api/v1/processing/projects/{project_id}/start?force=true
 
 ---
 
-## 🔍 Metashape 디버깅 (2026-02-02)
+## 🔍 Metashape 디버깅 (2026-02-08 업데이트)
 
-### 1. Alignment 결과 로깅
+### 1. 처리 디렉토리 구조
+
+처리 중간 산출물은 숨김 폴더(`.work/`)에 저장되고, 최종 결과물만 `output/`에 배치됩니다:
+
+```
+/data/processing/{project-id}/
+├── images/                  ← 업로드된 원본 이미지
+├── output/
+│   └── result_cog.tif       ← 최종 결과물 (COG)
+└── .work/                   ← 숨김 폴더 (중간 산출물)
+    ├── status.json          ← 단계별 진행률 + result_gsd
+    ├── .processing.log      ← 상세 처리 로그
+    ├── result.tif            ← (성공 시 삭제)
+    ├── project.psx           ← (성공 시 삭제)
+    └── project.files/        ← (조건부 삭제)
+```
+
+**정리 정책**:
+
+| 처리 결과 | `.work/` 내 파일 | 설명 |
+|-----------|-----------------|------|
+| 성공 | `status.json`, `.processing.log`만 유지 | 나머지 중간 산출물 삭제 |
+| 실패 | 모든 파일 보존 | 디버깅용 |
+
+### 2. 처리 로그 확인
+
+#### A. Celery 콘솔 로그 (단계별 타이밍)
+
+`docker compose logs`로 각 단계의 소요 시간을 확인할 수 있습니다:
+
+```bash
+docker compose logs -f worker-engine
+```
+
+출력 예시:
+```
+[Metashape] Step 1/5: 이미지 정렬 (align_photos.py)
+[Metashape] Step 1/5: 완료 - 3분 42초
+[Metashape] Step 2/5: DEM 생성 (build_dem.py)
+[Metashape] Step 2/5: 완료 - 1분 15초
+...
+[Metashape] ========================================
+[Metashape] 전체 처리 완료 - 총 12분 30초
+[Metashape]   1. align_photos.py          : 3분 42초
+[Metashape]   2. build_dem.py             : 1분 15초
+[Metashape]   3. build_orthomosaic.py     : 5분 20초
+[Metashape]   4. export_orthomosaic.py    : 2분 13초
+[Metashape] ========================================
+```
+
+#### B. 상세 로그 (`.processing.log`)
+
+각 단계의 Metashape stdout 출력이 `.processing.log`에 기록됩니다:
+
+```bash
+# 처리 중 실시간 확인
+docker compose exec worker-engine tail -f /data/processing/{project-id}/.work/.processing.log
+
+# 처리 완료 후 확인
+docker compose exec worker-engine cat /data/processing/{project-id}/.work/.processing.log
+```
+
+로그 파일 내용 예시:
+```
+============================================================
+[Step 1/5] align_photos.py - 이미지 정렬
+[Started: 2026-02-08 14:30:00]
+============================================================
+   Align Photos: 10%
+   Align Photos: 20%
+   ...
+[Step 1/5] 완료: 3분 42초
+```
+
+#### C. 실패 시 에러 확인
+
+처리 실패 시 Celery 로그에 `.processing.log`의 마지막 20줄이 자동으로 출력됩니다.
+추가 확인이 필요하면 `.processing.log` 전체를 확인하세요.
+
+### 3. Alignment 결과 로깅
 
 처리 로그에서 카메라 정렬 결과를 확인할 수 있습니다:
 
@@ -583,20 +664,20 @@ POST /api/v1/processing/projects/{project_id}/start?force=true
    ...
 ```
 
-### 2. project.files 조건부 보존
+### 4. project.files 조건부 보존
 
-처리 결과에 문제가 있을 경우 디버깅을 위해 프로젝트 파일이 보존됩니다:
+처리 중 Metashape 프로젝트 파일이 조건부로 삭제됩니다:
 
 | 조건 | 삭제 여부 | 이유 |
 |------|----------|------|
 | 처리 성공 + 정렬률 95% 이상 | ✅ 삭제 | 정상 완료 |
 | 처리 실패 또는 정렬률 95% 미만 | ❌ 보존 | 디버깅 필요 |
 
-보존된 파일 위치: `/data/processing/{project_id}/project.files/`
+보존된 파일 위치: `/data/processing/{project_id}/.work/project.files/`
 
-### 3. 로그 출력량 최적화
+### 5. 로그 출력량 최적화
 
-Metashape 워커 로그는 10% 단위로만 출력됩니다:
+Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니다:
 ```
    Align Photos: 10%
    Align Photos: 20%

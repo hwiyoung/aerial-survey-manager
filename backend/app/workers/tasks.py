@@ -139,7 +139,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             # Setup directories
             base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id)
             input_dir = base_dir / "images"
-            output_dir = base_dir / "output"
+            output_dir = base_dir / ".work"
             input_dir.mkdir(parents=True, exist_ok=True)
             output_dir.mkdir(parents=True, exist_ok=True)
             
@@ -286,16 +286,20 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
                 storage.upload_file(str(cog_path), cog_object_name, "image/tiff")
 
+                # result_cog.tif를 output/ 디렉토리로 이동 (고객에게 보이는 결과물)
+                final_output_dir = base_dir / "output"
+                final_output_dir.mkdir(parents=True, exist_ok=True)
+                final_cog_path = final_output_dir / "result_cog.tif"
+                shutil.move(str(cog_path), str(final_cog_path))
+
                 # Use COG as primary result
-                result_path = cog_path
+                result_path = final_cog_path
                 result_object_name = cog_object_name
 
-                # Clean up intermediate files to save storage space
-                # Keep only: result_cog.tif, status.json
+                # Clean up intermediate files in .work/ (숨김 폴더)
                 update_progress(93, "중간 파일 정리 중...")
-                files_to_keep = {"result_cog.tif", "status.json"}
+                files_to_keep = {"status.json", ".processing.log"}
 
-                # Clean output directory (keep only essential files)
                 for item in output_dir.iterdir():
                     if item.name not in files_to_keep:
                         try:
