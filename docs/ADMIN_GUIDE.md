@@ -1151,7 +1151,7 @@ TILES_PATH=/media/innopam/InnoPAM-8TB/data/vworld_tiles/  # 호스트의 타일 
 │       └── 12.jpg
 ├── 6/
 │   └── ...
-└── 15/
+└── 16/
     └── ...
 ```
 

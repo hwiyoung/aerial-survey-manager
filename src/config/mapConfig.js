@@ -33,10 +33,10 @@ export const MAP_CONFIG = {
     defaultZoom: 7,
     minZoom: 5,
 
-    // maxZoom: 모든 환경에서 15로 통일
+    // maxZoom: 모든 환경에서 16으로 통일
     maxZoom: {
-        offline: 15,
-        online: 15,
+        offline: 16,
+        online: 16,
     },
 };
 

@@ -12,7 +12,7 @@ function FitBounds({ images, projectId, maxZoom }) {
             const bounds = L.latLngBounds(images.map(img => [img.wy, img.wx]));
             if (bounds.isValid()) {
                 // maxZoom을 초과하지 않도록 제한
-                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 15 });
+                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 16 });
             }
         }
     }, [images, map, projectId, maxZoom]); // Add projectId to re-trigger on project change

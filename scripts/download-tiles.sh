@@ -8,7 +8,7 @@ set -e
 
 TILES_DIR="${1:-./data/tiles}"
 MIN_ZOOM="${2:-5}"
-MAX_ZOOM="${3:-15}"
+MAX_ZOOM="${3:-16}"
 
 # 대한민국 바운딩 박스
 MIN_LAT=33
