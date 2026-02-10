@@ -1121,7 +1121,7 @@ docker compose logs worker-engine | grep -i "deactivat"
 
 ---
 
-## 🗺️ 오프라인 타일맵 설정 (2026-02-04 업데이트)
+## 🗺️ 오프라인 타일맵 설정 (2026-02-10 업데이트)
 
 ### 1. 환경변수 설정
 
@@ -1130,13 +1130,11 @@ docker compose logs worker-engine | grep -i "deactivat"
 ```bash
 # .env
 VITE_MAP_OFFLINE=true
-VITE_TILE_URL=/tiles/{z}/{x}/{y}.jpg   # 타일 파일 확장자에 맞게 설정 (.jpg 또는 .png)
+VITE_TILE_URL=/tiles/{z}/{x}/{y}       # 확장자 없음 (nginx가 자동 감지)
 TILES_PATH=/media/innopam/InnoPAM-8TB/data/vworld_tiles/  # 호스트의 타일 디렉토리
 ```
 
-> ⚠️ **중요**: `VITE_TILE_URL`의 확장자는 실제 타일 파일 확장자와 **정확히 일치**해야 합니다!
-> - VWorld 타일: `.jpg`
-> - OpenStreetMap 타일: `.png`
+> ℹ️ **확장자 자동 감지**: `VITE_TILE_URL`에 확장자를 지정하지 않아도 nginx의 `try_files`가 `.jpg`, `.png` 확장자를 자동으로 탐색합니다. 기존에 확장자를 지정한 경우에도 정상 동작합니다.
 
 ### 2. 타일 디렉토리 구조
 
@@ -1186,21 +1184,33 @@ docker compose up -d nginx
 # docker-compose.yml
 nginx:
   volumes:
-    - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
+    - ${TILES_PATH:-./data/tiles}:/data/tiles:ro
 ```
 
 ### 6. Nginx 설정
 
 ```nginx
-# nginx.conf
+# nginx.prod.conf (2026-02-10 업데이트)
 location /tiles/ {
     alias /data/tiles/;
-    expires 30d;
-    add_header Cache-Control "public, immutable";
-    add_header Access-Control-Allow-Origin "*";
-    try_files $uri =404;
+    add_header 'Access-Control-Allow-Origin' '*' always;
+    try_files $uri $uri.jpg $uri.png @empty_tile;
+    expires 1d;
+    access_log off;
+}
+
+# 타일이 없는 경우: 캐시하지 않고 204 반환
+location @empty_tile {
+    add_header 'Access-Control-Allow-Origin' '*' always;
+    add_header 'Cache-Control' 'no-cache' always;
+    return 204;
 }
 ```
+
+> ℹ️ **캐시 정책 변경** (2026-02-10):
+> - 이전: `expires 30d` + `immutable` → 타일 교체 시 브라우저 캐시가 만료될 때까지 이전 타일(또는 빈 응답)이 표시됨
+> - 현재: `expires 1d` → 타일 교체 후 최대 1일 내에 새 타일 반영, 하드 리프레시(Ctrl+Shift+R)로 즉시 갱신 가능
+> - 없는 타일 응답(204)은 `no-cache`로 설정되어 캐시되지 않음
 
 ### 7. 온라인/오프라인 전환
 
@@ -1209,7 +1219,33 @@ location /tiles/ {
 | `false` (기본값) | OpenStreetMap 온라인 타일 사용 |
 | `true` | 로컬 `/tiles/` 경로에서 타일 로드 |
 
-### 8. 트러블슈팅
+### 8. 타일 교체 절차
+
+배포 후 타일 데이터를 교체하는 올바른 절차입니다.
+
+#### A. 기존 폴더 안의 파일만 교체 (권장)
+
+```bash
+# 기존 타일 삭제 후 새 타일 복사 (폴더 자체는 유지)
+rm -rf /path/to/tiles/*
+cp -r /new/tiles/source/* /path/to/tiles/
+
+# nginx 재시작 불필요 (bind mount가 유지됨)
+```
+
+#### B. 폴더 자체를 삭제 후 재생성한 경우
+
+```bash
+# 이미 폴더를 삭제 후 새로 만들었다면 nginx 재시작 필요
+docker compose restart nginx
+```
+
+> ⚠️ **Docker bind mount 주의사항**: Docker bind mount는 디렉토리의 **inode**를 참조합니다.
+> 호스트에서 디렉토리를 삭제(`rm -rf /tiles`)하고 같은 경로에 새로 생성(`mkdir /tiles`)하면,
+> inode가 변경되어 컨테이너 내부에서 "No such file or directory" 오류가 발생합니다.
+> 이 경우 반드시 `docker compose restart nginx`로 nginx를 재시작해야 합니다.
+
+### 9. 트러블슈팅
 
 #### 증상: 지도가 회색 배경만 표시됨
 ```
@@ -1217,9 +1253,13 @@ location /tiles/ {
 확인: curl http://localhost:8081/tiles/7/109/49.jpg
 해결: TILES_PATH가 올바른 경로인지 확인
 
-원인 2: 확장자 불일치 (.png vs .jpg)
-확인: ls /path/to/tiles/7/109/  # 실제 파일 확장자 확인
-해결: VITE_TILE_URL의 확장자를 실제 파일에 맞게 변경 후 재빌드
+원인 2: 타일 폴더 교체 후 Docker bind mount가 끊어짐
+확인: docker compose exec nginx ls /data/tiles/
+      → "No such file or directory" 출력 시 bind mount 문제
+해결: docker compose restart nginx
+
+원인 3: 브라우저에 빈 타일 응답이 캐시됨 (이전 버전의 nginx 설정 사용 시)
+해결: Ctrl+Shift+R (하드 리프레시) 또는 브라우저 캐시 삭제
 ```
 
 #### 증상: 타일 요청이 404 반환
@@ -1231,19 +1271,26 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/tiles/7/109/49.jpg
 docker compose exec nginx ls -la /data/tiles/7/109/
 ```
 
+#### 증상: 타일 교체 후에도 이전 타일이 표시됨
+```
+원인: 브라우저 캐시 (expires 1d)
+해결: Ctrl+Shift+R (하드 리프레시) 또는 시크릿 모드에서 확인
+```
+
 #### 증상: 빌드 후에도 온라인 타일 사용
 ```
 원인: 브라우저 캐시
 해결: Ctrl+Shift+R (하드 리프레시) 또는 시크릿 모드에서 확인
 ```
 
-### 9. 관련 파일
+### 10. 관련 파일
 
 | 파일 | 설명 |
 |------|------|
 | `src/config/mapConfig.js` | 타일 설정 로직 |
 | `Dockerfile.frontend` | VITE_MAP_OFFLINE 빌드 인자 |
-| `nginx.conf` | `/tiles/` 라우팅 |
+| `nginx.prod.conf` | `/tiles/` 라우팅 (프로덕션) |
+| `nginx.conf` | `/tiles/` 라우팅 (개발) |
 | `.env` | 환경변수 설정 |
 
 ---

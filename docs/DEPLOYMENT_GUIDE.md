@@ -172,7 +172,22 @@ MINIO_DATA_PATH=/data/aerial-survey/minio
 METASHAPE_LICENSE_KEY=your-metashape-license-key
 ```
 
-### 선택 설정
+### 선택 설정 (오프라인 타일맵)
+
+```bash
+# 오프라인 타일맵 사용 여부 (true/false)
+VITE_MAP_OFFLINE=true
+
+# 타일 URL 패턴 (확장자 없음 - nginx가 .jpg/.png 자동 감지)
+VITE_TILE_URL=/tiles/{z}/{x}/{y}
+
+# 호스트의 타일 디렉토리 경로
+TILES_PATH=/path/to/tiles
+```
+
+> ℹ️ 오프라인 타일맵 상세 설정은 [ADMIN_GUIDE.md](ADMIN_GUIDE.md)의 "오프라인 타일맵 설정" 섹션을 참고하세요.
+
+### 선택 설정 (기타)
 
 ```bash
 # 도메인 (SSL 설정 시)
@@ -436,6 +451,21 @@ docker compose logs db
 
 # 수동 연결 테스트
 docker compose exec db psql -U postgres -d aerial_survey -c "SELECT 1"
+```
+
+### 오프라인 타일맵이 표시되지 않음
+
+```bash
+# nginx 컨테이너 내부에서 타일 경로 확인
+docker compose exec nginx ls /data/tiles/
+
+# "No such file or directory" 출력 시: bind mount 문제
+# 원인: 타일 폴더를 삭제 후 재생성하면 Docker bind mount가 끊어짐
+# 해결: nginx 재시작
+docker compose restart nginx
+
+# 타일 경로가 정상인데도 회색 배경인 경우: 브라우저 캐시 삭제
+# Ctrl+Shift+R (하드 리프레시) 또는 시크릿 모드에서 확인
 ```
 
 ---

@@ -5,7 +5,6 @@ import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
 import { Layers, Eye, EyeOff, ChevronRight } from 'lucide-react';
 import proj4 from 'proj4';
-import KOREA_REGIONS from '../../data/koreaRegions';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 
 // Set proj4 globally for georaster-layer-for-leaflet

@@ -4,27 +4,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 # Region definitions - FALLBACK only (prefer using get_region_for_point_db)
+# DB regions 테이블의 8개 권역과 이름을 일치시킴
 # Each region is defined by a bounding box [min_lon, min_lat, max_lon, max_lat]
 KOREA_REGIONS = {
-    "gyeonggi": {
-        "name": "경기 권역",
-        "bbox": [126.3, 36.9, 127.9, 38.0]
+    "sudogwon_north": {
+        "name": "수도권북부 권역",
+        "bbox": [126.3, 37.5, 127.9, 38.0]
     },
-    "chungcheong": {
-        "name": "충청 권역",
-        "bbox": [126.3, 35.9, 128.0, 36.9]
+    "sudogwon_south": {
+        "name": "수도권남부 권역",
+        "bbox": [126.3, 36.9, 127.9, 37.5]
     },
     "gangwon": {
         "name": "강원 권역",
         "bbox": [127.9, 37.0, 129.5, 38.5]
     },
-    "jeolla": {
-        "name": "전라 권역",
-        "bbox": [126.0, 34.0, 127.5, 36.0]
+    "chungcheong": {
+        "name": "충청 권역",
+        "bbox": [126.3, 35.9, 128.0, 36.9]
     },
-    "gyeongsang": {
-        "name": "경상 권역",
-        "bbox": [127.5, 34.5, 130.0, 37.0]
+    "jeolla_east": {
+        "name": "전라동부 권역",
+        "bbox": [126.8, 34.5, 127.5, 36.0]
+    },
+    "jeolla_west": {
+        "name": "전라서부 권역",
+        "bbox": [126.0, 34.0, 126.8, 36.0]
+    },
+    "gyeongbuk": {
+        "name": "경북 권역",
+        "bbox": [127.5, 35.8, 130.0, 37.0]
+    },
+    "gyeongnam": {
+        "name": "경남 권역",
+        "bbox": [127.5, 34.5, 129.5, 35.8]
     }
 }
 
