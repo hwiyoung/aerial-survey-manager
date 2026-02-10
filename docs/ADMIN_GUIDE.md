@@ -670,8 +670,10 @@ docker compose exec worker-engine cat /data/processing/{project-id}/.work/.proce
 
 | 조건 | 삭제 여부 | 이유 |
 |------|----------|------|
-| 처리 성공 + 정렬률 95% 이상 | ✅ 삭제 | 정상 완료 |
-| 처리 실패 또는 정렬률 95% 미만 | ❌ 보존 | 디버깅 필요 |
+| 처리 성공 + 정렬률 80% 이상 | ✅ 삭제 | 정상 완료 |
+| 처리 실패 또는 정렬률 80% 미만 | ❌ 보존 | 디버깅 필요 |
+
+> ℹ️ **2026-02-10 변경**: 정렬률 기준을 95% → 80%로 하향. 도서 지역 등 해수면/단조로운 배경이 많은 촬영에서는 정렬률이 낮을 수 있으므로, 실사용 환경에 맞춰 기준을 완화했습니다.
 
 보존된 파일 위치: `/data/processing/{project_id}/.work/project.files/`
 
@@ -903,30 +905,32 @@ proj.crs = chunk.crs
 
 **관련 파일**: `engines/metashape/dags/metashape/build_orthomosaic.py`
 
-### 6. COG 생성 시 원본 GSD 유지 (2026-02-04)
+### 6. COG 생성 파이프라인 (2026-02-10 업데이트)
 
-COG(Cloud Optimized GeoTIFF) 변환 시 **원본 정사영상의 GSD가 유지**됩니다:
+COG(Cloud Optimized GeoTIFF) 변환은 **엔진 우선** 방식으로 동작합니다:
 
-- 이전: `TILING_SCHEME=GoogleMapsCompatible` 옵션으로 인해 GSD가 Google Maps 타일 스킴에 맞게 변경됨
-- 현재: 해당 옵션 제거, 원본 해상도 유지
+1. **Metashape 엔진**이 `export_orthomosaic.py`에서 `result.tif` → `result_cog.tif` COG 변환 수행
+2. **Celery worker**(`tasks.py`)가 `.work/result_cog.tif` 존재 여부를 확인
+   - 있으면: 엔진이 만든 COG를 그대로 사용 (변환 스킵)
+   - 없으면: `gdal_translate`로 COG 변환 수행 (ODM 등 다른 엔진용 폴백)
 
-**관련 파일**: `backend/app/workers/tasks.py`
+> ℹ️ **2026-02-10 변경**: 이전에는 Metashape 엔진과 Celery worker가 각각 COG를 생성하여 **동일한 변환이 2번** 수행되었습니다. 대용량 정사영상에서 불필요한 처리 시간이 소요되던 문제를 수정했습니다.
+
+**COG 변환 옵션** (원본 GSD 유지):
 
 ```python
-# COG 변환 명령 (원본 GSD 유지)
-gdal_cmd = [
-    "gdal_translate",
-    "-of", "COG",
-    "-co", "COMPRESS=LZW",
-    "-co", "BLOCKSIZE=256",
-    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
-    "-co", "BIGTIFF=YES",
-    str(result_path),
-    str(cog_path)
-]
+# 엔진(export_orthomosaic.py): GDAL Python API
+gdal.TranslateOptions(format="COG", creationOptions=[
+    "BLOCKSIZE=256", "COMPRESS=LZW", "RESAMPLING=LANCZOS",
+    "PREDICTOR=2", "BIGTIFF=YES"
+])
+
+# 폴백(tasks.py): gdal_translate CLI
+gdal_translate -of COG -co COMPRESS=LZW -co BLOCKSIZE=256
+               -co OVERVIEW_RESAMPLING=AVERAGE -co BIGTIFF=YES
 ```
 
-> 💡 **참고**: Metashape에서 내보낸 `result.tif`는 타일링과 오버뷰가 포함되어 있지만, 완전한 COG 표준은 아닙니다. `gdal_translate`로 변환하여 HTTP Range Request에 최적화된 COG를 생성합니다.
+> 💡 **참고**: Metashape에서 내보낸 `result.tif`는 타일링과 오버뷰가 포함되어 있지만, 완전한 COG 표준은 아닙니다. `gdal.Translate`로 변환하여 HTTP Range Request에 최적화된 COG를 생성합니다.
 
 ### 2. 비활성화된 서비스
 

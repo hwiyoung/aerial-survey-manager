@@ -268,19 +268,24 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             try:
                 import subprocess
                 import shutil
-                # Use GDAL to create COG with proper tiling and overviews
-                # Note: TILING_SCHEME 제거하여 원본 GSD 유지
-                gdal_cmd = [
-                    "gdal_translate",
-                    "-of", "COG",
-                    "-co", "COMPRESS=LZW",
-                    "-co", "BLOCKSIZE=256",
-                    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
-                    "-co", "BIGTIFF=YES",
-                    str(result_path),
-                    str(cog_path)
-                ]
-                subprocess.run(gdal_cmd, check=True, capture_output=True)
+
+                # 엔진(Metashape 등)이 이미 COG를 생성한 경우 변환 스킵
+                if cog_path.exists():
+                    print(f"COG already created by engine, skipping conversion: {cog_path}")
+                else:
+                    # Use GDAL to create COG with proper tiling and overviews
+                    # Note: TILING_SCHEME 제거하여 원본 GSD 유지
+                    gdal_cmd = [
+                        "gdal_translate",
+                        "-of", "COG",
+                        "-co", "COMPRESS=LZW",
+                        "-co", "BLOCKSIZE=256",
+                        "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+                        "-co", "BIGTIFF=YES",
+                        str(result_path),
+                        str(cog_path)
+                    ]
+                    subprocess.run(gdal_cmd, check=True, capture_output=True)
 
                 # Upload COG version
                 cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"

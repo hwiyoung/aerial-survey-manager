@@ -66,8 +66,8 @@ def export_orthomosaic(output_path, run_id, output_tiff_name, reai_task_id, inpu
         aligned_cameras = len([c for c in chunk.cameras if c.transform])
         alignment_ratio = aligned_cameras / total_cameras if total_cameras > 0 else 0
 
-        # 95% 이상 정렬되고 처리 성공 시에만 삭제
-        should_delete = check_success(output_path) and alignment_ratio >= 0.95
+        # 80% 이상 정렬되고 처리 성공 시에만 삭제 (도서 지역 등 정렬률이 낮을 수 있음)
+        should_delete = check_success(output_path) and alignment_ratio >= 0.80
 
         if should_delete:
             # Metashape 문서 닫기 (락 파일 해제)
