@@ -12,7 +12,8 @@
 6. [보안 설정](#보안-설정)
 7. [SSL/HTTPS 설정](#sslhttps-설정)
 8. [헬스체크 및 검증](#헬스체크-및-검증)
-9. [문제 해결](#문제-해결)
+9. [버전 업그레이드](#버전-업그레이드)
+10. [문제 해결](#문제-해결)
 
 ---
 
@@ -403,6 +404,155 @@ docker compose exec worker-engine nvidia-smi
 3. 테스트 프로젝트 생성
 4. 소규모 이미지 업로드 테스트
 5. 처리 시작 및 완료 확인
+
+---
+
+## 버전 업그레이드
+
+기존 버전에서 새 버전으로 업그레이드하면서 프로젝트 데이터를 유지하는 절차입니다.
+
+### 데이터 구조 이해
+
+업그레이드 전 데이터가 어디에 저장되는지 파악해야 합니다:
+
+| 데이터 | 저장 위치 | 유형 | 업그레이드 시 처리 |
+|--------|-----------|------|-------------------|
+| DB (프로젝트, 사용자 등) | Docker named volume (`_pgdata`) | Docker 볼륨 | pg_dump/restore 필요 |
+| 업로드 이미지, 정사영상 | `MINIO_DATA_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
+| 처리 중간 파일 | `PROCESSING_DATA_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
+| 오프라인 타일 | `TILES_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
+| 엔진 라이선스 | Docker named volume (`_engine-license`) | Docker 볼륨 | 새 볼륨에서 재활성화 |
+
+> **핵심**: MinIO 데이터와 처리 파일은 호스트 디렉토리에 저장되므로 `.env`에서 같은 경로를 지정하면 자동으로 유지됩니다.
+> DB만 Docker 볼륨에 저장되므로 별도 마이그레이션이 필요합니다.
+
+### 업그레이드 절차
+
+#### Step 1. 기존 환경에서 백업
+
+```bash
+# 기존 배포 폴더로 이동
+cd ~/aerial-survey-manager-v1.0.5
+
+# DB 백업
+docker compose exec db pg_dump -U postgres aerial_survey > ~/backup.sql
+
+# .env 백업
+cp .env ~/env_backup
+```
+
+#### Step 2. 기존 서비스 중지 및 볼륨 삭제
+
+```bash
+# 서비스 중지 + Docker 볼륨 삭제
+# (DB는 backup.sql로 백업했으므로 볼륨 삭제해도 안전)
+docker compose down -v
+```
+
+> `-v` 플래그가 `_pgdata`, `_redis_data`, `_engine-license` 볼륨을 삭제합니다.
+> 호스트 디렉토리(MinIO, 처리 데이터, 타일)는 영향받지 않습니다.
+
+#### Step 3. 새 배포 패키지 설치
+
+```bash
+# 새 패키지 압축 해제
+cd ~
+tar -xzf aerial-survey-manager-v1.1.0.tar.gz
+cd aerial-survey-manager-v1.1.0
+
+# 기존 .env 복사
+cp ~/env_backup .env
+
+# COMPOSE_PROJECT_NAME 추가 (기존 .env에 없는 경우)
+# 이후 업그레이드부터는 이 값이 유지되므로 폴더명과 무관하게 동일 볼륨 사용
+echo '' >> .env
+echo 'COMPOSE_PROJECT_NAME=aerial-survey-manager' >> .env
+
+# install.sh 실행 (기존 .env 유지 선택)
+./scripts/install.sh
+```
+
+> `install.sh`가 `.env` 파일을 감지하면 덮어쓸지 묻습니다. **기존 유지**를 선택하세요.
+
+#### Step 4. DB 복원
+
+```bash
+# DB 사용 서비스 중지
+docker compose stop api celery-worker celery-beat
+
+# install.sh가 만든 빈 DB 삭제 → 재생성
+docker compose exec db dropdb -U postgres aerial_survey
+docker compose exec db createdb -U postgres aerial_survey
+
+# 백업 데이터 복원
+docker compose exec -T db psql -U postgres aerial_survey < ~/backup.sql
+
+# 서비스 재시작
+docker compose start api celery-worker celery-beat
+```
+
+#### Step 5. 결과 확인
+
+```bash
+# 1. 서비스 상태 확인
+docker compose ps
+
+# 2. API 헬스체크
+curl http://localhost:8081/health
+
+# 3. DB 연결 및 데이터 확인
+docker compose exec db psql -U postgres -d aerial_survey \
+  -c "SELECT count(*) FROM projects"
+
+# 4. 웹 UI 접속하여 기존 프로젝트 목록 확인
+# http://{DOMAIN}:{WEB_PORT}
+
+# 5. 기존 프로젝트의 정사영상 표시 확인
+# (MinIO 데이터가 정상 연결되었는지 검증)
+```
+
+### 확인 체크리스트
+
+- [ ] 모든 서비스가 `Up` 상태인가? (`docker compose ps`)
+- [ ] 기존 프로젝트 목록이 보이는가?
+- [ ] 기존 프로젝트의 썸네일/정사영상이 표시되는가?
+- [ ] 새 프로젝트 생성이 가능한가?
+- [ ] 오프라인 타일맵이 정상 표시되는가? (해당 시)
+
+### 주의사항
+
+- **`.env` 백업은 필수**: `install.sh`는 비밀번호를 랜덤 생성하므로, 기존 `.env`를 잃으면 MinIO 데이터에 접근할 수 없습니다
+- **MinIO 인증 정보 일치**: `.env`의 `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`가 기존과 동일해야 합니다
+- **호스트 경로 일치**: `MINIO_DATA_PATH`, `PROCESSING_DATA_PATH`, `TILES_PATH`가 기존과 동일해야 합니다
+- **엔진 라이선스**: `_engine-license` 볼륨이 삭제되므로 업그레이드 후 라이선스가 자동 재활성화됩니다. 활성화 횟수 제한이 있는 경우 주의하세요
+
+### 이후 업그레이드 (2회차부터)
+
+`COMPOSE_PROJECT_NAME=aerial-survey-manager`가 `.env`에 설정된 이후부터는 절차가 간단합니다:
+
+```bash
+# 기존 환경 백업
+cd ~/aerial-survey-manager-v1.1.0
+docker compose exec db pg_dump -U postgres aerial_survey > ~/backup.sql
+cp .env ~/env_backup
+docker compose down -v
+
+# 새 패키지 설치
+cd ~
+tar -xzf aerial-survey-manager-v1.2.0.tar.gz
+cd aerial-survey-manager-v1.2.0
+cp ~/env_backup .env
+./scripts/install.sh    # 기존 .env 유지 선택
+
+# DB 복원
+docker compose stop api celery-worker celery-beat
+docker compose exec db dropdb -U postgres aerial_survey
+docker compose exec db createdb -U postgres aerial_survey
+docker compose exec -T db psql -U postgres aerial_survey < ~/backup.sql
+docker compose start api celery-worker celery-beat
+```
+
+> `.env`에 이미 `COMPOSE_PROJECT_NAME`이 포함되어 있으므로 별도 추가가 필요 없습니다.
 
 ---
 
