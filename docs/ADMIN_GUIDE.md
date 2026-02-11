@@ -688,6 +688,106 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 
 ---
 
+## 🔧 외부 COG 삽입 (2026-02-12)
+
+외부에서 생성한 COG(Cloud Optimized GeoTIFF) 또는 일반 GeoTIFF를 프로젝트에 삽입하여, 처리를 거치지 않고도 완료 상태를 만들 수 있습니다.
+
+### 1. 전제조건
+
+| 항목 | 요구사항 |
+|------|----------|
+| **COG 파일** | 유효한 GeoTIFF (CRS/투영 메타데이터 포함). 일반 GeoTIFF도 가능 (자동 COG 변환) |
+| **프로젝트** | DB에 프로젝트가 존재해야 함 |
+| **Docker** | worker-engine, db, minio, api 컨테이너 실행 중 |
+| **GSD** | Projected CRS (EPSG:5186 등)인 경우 자동 추출. Geographic CRS (EPSG:4326)인 경우 `--gsd` 수동 지정 권장 |
+
+### 2. 사용법
+
+```bash
+# 기본 사용 (GSD 자동 추출)
+./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif
+
+# GSD 수동 지정 (cm/pixel)
+./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif --gsd 5.0
+
+# 처리 중인 작업을 강제 취소하고 삽입
+./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif --force
+
+# 복합 옵션
+./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif --gsd 3.5 --force
+```
+
+### 3. 동작 흐름
+
+```
+호스트                          worker-engine (Docker)
+──────                          ──────────────────────
+1. 파일 검증
+2. COG → 스테이징 복사
+3. docker exec로 태스크 전송 →  4. GeoTIFF 유효성 검증 (gdalinfo)
+                                5. GSD/bounds 자동 추출
+                                6. COG 아닌 경우 자동 변환 (gdal_translate)
+                                7. /data/processing/{id}/output/ 배치
+                                8. MinIO 업로드
+                                9. SHA256 체크섬 계산
+                                10. DB 업데이트 (ProcessingJob + Project)
+                                11. PostGIS 면적 계산 + 권역 자동 배정
+                                12. WebSocket 완료 브로드캐스트
+```
+
+### 4. 수행되는 상태 변경
+
+| 구분 | 필드 | 값 |
+|------|------|-----|
+| **디스크** | `output/result_cog.tif` | COG 파일 배치 |
+| **MinIO** | `projects/{id}/ortho/result_cog.tif` | COG 업로드 |
+| **ProcessingJob** | status, completed_at, result_gsd, result_size, result_checksum, progress | completed, now(), 자동, 자동, SHA256, 100 |
+| **Project** | status, progress, ortho_path, ortho_size, bounds, area, region | completed, 100, MinIO경로, 자동, gdalinfo, PostGIS, 자동 |
+
+### 5. 활용 사례
+
+- **외부 처리 결과 통합**: 다른 소프트웨어(PIX4D, DJI Terra 등)에서 생성한 정사영상을 시스템에 등록
+- **처리 실패 대체**: Metashape 처리가 반복 실패하는 프로젝트에 외부 결과물 삽입
+- **테스트/데모**: 처리 없이 프로젝트 완료 상태를 빠르게 구성
+
+### 6. 주의사항
+
+- 기존 결과물(MinIO, 디스크)이 있으면 **덮어씁니다**
+- `--force` 없이 처리 중인 프로젝트에 삽입하면 거부됩니다
+- Geographic CRS(EPSG:4326)인 파일은 GSD 자동 추출이 부정확합니다 → `--gsd` 옵션 사용 권장
+- 입력 파일이 COG가 아닌 경우 자동 변환되므로 대용량 파일은 시간이 걸릴 수 있습니다
+
+### 7. 트러블슈팅
+
+#### 증상: "파일을 찾을 수 없습니다"
+```
+원인: 스테이징 복사 실패 또는 PROCESSING_DATA_PATH 마운트 문제
+확인: docker inspect aerial-worker-engine --format '{{range .Mounts}}{{if eq .Destination "/data/processing"}}{{.Source}}{{end}}{{end}}'
+해결: PROCESSING_DATA_PATH가 올바른지 확인
+```
+
+#### 증상: "유효한 GeoTIFF가 아닙니다"
+```
+원인: 입력 파일에 CRS/투영 메타데이터 없음
+확인: gdalinfo /path/to/file.tif | grep "Coordinate System"
+해결: 올바른 CRS가 포함된 GeoTIFF 파일 사용
+```
+
+#### 증상: "처리 중인 작업이 있습니다"
+```
+원인: 프로젝트가 현재 처리 중
+해결: --force 옵션 추가하여 기존 작업 취소 후 삽입
+```
+
+### 8. 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `scripts/inject-cog.sh` | 호스트 실행 스크립트 |
+| `backend/app/workers/tasks.py` | `inject_external_cog` Celery 태스크 |
+
+---
+
 ## 🚀 S3 Multipart Upload (2026-02-02)
 
 ### 1. 아키텍처 개요

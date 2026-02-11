@@ -582,6 +582,20 @@ df -h /data/aerial-survey/minio
 docker compose exec minio mc rm --recursive --force /data/.minio.sys/tmp/
 ```
 
+### 처리 실패 시 외부 COG 삽입
+
+Metashape 처리가 반복 실패하는 경우, 외부에서 생성한 정사영상(GeoTIFF/COG)을 삽입하여 프로젝트를 완료 상태로 만들 수 있습니다:
+
+```bash
+# 기본 사용
+./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif
+
+# GSD 수동 지정 + 처리 중 작업 강제 취소
+./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif --gsd 5.0 --force
+```
+
+> 상세 사용법은 [ADMIN_GUIDE.md](ADMIN_GUIDE.md)의 "외부 COG 삽입" 섹션을 참고하세요.
+
 ### Metashape 라이선스 오류
 
 ```bash

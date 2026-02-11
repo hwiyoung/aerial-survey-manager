@@ -79,7 +79,7 @@ aerial-survey-manager/
 │   └── scripts/          # DB 시드 스크립트
 ├── src/                  # React 프론트엔드
 ├── engines/              # 처리 엔진 (Metashape)
-├── scripts/              # 운영/배포 스크립트
+├── scripts/              # 운영/배포 스크립트 (inject-cog.sh 등)
 ├── docs/                 # 문서
 └── data/                 # 초기 시드 데이터
 ```

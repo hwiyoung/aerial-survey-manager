@@ -38,6 +38,8 @@ celery_app.conf.update(
         "app.workers.tasks.delete_project_data": {"queue": "metashape"},
         # EO 메타데이터 저장 (root 권한 필요)
         "app.workers.tasks.save_eo_metadata": {"queue": "metashape"},
+        # 외부 COG 삽입 (root + GDAL + MinIO 접근 필요)
+        "app.workers.tasks.inject_external_cog": {"queue": "metashape"},
     },
 )
 
@@ -622,3 +624,252 @@ def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: 
     except Exception as e:
         print(f"✗ EO 메타데이터 저장 실패: {e}")
         return {"status": "error", "path": str(reference_path), "error": str(e)}
+
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.inject_external_cog",
+)
+def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float = None, force: bool = False):
+    """
+    외부에서 생성한 COG/GeoTIFF를 프로젝트에 삽입하여 완료 상태로 만듭니다.
+    worker-engine에서 root 권한으로 실행됩니다.
+
+    Args:
+        project_id: 프로젝트 UUID
+        source_path: COG/GeoTIFF 파일 경로 (컨테이너 내부 경로)
+        gsd_cm: GSD (cm/pixel), None이면 자동 추출
+        force: True면 처리 중인 태스크를 강제 취소
+    """
+    import subprocess
+    import shutil
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+    from app.models.project import Project, ProcessingJob
+    from app.services.storage import StorageService
+    from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
+
+    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
+    db_engine = create_engine(sync_db_url)
+
+    source = Path(source_path)
+    if not source.exists():
+        return {"status": "error", "message": f"파일을 찾을 수 없습니다: {source_path}"}
+
+    with Session(db_engine) as db:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            return {"status": "error", "message": f"프로젝트를 찾을 수 없습니다: {project_id}"}
+
+        # Check for running processing jobs
+        running_job = db.query(ProcessingJob).filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.status.in_(["queued", "processing"])
+        ).first()
+
+        if running_job:
+            if not force:
+                return {
+                    "status": "error",
+                    "message": f"처리 중인 작업이 있습니다 (job: {running_job.id}). --force 옵션으로 강제 취소할 수 있습니다."
+                }
+            # Cancel running Celery task
+            if running_job.celery_task_id:
+                celery_app.control.revoke(running_job.celery_task_id, terminate=True)
+                print(f"⚠ Celery 태스크 취소: {running_job.celery_task_id}")
+            running_job.status = "cancelled"
+            running_job.error_message = "외부 COG 삽입으로 인해 취소됨"
+            db.commit()
+
+        # Validate GeoTIFF via gdalinfo
+        try:
+            gdalinfo_result = subprocess.run(
+                ["gdalinfo", "-json", str(source)],
+                capture_output=True, text=True, check=True
+            )
+            gdalinfo_data = json.loads(gdalinfo_result.stdout)
+        except subprocess.CalledProcessError as e:
+            return {"status": "error", "message": f"유효한 GeoTIFF가 아닙니다: {e.stderr}"}
+        except Exception as e:
+            return {"status": "error", "message": f"gdalinfo 실행 실패: {e}"}
+
+        # Extract GSD if not provided
+        if gsd_cm is None:
+            geo_transform = gdalinfo_data.get('geoTransform', [])
+            if len(geo_transform) >= 2:
+                pixel_size = abs(geo_transform[1])
+                coord_wkt = gdalinfo_data.get('coordinateSystem', {}).get('wkt', '')
+                if 'GEOGCS' in coord_wkt and 'PROJCS' not in coord_wkt:
+                    # Geographic CRS (degrees) - 한국 위도 기준 근사 변환
+                    gsd_cm = pixel_size * 111320 * 0.8 * 100
+                    print(f"⚠ Geographic CRS 감지, GSD 근사값: {gsd_cm:.2f} cm/pixel (정확한 값은 --gsd 옵션 사용)")
+                else:
+                    # Projected CRS (meters)
+                    gsd_cm = pixel_size * 100
+                    print(f"📊 GSD 추출: {gsd_cm:.2f} cm/pixel")
+
+        # Setup directories
+        base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id
+        output_dir = base_dir / "output"
+        work_dir = base_dir / ".work"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        final_cog_path = output_dir / "result_cog.tif"
+
+        # Check if input is already COG
+        is_cog = False
+        try:
+            metadata = gdalinfo_data.get('metadata', {})
+            image_structure = metadata.get('IMAGE_STRUCTURE', {})
+            if image_structure.get('LAYOUT') == 'COG':
+                is_cog = True
+        except Exception:
+            pass
+
+        if is_cog:
+            print("✓ 입력 파일이 이미 COG 형식, 복사 중...")
+            shutil.copy2(str(source), str(final_cog_path))
+        else:
+            print("🔄 COG 형식으로 변환 중...")
+            try:
+                gdal_cmd = [
+                    "gdal_translate", "-of", "COG",
+                    "-co", "COMPRESS=LZW",
+                    "-co", "BLOCKSIZE=256",
+                    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+                    "-co", "BIGTIFF=YES",
+                    str(source), str(final_cog_path)
+                ]
+                subprocess.run(gdal_cmd, check=True, capture_output=True)
+                print("✓ COG 변환 완료")
+            except subprocess.CalledProcessError as e:
+                return {"status": "error", "message": f"COG 변환 실패: {e.stderr}"}
+
+        # Upload to MinIO
+        print("📤 MinIO 업로드 중...")
+        storage = StorageService()
+        cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
+        storage.upload_file(str(final_cog_path), cog_object_name, "image/tiff")
+        print(f"✓ MinIO 업로드 완료: {cog_object_name}")
+
+        # Calculate checksum and file size
+        checksum = calculate_file_checksum(str(final_cog_path))
+        file_size = os.path.getsize(str(final_cog_path))
+
+        # Extract bounds from the final COG
+        bounds_wkt = get_orthophoto_bounds(str(final_cog_path))
+
+        # Find or create ProcessingJob
+        job = db.query(ProcessingJob).filter(
+            ProcessingJob.project_id == project_id
+        ).order_by(ProcessingJob.started_at.desc()).first()
+
+        if not job:
+            job = ProcessingJob(
+                project_id=project_id,
+                engine="external",
+                started_at=datetime.utcnow(),
+            )
+            db.add(job)
+            db.flush()
+
+        # Update ProcessingJob
+        job.status = "completed"
+        job.completed_at = datetime.utcnow()
+        job.result_gsd = gsd_cm
+        job.result_path = str(final_cog_path)
+        job.result_checksum = checksum
+        job.result_size = file_size
+        job.progress = 100
+        job.error_message = None
+        if not job.started_at:
+            job.started_at = datetime.utcnow()
+
+        # Update Project
+        project.status = "completed"
+        project.progress = 100
+        project.ortho_path = cog_object_name
+        project.ortho_size = file_size
+
+        if bounds_wkt:
+            project.bounds = bounds_wkt
+
+            # Calculate area using PostGIS
+            try:
+                area_query = text(
+                    "SELECT ST_Area(ST_Transform(ST_GeomFromEWKT(:wkt), 5179)) / 1000000.0"
+                )
+                area_result = db.execute(area_query, {"wkt": bounds_wkt}).scalar()
+                project.area = area_result
+            except Exception as area_err:
+                print(f"⚠ 면적 계산 실패: {area_err}")
+
+            # Auto-assign region
+            best_region = get_best_region_overlap(bounds_wkt, db)
+            if best_region:
+                project.region = best_region
+            elif not project.region or project.region == "미지정":
+                try:
+                    lon, lat = extract_center_from_wkt(bounds_wkt)
+                    if lon and lat:
+                        region = get_region_for_point_sync(db, lon, lat)
+                        if region:
+                            project.region = region
+                except Exception:
+                    pass
+
+        db.commit()
+
+        # Clean up staging file (only if it's our temporary copy)
+        if source.name == "_inject_cog.tif":
+            try:
+                source.unlink()
+                print(f"✓ 스테이징 파일 삭제: {source}")
+            except Exception:
+                pass
+
+        # Write status.json
+        status_data = {
+            "status": "completed",
+            "progress": 100,
+            "message": "외부 COG 삽입 완료",
+            "result_gsd": gsd_cm,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        status_path = work_dir / "status.json"
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, ensure_ascii=False, indent=2)
+
+        # Broadcast via WebSocket
+        try:
+            import httpx
+            httpx.post(
+                "http://api:8000/api/v1/processing/broadcast",
+                json={
+                    "project_id": project_id,
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "외부 COG 삽입 완료"
+                },
+                timeout=5.0
+            )
+        except Exception:
+            pass
+
+        gsd_str = f"{gsd_cm:.2f} cm/pixel" if gsd_cm else "N/A"
+        size_mb = file_size / (1024 * 1024)
+        print(f"✅ 프로젝트 {project_id} COG 삽입 완료")
+        print(f"   GSD: {gsd_str}")
+        print(f"   Size: {size_mb:.1f} MB")
+        print(f"   Checksum: {checksum[:16]}...")
+        print(f"   Region: {project.region}")
+
+        return {
+            "status": "completed",
+            "project_id": project_id,
+            "result_path": cog_object_name,
+            "gsd_cm": gsd_cm,
+            "checksum": checksum,
+            "size": file_size,
+        }
