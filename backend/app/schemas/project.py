@@ -40,6 +40,7 @@ class ProjectResponse(ProjectBase):
     updated_at: datetime
     image_count: int = 0
     source_size: Optional[int] = None
+    source_deleted: bool = False
     ortho_size: Optional[int] = None
     area: Optional[float] = None
     ortho_path: Optional[str] = None

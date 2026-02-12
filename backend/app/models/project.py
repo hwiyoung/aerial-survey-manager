@@ -44,6 +44,7 @@ class Project(Base):
     bounds = mapped_column(Geometry("POLYGON", srid=4326), nullable=True)
     area: Mapped[float | None] = mapped_column(Float, nullable=True) # km2
     source_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True) # total size of source images
+    source_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false") # source images deleted
     ortho_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True) # size of generated ortho
     ortho_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     

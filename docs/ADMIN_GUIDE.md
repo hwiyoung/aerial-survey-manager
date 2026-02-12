@@ -220,9 +220,22 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 
 > 💡 **팁**: 항공 이미지 1장당 약 50~200MB, 프로젝트당 수백~수천 장을 업로드하므로, 여유롭게 TB 단위 스토리지를 확보하는 것이 좋습니다.
 
-### 7. 프로젝트 삭제 시 스토리지 정리 (2026-02-06 업데이트)
+### 7. 프로젝트 데이터 라이프사이클 (2026-02-12 업데이트)
 
-프로젝트 삭제 시 다음 데이터가 자동으로 삭제됩니다:
+#### 프로젝트 생성~처리 시 저장되는 데이터
+
+| 단계 | 위치 | 경로 | 설명 |
+|------|------|------|------|
+| 이미지 업로드 | MinIO | `projects/{id}/uploads/*.tif` | 원본 이미지 |
+| 썸네일 생성 | MinIO | `projects/{id}/thumbnails/*.jpg` | 썸네일 (자동) |
+| 처리 완료 | MinIO | `projects/{id}/ortho/result_cog.tif` | 정사영상 COG (**유일한 결과물**) |
+| 처리 상태 | 로컬 | `processing/{id}/.work/status.json` | 진행률, GSD |
+| 처리 로그 | 로컬 | `processing/{id}/.work/.processing.log` | 상세 로그 |
+
+> **v1.1.0 변경**: 처리 완료 후 로컬에는 `.work/` 내 상태 파일만 남습니다.
+> 정사영상 COG는 MinIO에만 보관되며, `result.tif`(중간 산출물)는 MinIO에 업로드하지 않습니다.
+
+#### 프로젝트 삭제 시 자동 정리
 
 | 경로 | 설명 | 삭제 주체 |
 |------|------|----------|
@@ -231,9 +244,100 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 | `projects/{project_id}/` | 썸네일, 정사영상 결과물 | API |
 | `/data/processing/{project_id}/` | 로컬 처리 캐시 | **worker-engine (Celery)** |
 
-> ⚠️ **2026-02-06 변경**: 로컬 처리 데이터(`/data/processing/`)는 worker-engine이 root 권한으로 생성하므로, 삭제도 Celery 태스크(`delete_project_data`)를 통해 worker-engine에서 수행합니다. API(appuser)는 권한 부족으로 직접 삭제할 수 없습니다.
+> ⚠️ 로컬 처리 데이터(`/data/processing/`)는 worker-engine이 root 권한으로 생성하므로, 삭제도 Celery 태스크(`delete_project_data`)를 통해 worker-engine에서 수행합니다. API(appuser)는 권한 부족으로 직접 삭제할 수 없습니다.
 
-### 8. 고아 파일 정리 스크립트 (2026-02-02)
+### 8. 원본 이미지 삭제 (2026-02-12)
+
+처리 완료된 프로젝트의 원본 이미지를 웹 UI에서 삭제할 수 있습니다.
+원본 이미지는 처리 완료 후에는 불필요하므로, 삭제하면 저장소를 크게 절약할 수 있습니다.
+
+#### 삭제 방법
+
+1. 처리 완료된 프로젝트의 상세 패널(InspectorPanel)에서 원본 이미지 영역의 **삭제 버튼** 클릭
+2. 확인 다이얼로그에서 **삭제** 선택
+3. Celery 태스크가 비동기로 실행되어 MinIO에서 원본 이미지 + 썸네일 삭제
+
+#### 삭제되는 데이터
+
+| 경로 | 설명 |
+|------|------|
+| `projects/{id}/uploads/` | 원본 이미지 (수~수십 GB) |
+| `projects/{id}/thumbnails/` | 썸네일 (수~수백 MB) |
+
+#### 삭제 후 영향
+
+- 프로젝트의 **정사영상(COG)**은 유지됩니다 (MinIO `ortho/result_cog.tif`)
+- 프로젝트의 **메타데이터**(bounds, area, GSD 등)는 유지됩니다
+- **재처리 불가**: 원본 이미지가 삭제되면 해당 프로젝트는 재처리할 수 없습니다
+- DB에 `source_deleted = true`가 기록되어 UI에서 삭제 상태를 표시합니다
+
+#### API 엔드포인트
+
+```
+DELETE /api/v1/projects/{project_id}/source-images
+```
+- 응답: `202 Accepted` (Celery 태스크 큐 등록)
+- 조건: 프로젝트 상태가 `completed`일 때만 가능
+
+### 9. 중복 파일 정리 스크립트 (2026-02-12)
+
+이전 버전에서 처리된 프로젝트에 남아있는 불필요한 중복 파일을 정리합니다.
+
+#### 정리 대상
+
+| 파일 | 위치 | 삭제 조건 | 설명 |
+|------|------|-----------|------|
+| `result.tif` | MinIO `projects/{id}/ortho/` | 같은 프로젝트에 `result_cog.tif`가 있을 때 | COG 변환 전 원본 (불필요) |
+| `result_cog.tif` | 로컬 `processing/{id}/output/` | MinIO에 `result_cog.tif`가 있을 때 | 로컬 복사본 (MinIO가 primary) |
+
+> **안전 장치**: 프로젝트 자체는 절대 삭제하지 않습니다. COG가 있는 프로젝트의 **중복 파일만** 삭제합니다.
+
+#### 사용법
+
+```bash
+# 미리보기 (삭제하지 않음, 절약 가능한 용량만 확인)
+./scripts/cleanup-storage.sh
+
+# 실제 삭제 수행
+./scripts/cleanup-storage.sh --execute
+```
+
+#### 예시 출력
+
+```
+========================================
+  저장소 정리 스크립트
+  모드: 미리보기 (삭제하지 않음)
+========================================
+
+============================================================
+[1/2] MinIO 중복 result.tif 스캔 중...
+============================================================
+  [삭제 예정] projects/abc-123/ortho/result.tif (2048.5 MB)
+  [삭제 예정] projects/def-456/ortho/result.tif (1536.2 MB)
+
+  MinIO result.tif: 2개 삭제 예정 (3.50 GB)
+
+============================================================
+[2/2] 로컬 COG 파일 스캔 중...
+============================================================
+  [삭제 예정] /data/processing/abc-123/output/result_cog.tif (1024.3 MB)
+  [삭제 예정] /data/processing/def-456/output/result_cog.tif (768.1 MB)
+
+  로컬 COG: 2개 삭제 예정 (1.75 GB)
+
+============================================================
+[미리보기] 총 절약 가능: 5.25 GB
+  - MinIO result.tif: 2개 (3.50 GB)
+  - 로컬 COG: 2개 (1.75 GB)
+
+실제 삭제를 수행하려면 --execute 옵션을 사용하세요.
+============================================================
+```
+
+> **권장**: 업그레이드 후 한 번 실행하여 기존 프로젝트의 중복 파일을 정리하세요.
+
+### 10. 고아 파일 정리 스크립트 (2026-02-02)
 
 DB에 연결되지 않은 고아 파일들을 정리하는 스크립트입니다.
 
@@ -573,29 +677,40 @@ POST /api/v1/processing/projects/{project_id}/start?force=true
 
 ## 🔍 Metashape 디버깅 (2026-02-08 업데이트)
 
-### 1. 처리 디렉토리 구조
+### 1. 처리 디렉토리 구조 (2026-02-12 업데이트)
 
-처리 중간 산출물은 숨김 폴더(`.work/`)에 저장되고, 최종 결과물만 `output/`에 배치됩니다:
+처리 중간 산출물은 숨김 폴더(`.work/`)에 저장됩니다.
+처리 완료 후 정사영상 COG는 **MinIO에만** 보관되며, 로컬에는 상태 파일만 남습니다:
 
 ```
 /data/processing/{project-id}/
-├── images/                  ← 업로드된 원본 이미지
-├── output/
-│   └── result_cog.tif       ← 최종 결과물 (COG)
-└── .work/                   ← 숨김 폴더 (중간 산출물)
-    ├── status.json          ← 단계별 진행률 + result_gsd
-    ├── .processing.log      ← 상세 처리 로그
-    ├── result.tif            ← (성공 시 삭제)
+├── images/                  ← 업로드된 원본 이미지 (처리 완료 후 삭제됨)
+└── .work/                   ← 숨김 폴더
+    ├── status.json          ← 단계별 진행률 + result_gsd (유지)
+    ├── .processing.log      ← 상세 처리 로그 (유지)
+    ├── result.tif            ← (COG 변환 후 즉시 삭제)
+    ├── result_cog.tif        ← (MinIO 업로드 후 삭제)
     ├── project.psx           ← (성공 시 삭제)
     └── project.files/        ← (조건부 삭제)
 ```
 
+**처리 완료 후 최종 상태**:
+```
+/data/processing/{project-id}/
+└── .work/
+    ├── status.json           ← 진행률 + GSD
+    └── .processing.log       ← 처리 로그
+```
+
 **정리 정책**:
 
-| 처리 결과 | `.work/` 내 파일 | 설명 |
-|-----------|-----------------|------|
-| 성공 | `status.json`, `.processing.log`만 유지 | 나머지 중간 산출물 삭제 |
-| 실패 | 모든 파일 보존 | 디버깅용 |
+| 처리 결과 | 로컬 파일 | MinIO | 설명 |
+|-----------|----------|-------|------|
+| 성공 | `.work/status.json`, `.processing.log`만 유지 | `ortho/result_cog.tif` 업로드됨 | 로컬 COG/result.tif 삭제 |
+| 실패 | `.work/` 모든 파일 보존 | 없음 | 디버깅용 |
+
+> **v1.1.0 변경**: 이전에는 `output/result_cog.tif`가 로컬에 남았지만, 이제 MinIO 업로드 완료 후 로컬 COG도 삭제됩니다.
+> 이전 버전에서 남아있는 로컬 COG는 `./scripts/cleanup-storage.sh`로 정리할 수 있습니다.
 
 ### 2. 처리 로그 확인
 

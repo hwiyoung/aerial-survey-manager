@@ -67,17 +67,39 @@ async def download_orthophoto(
             detail="No completed orthophoto found for this project",
         )
     
-    # For MinIO files, we'll use presigned URLs or stream from storage
-    # For now, assume local file path
+    # Check local file first, then fall back to MinIO
     file_path = job.result_path
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Result file not found",
-        )
-    
-    file_size = os.path.getsize(file_path)
+    temp_file_path = None
+
+    if file_path and os.path.exists(file_path):
+        file_size = os.path.getsize(file_path)
+    else:
+        # Fallback: try Project.ortho_path in MinIO, then job.result_path as MinIO key
+        project_result = await db.execute(select(Project).where(Project.id == project_id))
+        proj = project_result.scalar_one()
+
+        storage = StorageService()
+        minio_key = None
+
+        if proj.ortho_path and storage.object_exists(proj.ortho_path):
+            minio_key = proj.ortho_path
+        elif file_path and storage.object_exists(file_path):
+            minio_key = file_path
+
+        if not minio_key:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Result file not found (local or storage)",
+            )
+
+        # Download from MinIO to temp file
+        import tempfile as tf
+        temp_file = tf.NamedTemporaryFile(delete=False, suffix='.tif')
+        temp_file.close()
+        storage.download_file(minio_key, temp_file.name)
+        file_path = temp_file.name
+        temp_file_path = temp_file.name
+        file_size = os.path.getsize(file_path)
     
     # Get or calculate checksum
     if job.result_checksum:
@@ -131,16 +153,21 @@ async def download_orthophoto(
         
         async def iter_file_range():
             """Stream file content for the specified range."""
-            async with aiofiles.open(file_path, 'rb') as f:
-                await f.seek(start)
-                remaining = content_length
-                while remaining > 0:
-                    chunk_size = min(8 * 1024 * 1024, remaining)  # 8MB chunks
-                    chunk = await f.read(chunk_size)
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-                    yield chunk
+            try:
+                async with aiofiles.open(file_path, 'rb') as f:
+                    await f.seek(start)
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk_size = min(8 * 1024 * 1024, remaining)  # 8MB chunks
+                        chunk = await f.read(chunk_size)
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+            finally:
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try: os.unlink(temp_file_path)
+                    except: pass
         
         return StreamingResponse(
             iter_file_range(),
@@ -161,9 +188,14 @@ async def download_orthophoto(
         # Full content download
         async def iter_file():
             """Stream entire file content."""
-            async with aiofiles.open(file_path, 'rb') as f:
-                while chunk := await f.read(8 * 1024 * 1024):  # 8MB chunks
-                    yield chunk
+            try:
+                async with aiofiles.open(file_path, 'rb') as f:
+                    while chunk := await f.read(8 * 1024 * 1024):  # 8MB chunks
+                        yield chunk
+            finally:
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try: os.unlink(temp_file_path)
+                    except: pass
         
         return StreamingResponse(
             iter_file(),
@@ -215,14 +247,29 @@ async def get_download_info(
         )
     
     file_path = job.result_path
-    if not os.path.exists(file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Result file not found",
-        )
-    
-    file_size = os.path.getsize(file_path)
-    checksum = job.result_checksum or await calculate_file_checksum(file_path)
+    file_size = None
+
+    if file_path and os.path.exists(file_path):
+        file_size = os.path.getsize(file_path)
+    else:
+        # Fallback to MinIO
+        project_result = await db.execute(select(Project).where(Project.id == project_id))
+        proj = project_result.scalar_one()
+        storage = StorageService()
+        minio_key = None
+        if proj.ortho_path and storage.object_exists(proj.ortho_path):
+            minio_key = proj.ortho_path
+        elif file_path and storage.object_exists(file_path):
+            minio_key = file_path
+        if minio_key:
+            file_size = storage.get_object_size(minio_key)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Result file not found",
+            )
+
+    checksum = job.result_checksum or (await calculate_file_checksum(file_path) if os.path.exists(file_path) else None)
     
     return StreamingResponse(
         iter([]),

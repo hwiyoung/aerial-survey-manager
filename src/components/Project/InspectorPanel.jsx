@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { FileImage, Download, Loader2, X, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { FileImage, Download, Loader2, X, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 
-export default function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onExport }) {
+export default function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onExport, onProjectUpdate }) {
     const [isImageLoaded, setIsImageLoaded] = useState(false);
     const [isCancelling, setIsCancelling] = useState(false);
+    const [isDeletingSource, setIsDeletingSource] = useState(false);
 
     // Real-time progress tracking
     const { progress: procProgress, status: procStatus, message: procMessage } = useProcessingProgress(
@@ -32,6 +33,27 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
         }
     };
 
+    const handleDeleteSource = async () => {
+        if (!window.confirm(
+            '원본 이미지를 삭제하시겠습니까?\n\n' +
+            '⚠️ 삭제 후에는 재처리가 불가능합니다.\n' +
+            '정사영상 결과물은 유지됩니다.'
+        )) return;
+
+        setIsDeletingSource(true);
+        try {
+            await api.deleteSourceImages(project.id);
+            // Optimistic UI update
+            if (onProjectUpdate) {
+                onProjectUpdate({ ...project, source_deleted: true });
+            }
+        } catch (err) {
+            alert('원본 이미지 삭제 실패: ' + err.message);
+        } finally {
+            setIsDeletingSource(false);
+        }
+    };
+
     if (!project) return <div className="flex h-full items-center justify-center bg-slate-50 text-slate-400">프로젝트를 선택하세요</div>;
 
     if (!image) {
@@ -47,7 +69,28 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                         {project.source_size && (
                             <div className="flex justify-between border-b pb-2">
                                 <span className="text-slate-500">원본 총 용량</span>
-                                <span className="font-medium">{(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB</span>
+                                <span className="font-medium">
+                                    {project.source_deleted
+                                        ? <span className="text-slate-400 line-through">{(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB</span>
+                                        : `${(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB`
+                                    }
+                                </span>
+                            </div>
+                        )}
+                        {(project.status === '완료' || project.status === 'completed') && project.source_size && !project.source_deleted && (
+                            <button
+                                onClick={handleDeleteSource}
+                                disabled={isDeletingSource}
+                                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors disabled:opacity-50"
+                            >
+                                <Trash2 size={14} />
+                                {isDeletingSource ? '삭제 중...' : '원본 이미지 삭제 (저장공간 확보)'}
+                            </button>
+                        )}
+                        {project.source_deleted && (
+                            <div className="flex items-center gap-2 py-2 px-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg">
+                                <CheckCircle2 size={14} />
+                                삭제됨 ({project.source_size ? `${(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB 확보` : '완료'})
                             </div>
                         )}
                         {project.ortho_size && (

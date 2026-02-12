@@ -94,10 +94,10 @@ function StatsSummary({ stats, isCompact = false }) {
                 {/* 총 데이터 용량 */}
                 <DashboardStatsCard
                     icon={<HardDrive size={18} />}
-                    value={stats.dataSize || '51.7'}
+                    value={stats.dataSize || '0'}
                     unit="GB"
-                    label="총 데이터 용량"
-                    subLabel="정사영상 결과물 기준"
+                    label="정사영상 용량"
+                    subLabel={`총 저장 용량: ${stats.totalStorage} GB`}
                 />
 
                 {/* 총 원본 사진 */}
@@ -206,9 +206,10 @@ function ProjectDetailView({ project, onBack }) {
                 />
                 <DashboardStatsCard
                     icon={<HardDrive size={18} />}
-                    value={project.ortho_size ? (project.ortho_size / (1024 * 1024 * 1024)).toFixed(2) : (project.source_size ? (project.source_size / (1024 * 1024 * 1024)).toFixed(2) : '0')}
+                    value={project.ortho_size ? (project.ortho_size / (1024 * 1024 * 1024)).toFixed(2) : '0'}
                     unit="GB"
-                    label={project.ortho_size ? "정사영상 용량" : "원본 총 용량"}
+                    label="정사영상 용량"
+                    subLabel={project.source_size ? `원본: ${(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB${project.source_deleted ? ' (삭제됨)' : ''}` : undefined}
                 />
                 <DashboardStatsCard
                     icon={<FolderCheck size={18} />}
@@ -357,9 +358,14 @@ export default function DashboardView({
         const total = projects.length;
 
         const totalImages = projects.reduce((sum, p) => sum + (p.imageCount || p.image_count || 0), 0);
-        // dataSize is based on ortho_size (MB to GB conversion)
-        const totalSizeMB = projects.reduce((sum, p) => sum + (p.ortho_size ? p.ortho_size / (1024 * 1024) : 0), 0);
-        const dataSize = (totalSizeMB / 1024).toFixed(1);
+        // ortho_size 합계 (정사영상 결과물)
+        const orthoSizeBytes = projects.reduce((sum, p) => sum + (p.ortho_size || 0), 0);
+        const orthoSizeGB = (orthoSizeBytes / (1024 * 1024 * 1024)).toFixed(1);
+        // source_size 합계 (삭제되지 않은 원본 이미지만)
+        const sourceSizeBytes = projects.reduce((sum, p) => sum + (!p.source_deleted && p.source_size ? p.source_size : 0), 0);
+        // 총 저장 용량
+        const totalStorageBytes = orthoSizeBytes + sourceSizeBytes;
+        const totalStorageGB = (totalStorageBytes / (1024 * 1024 * 1024)).toFixed(1);
 
         // Area calculation based on actual projects
         const area = projects.reduce((sum, p) => sum + (p.area || 0), 0).toFixed(1);
@@ -371,7 +377,8 @@ export default function DashboardView({
             failed,
             total,
             area: area || '0',
-            dataSize: dataSize !== '0.0' ? dataSize : '0',
+            dataSize: orthoSizeGB !== '0.0' ? orthoSizeGB : '0',
+            totalStorage: totalStorageGB !== '0.0' ? totalStorageGB : '0',
             photoCount: totalImages,
             avgPhotos: total > 0 ? Math.round(totalImages / total) : 0,
         };

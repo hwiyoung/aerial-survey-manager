@@ -1164,6 +1164,7 @@ function Dashboard() {
                     onQcUpdate={(id, d) => { const n = { ...qcData, [id]: d }; setQcData(n); localStorage.setItem('innopam_qc_data', JSON.stringify(n)); }}
                     onCloseImage={() => setSelectedImageId(null)}
                     onExport={() => openExportDialog([project.id])}
+                    onProjectUpdate={() => { setTimeout(() => refreshProjects(), 2000); }}
                   />
                 )}
               />

@@ -2,6 +2,7 @@
 import os
 import hashlib
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -40,6 +41,8 @@ celery_app.conf.update(
         "app.workers.tasks.save_eo_metadata": {"queue": "metashape"},
         # 외부 COG 삽입 (root + GDAL + MinIO 접근 필요)
         "app.workers.tasks.inject_external_cog": {"queue": "metashape"},
+        # 원본 이미지 삭제 (MinIO 접근 필요)
+        "app.workers.tasks.delete_source_images": {"queue": "metashape"},
     },
 )
 
@@ -196,6 +199,18 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 except Exception:
                     pass  # Don't fail the task if broadcast fails
             
+            # 전체 처리 시간 추적
+            def _fmt_elapsed(seconds):
+                minutes, secs = divmod(int(seconds), 60)
+                if minutes > 0:
+                    return f"{minutes}분 {secs:02d}초"
+                return f"{secs}초"
+
+            phase_timings = []
+            overall_start = time.time()
+
+            # Phase 1: 이미지 다운로드
+            t0 = time.time()
             update_progress(5, "저장소에서 이미지 다운로드 중...")
 
             total_source_size = 0
@@ -213,7 +228,10 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
             project.source_size = total_source_size
             db.commit()
+            phase_timings.append(("이미지 다운로드", time.time() - t0))
 
+            # Phase 2: 처리 엔진
+            t0 = time.time()
             update_progress(20, "처리 엔진 시작 중...")
             
             # Define async progress callback
@@ -242,6 +260,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 )
             finally:
                 loop.close()
+            phase_timings.append(("처리 엔진", time.time() - t0))
 
             # Read result_gsd from status.json (Metashape engine)
             if engine_name == "metashape":
@@ -257,16 +276,11 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     except Exception as e:
                         print(f"Failed to read result_gsd from status.json: {e}")
 
-            update_progress(90, "결과물 업로드 중...")
-            
-            # Upload result to storage
-            result_object_name = f"projects/{project_id}/ortho/result.tif"
-            storage.upload_file(str(result_path), result_object_name, "image/tiff")
-            
-            # Convert to COG (Cloud Optimized GeoTIFF) for efficient streaming
-            update_progress(92, "클라우드 최적화 GeoTIFF 변환 중...")
+            # Phase 3: COG 변환/업로드/정리 (result.tif는 MinIO 업로드 불필요 - COG만 업로드)
+            t0 = time.time()
+            update_progress(90, "클라우드 최적화 GeoTIFF 변환 중...")
             cog_path = output_dir / "result_cog.tif"
-            
+
             try:
                 import subprocess
                 import shutil
@@ -276,7 +290,6 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     print(f"COG already created by engine, skipping conversion: {cog_path}")
                 else:
                     # Use GDAL to create COG with proper tiling and overviews
-                    # Note: TILING_SCHEME 제거하여 원본 GSD 유지
                     gdal_cmd = [
                         "gdal_translate",
                         "-of", "COG",
@@ -289,19 +302,27 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     ]
                     subprocess.run(gdal_cmd, check=True, capture_output=True)
 
-                # Upload COG version
-                cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
-                storage.upload_file(str(cog_path), cog_object_name, "image/tiff")
+                # result.tif 조기 삭제 (COG 변환 완료 후 불필요)
+                if result_path.exists() and result_path.name == "result.tif":
+                    try:
+                        result_path.unlink()
+                        print(f"Deleted intermediate result.tif: {result_path}")
+                    except Exception as del_err:
+                        print(f"Failed to delete result.tif: {del_err}")
 
-                # result_cog.tif를 output/ 디렉토리로 이동 (고객에게 보이는 결과물)
+                # Upload COG to MinIO
+                update_progress(92, "결과물 업로드 중...")
+                result_object_name = f"projects/{project_id}/ortho/result_cog.tif"
+                storage.upload_file(str(cog_path), result_object_name, "image/tiff")
+
+                # COG를 output/ 디렉토리로 이동 후 삭제 (MinIO가 primary)
                 final_output_dir = base_dir / "output"
                 final_output_dir.mkdir(parents=True, exist_ok=True)
                 final_cog_path = final_output_dir / "result_cog.tif"
                 shutil.move(str(cog_path), str(final_cog_path))
 
-                # Use COG as primary result
+                # Use COG as primary result (체크섬/사이즈 계산용)
                 result_path = final_cog_path
-                result_object_name = cog_object_name
 
                 # Clean up intermediate files in .work/ (숨김 폴더)
                 update_progress(93, "중간 파일 정리 중...")
@@ -328,17 +349,39 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                         print(f"Failed to clean up input directory: {cleanup_err}")
 
             except Exception as cog_error:
-                # COG conversion failed, continue with regular TIF
+                # COG conversion failed, upload original result.tif as fallback
                 print(f"COG conversion failed: {cog_error}")
-            
-            # Calculate checksum
+                result_object_name = f"projects/{project_id}/ortho/result.tif"
+                storage.upload_file(str(result_path), result_object_name, "image/tiff")
+            phase_timings.append(("COG/업로드/정리", time.time() - t0))
+
+            # Phase 4: 체크섬 계산 + 영역 정보 추출
+            t0 = time.time()
             update_progress(95, "체크섬 계산 중...")
             checksum = calculate_file_checksum(str(result_path))
             file_size = os.path.getsize(result_path)
-            
-            # Update project bounds from orthophoto
-            update_progress(98, "프로젝트 영역 정보 업데이트 중...")
+
+            # 영역 정보는 파일 삭제 전에 추출해야 함
+            update_progress(96, "프로젝트 영역 정보 추출 중...")
             bounds_wkt = get_orthophoto_bounds(str(result_path))
+
+            # 로컬 COG 삭제 (MinIO에 업로드 완료, 로컬 저장소 절약)
+            if result_path.exists():
+                try:
+                    result_path.unlink()
+                    # output 디렉토리도 비었으면 삭제
+                    output_parent = result_path.parent
+                    if output_parent.exists() and not any(output_parent.iterdir()):
+                        output_parent.rmdir()
+                    print(f"Deleted local COG after upload: {result_path}")
+                except Exception as del_err:
+                    print(f"Failed to delete local COG: {del_err}")
+
+            phase_timings.append(("체크섬/영역추출", time.time() - t0))
+
+            # Phase 5: 영역 정보 업데이트
+            t0 = time.time()
+            update_progress(98, "프로젝트 영역 정보 업데이트 중...")
             if bounds_wkt:
                 project.bounds = bounds_wkt
                 
@@ -364,6 +407,28 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                         if region:
                             project.region = region
             
+            phase_timings.append(("영역 정보 업데이트", time.time() - t0))
+
+            # 전체 처리 시간 요약
+            overall_elapsed = time.time() - overall_start
+            summary_lines = []
+            summary_lines.append(f"{'='*60}")
+            summary_lines.append(f"전체 처리 완료 - 총 {_fmt_elapsed(overall_elapsed)}")
+            for idx, (phase_name, elapsed) in enumerate(phase_timings, 1):
+                summary_lines.append(f"  {idx}. {phase_name:<20s}: {_fmt_elapsed(elapsed)}")
+            summary_lines.append(f"{'='*60}")
+
+            summary_text = "\n".join(summary_lines)
+            print(summary_text)
+
+            # .processing.log에도 요약 추가
+            log_file_path = output_dir / ".processing.log"
+            try:
+                with open(log_file_path, 'a') as log_f:
+                    log_f.write(f"\n{summary_text}\n")
+            except Exception:
+                pass
+
             # Final status update
             job.status = "completed"
             job.completed_at = datetime.utcnow()
@@ -624,6 +689,72 @@ def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: 
     except Exception as e:
         print(f"✗ EO 메타데이터 저장 실패: {e}")
         return {"status": "error", "path": str(reference_path), "error": str(e)}
+
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.delete_source_images",
+)
+def delete_source_images(self, project_id: str):
+    """
+    프로젝트의 원본 이미지를 MinIO에서 삭제하고 DB를 업데이트합니다.
+    worker-engine에서 root 권한으로 실행됩니다.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.models.project import Project
+    from app.services.storage import StorageService
+
+    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
+    db_engine = create_engine(sync_db_url)
+
+    with Session(db_engine) as db:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            return {"status": "error", "message": f"프로젝트를 찾을 수 없습니다: {project_id}"}
+
+        if project.source_deleted:
+            return {"status": "skipped", "message": "이미 삭제된 원본 이미지입니다."}
+
+        storage = StorageService()
+        uploads_prefix = f"projects/{project_id}/uploads/"
+        deleted_count = 0
+
+        try:
+            # MinIO에서 원본 이미지 삭제
+            objects = storage.list_objects(prefix=uploads_prefix, recursive=True)
+            if objects:
+                storage.delete_recursive(uploads_prefix)
+                deleted_count = len(objects)
+                print(f"✓ MinIO 원본 이미지 삭제: {deleted_count}개 ({uploads_prefix})")
+            else:
+                print(f"ℹ MinIO에 원본 이미지 없음: {uploads_prefix}")
+
+            # 썸네일도 삭제
+            thumbnails_prefix = f"projects/{project_id}/thumbnails/"
+            thumb_objects = storage.list_objects(prefix=thumbnails_prefix, recursive=True)
+            if thumb_objects:
+                storage.delete_recursive(thumbnails_prefix)
+                print(f"✓ 썸네일 삭제: {len(thumb_objects)}개")
+
+            # DB 업데이트
+            project.source_deleted = True
+            db.commit()
+
+            freed_bytes = project.source_size or 0
+            freed_gb = freed_bytes / (1024 * 1024 * 1024)
+            print(f"✅ 프로젝트 {project_id} 원본 이미지 삭제 완료 ({freed_gb:.2f} GB 확보)")
+
+            return {
+                "status": "completed",
+                "project_id": project_id,
+                "deleted_count": deleted_count,
+                "freed_bytes": freed_bytes,
+            }
+
+        except Exception as e:
+            print(f"✗ 원본 이미지 삭제 실패: {e}")
+            return {"status": "error", "message": str(e)}
 
 
 @celery_app.task(

@@ -460,7 +460,8 @@ class MetashapeEngine(ProcessingEngine):
             steps.extend([
                 ("build_dem.py", "수치표고모델 생성 중..."),
                 ("build_orthomosaic.py", "정사모자이크 생성 중..."),
-                ("export_orthomosaic.py", "결과물 내보내기 중..."),
+                ("export_orthomosaic.py", "정사영상 내보내기 중..."),
+                ("convert_cog.py", "COG 변환 중..."),
             ])
 
             logger.info(f"[Metashape] build_point_cloud={build_point_cloud}, total steps={len(steps)}")
@@ -472,7 +473,8 @@ class MetashapeEngine(ProcessingEngine):
                 "build_point_cloud.py": "Build Point Cloud",
                 "build_dem.py": "Build DEM",
                 "build_orthomosaic.py": "Build Orthomosaic",
-                "export_orthomosaic.py": "Build Orthomosaic",  # export는 orthomosaic 진행률 사용
+                "export_orthomosaic.py": "Export Raster",
+                "convert_cog.py": "Convert COG",
             }
             initial_status = {}
             for script_name, _ in steps:

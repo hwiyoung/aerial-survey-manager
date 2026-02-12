@@ -417,16 +417,141 @@ docker compose exec worker-engine nvidia-smi
 
 | 데이터 | 저장 위치 | 유형 | 업그레이드 시 처리 |
 |--------|-----------|------|-------------------|
-| DB (프로젝트, 사용자 등) | Docker named volume (`_pgdata`) | Docker 볼륨 | pg_dump/restore 필요 |
+| DB (프로젝트, 사용자 등) | Docker named volume (`_pgdata`) | Docker 볼륨 | **COMPOSE_PROJECT_NAME 고정 시 자동 유지** |
 | 업로드 이미지, 정사영상 | `MINIO_DATA_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
 | 처리 중간 파일 | `PROCESSING_DATA_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
 | 오프라인 타일 | `TILES_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
-| 엔진 라이선스 | Docker named volume (`_engine-license`) | Docker 볼륨 | 새 볼륨에서 재활성화 |
+| 엔진 라이선스 | Docker named volume (`_engine-license`) | Docker 볼륨 | **COMPOSE_PROJECT_NAME 고정 시 자동 유지** |
 
-> **핵심**: MinIO 데이터와 처리 파일은 호스트 디렉토리에 저장되므로 `.env`에서 같은 경로를 지정하면 자동으로 유지됩니다.
-> DB만 Docker 볼륨에 저장되므로 별도 마이그레이션이 필요합니다.
+> **핵심**: `COMPOSE_PROJECT_NAME=aerial-survey-manager`가 `.env`에 설정되어 있으면, Docker named volume의 접두사가 폴더명과 무관하게 고정됩니다.
+> 따라서 새 패키지 폴더에서 `.env`만 복사하면 **DB 볼륨이 자동으로 재사용**됩니다.
 
-### 업그레이드 절차
+#### 프로젝트당 데이터 저장 위치 (2026-02-12 업데이트)
+
+하나의 프로젝트가 생성~처리 완료되면 다음 데이터가 생성됩니다:
+
+```
+MinIO (MINIO_DATA_PATH)
+├── projects/{id}/uploads/*.tif       ← 원본 이미지 (업로드 시)
+├── projects/{id}/thumbnails/*.jpg    ← 썸네일 (업로드 시 자동 생성)
+└── projects/{id}/ortho/result_cog.tif ← 정사영상 COG (처리 완료 시)
+
+로컬 (PROCESSING_DATA_PATH)
+└── processing/{id}/
+    ├── .work/status.json              ← 처리 상태 (진행률, GSD)
+    ├── .work/.processing.log          ← 처리 로그
+    └── (output/ 디렉토리는 처리 후 삭제됨)
+
+DB (Docker volume)
+├── projects 테이블                    ← 프로젝트 메타데이터, bounds, area, region
+├── processing_jobs 테이블             ← 처리 이력, GSD, checksum
+└── images 테이블                      ← 이미지 목록, 업로드 상태
+```
+
+> **참고**: v1.1.0부터 처리 완료 후 로컬에는 `.work/` 내 상태 파일만 남습니다.
+> 정사영상 COG는 MinIO에만 보관되며, 다운로드/타일 서빙 시 MinIO에서 직접 제공합니다.
+
+### 업그레이드 방식 선택
+
+| 조건 | 방식 | DB 처리 |
+|------|------|---------|
+| `.env`에 `COMPOSE_PROJECT_NAME=aerial-survey-manager` 있음 | **간편 업그레이드** | 자동 유지 (alembic 자동 마이그레이션) |
+| `.env`에 `COMPOSE_PROJECT_NAME` 없음 (최초 업그레이드) | **표준 업그레이드** | pg_dump/restore 필요 |
+
+---
+
+### 간편 업그레이드 (권장)
+
+`.env`에 `COMPOSE_PROJECT_NAME=aerial-survey-manager`가 이미 설정된 경우의 절차입니다.
+DB 볼륨이 폴더명과 무관하게 유지되므로 pg_dump/restore가 필요 없습니다.
+
+#### Step 1. 기존 서비스 중지
+
+```bash
+cd ~/aerial-survey-manager    # 또는 기존 배포 폴더
+
+# .env 백업 (필수!)
+cp .env ~/env_backup
+
+# 서비스 중지 (볼륨은 유지)
+docker compose down
+```
+
+> **주의**: `docker compose down -v`가 아닌 `docker compose down`을 사용합니다.
+> `-v` 플래그는 DB 볼륨을 삭제하므로 간편 업그레이드에서는 사용하지 않습니다.
+
+#### Step 2. 새 배포 패키지 설치
+
+```bash
+cd ~
+
+# 새 패키지 압축 해제
+tar -xzf aerial-survey-manager-v1.1.0.tar.gz
+cd aerial-survey-manager-v1.1.0
+
+# 기존 .env 복사
+cp ~/env_backup .env
+
+# Docker 이미지 로드
+./scripts/load-images.sh
+```
+
+#### Step 3. 서비스 시작
+
+```bash
+docker compose up -d
+```
+
+이 때 자동으로 수행되는 작업:
+1. **DB 볼륨 재사용**: `COMPOSE_PROJECT_NAME`이 동일하므로 기존 `aerial-survey-manager_pgdata` 볼륨 사용
+2. **Alembic 마이그레이션**: `entrypoint.sh`가 `alembic upgrade head`를 실행하여 새 컬럼/테이블 자동 추가
+3. **시드 데이터 확인**: 카메라 모델, 권역 데이터가 이미 존재하면 스킵
+
+#### Step 4. 결과 확인
+
+```bash
+# 1. 서비스 상태 확인
+docker compose ps
+
+# 2. API 로그에서 마이그레이션 확인
+docker compose logs api | grep -i "migration"
+
+# 3. 기존 프로젝트 수 확인
+docker compose exec db psql -U postgres -d aerial_survey \
+  -c "SELECT count(*) FROM projects"
+
+# 4. 웹 UI에서 기존 프로젝트 목록 및 정사영상 표시 확인
+```
+
+#### Step 5. 기존 프로젝트 스토리지 정리 (선택)
+
+이전 버전에서 처리된 프로젝트에는 중복 파일이 남아있을 수 있습니다.
+정리 스크립트로 불필요한 파일을 삭제하여 저장소를 확보할 수 있습니다.
+
+```bash
+# 미리보기 (삭제하지 않음, 절약 가능한 용량만 확인)
+./scripts/cleanup-storage.sh
+
+# 실제 삭제
+./scripts/cleanup-storage.sh --execute
+```
+
+정리 대상:
+
+| 파일 | 위치 | 삭제 조건 | 설명 |
+|------|------|-----------|------|
+| `result.tif` | MinIO `projects/{id}/ortho/` | 같은 프로젝트에 `result_cog.tif`가 있을 때 | COG 변환 전 원본 (불필요) |
+| `result_cog.tif` | 로컬 `processing/{id}/output/` | MinIO에 `result_cog.tif`가 있을 때 | 로컬 복사본 (MinIO가 primary) |
+
+> 프로젝트 자체는 삭제하지 않습니다. 중복 **파일만** 정리합니다.
+> 기본 모드는 dry-run이므로 안전하게 미리보기할 수 있습니다.
+
+---
+
+### 표준 업그레이드 (최초 업그레이드)
+
+`.env`에 `COMPOSE_PROJECT_NAME`이 없는 경우의 절차입니다.
+Docker 볼륨 접두사가 폴더명에 의존하므로 DB를 백업/복원해야 합니다.
 
 #### Step 1. 기존 환경에서 백업
 
@@ -463,8 +588,7 @@ cd aerial-survey-manager-v1.1.0
 # 기존 .env 복사
 cp ~/env_backup .env
 
-# COMPOSE_PROJECT_NAME 추가 (기존 .env에 없는 경우)
-# 이후 업그레이드부터는 이 값이 유지되므로 폴더명과 무관하게 동일 볼륨 사용
+# COMPOSE_PROJECT_NAME 추가 (이후 업그레이드부터 간편 업그레이드 가능)
 echo '' >> .env
 echo 'COMPOSE_PROJECT_NAME=aerial-survey-manager' >> .env
 
@@ -487,7 +611,7 @@ docker compose exec db createdb -U postgres aerial_survey
 # 백업 데이터 복원
 docker compose exec -T db psql -U postgres aerial_survey < ~/backup.sql
 
-# 서비스 재시작
+# 서비스 재시작 (API 시작 시 alembic이 새 컬럼 자동 추가)
 docker compose start api celery-worker celery-beat
 ```
 
@@ -505,54 +629,59 @@ docker compose exec db psql -U postgres -d aerial_survey \
   -c "SELECT count(*) FROM projects"
 
 # 4. 웹 UI 접속하여 기존 프로젝트 목록 확인
-# http://{DOMAIN}:{WEB_PORT}
 
 # 5. 기존 프로젝트의 정사영상 표시 확인
-# (MinIO 데이터가 정상 연결되었는지 검증)
 ```
+
+#### Step 6. 기존 프로젝트 스토리지 정리 (선택)
+
+간편 업그레이드의 Step 5와 동일합니다. `./scripts/cleanup-storage.sh`를 실행하세요.
+
+---
 
 ### 확인 체크리스트
 
 - [ ] 모든 서비스가 `Up` 상태인가? (`docker compose ps`)
+- [ ] API 로그에 "Migrations applied successfully" 표시되는가?
 - [ ] 기존 프로젝트 목록이 보이는가?
 - [ ] 기존 프로젝트의 썸네일/정사영상이 표시되는가?
 - [ ] 새 프로젝트 생성이 가능한가?
 - [ ] 오프라인 타일맵이 정상 표시되는가? (해당 시)
+- [ ] 기존 프로젝트의 정사영상 다운로드가 가능한가?
 
 ### 주의사항
 
 - **`.env` 백업은 필수**: `install.sh`는 비밀번호를 랜덤 생성하므로, 기존 `.env`를 잃으면 MinIO 데이터에 접근할 수 없습니다
 - **MinIO 인증 정보 일치**: `.env`의 `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`가 기존과 동일해야 합니다
 - **호스트 경로 일치**: `MINIO_DATA_PATH`, `PROCESSING_DATA_PATH`, `TILES_PATH`가 기존과 동일해야 합니다
-- **엔진 라이선스**: `_engine-license` 볼륨이 삭제되므로 업그레이드 후 라이선스가 자동 재활성화됩니다. 활성화 횟수 제한이 있는 경우 주의하세요
+- **엔진 라이선스**: 간편 업그레이드 시 라이선스 볼륨이 유지됩니다. 표준 업그레이드(`down -v`) 시에는 볼륨이 삭제되므로 재활성화가 필요합니다
 
-### 이후 업그레이드 (2회차부터)
+### DB 스키마 자동 마이그레이션
 
-`COMPOSE_PROJECT_NAME=aerial-survey-manager`가 `.env`에 설정된 이후부터는 절차가 간단합니다:
+API 컨테이너가 시작되면 `entrypoint.sh`에서 `alembic upgrade head`가 자동 실행됩니다.
+이를 통해 새 버전에서 추가된 DB 컬럼/테이블이 기존 DB에 자동으로 반영됩니다.
 
-```bash
-# 기존 환경 백업
-cd ~/aerial-survey-manager-v1.1.0
-docker compose exec db pg_dump -U postgres aerial_survey > ~/backup.sql
-cp .env ~/env_backup
-docker compose down -v
-
-# 새 패키지 설치
-cd ~
-tar -xzf aerial-survey-manager-v1.2.0.tar.gz
-cd aerial-survey-manager-v1.2.0
-cp ~/env_backup .env
-./scripts/install.sh    # 기존 .env 유지 선택
-
-# DB 복원
-docker compose stop api celery-worker celery-beat
-docker compose exec db dropdb -U postgres aerial_survey
-docker compose exec db createdb -U postgres aerial_survey
-docker compose exec -T db psql -U postgres aerial_survey < ~/backup.sql
-docker compose start api celery-worker celery-beat
+```
+API 시작 → DB 연결 대기 → alembic upgrade head → 시드 데이터 확인 → 서버 시작
 ```
 
-> `.env`에 이미 `COMPOSE_PROJECT_NAME`이 포함되어 있으므로 별도 추가가 필요 없습니다.
+- 이미 최신 상태인 DB에서는 "No upgrade needed" 메시지 출력
+- 새 컬럼 추가 시 기존 데이터에 기본값이 자동 설정됨 (예: `source_deleted = false`)
+- pg_dump/restore로 복원된 DB에도 `alembic_version` 테이블이 포함되어 있으므로 누락된 마이그레이션만 적용됨
+
+### 호환성 보장
+
+새 버전의 코드는 기존 프로젝트 데이터와 **하위 호환**됩니다:
+
+| 기존 상태 | 새 버전에서의 동작 |
+|-----------|-------------------|
+| 로컬에 `output/result_cog.tif` 있음 | 그대로 사용 (다운로드 시 로컬 우선) |
+| MinIO에 `result.tif`만 있음 | 다운로드 시 MinIO에서 서빙 (COG 폴백) |
+| MinIO에 `result_cog.tif` 있음 | TiTiler 타일 서빙 정상 동작 |
+| `source_deleted` 컬럼 없음 | alembic이 자동 추가 (`false` 기본값) |
+
+> 기존 프로젝트는 **아무런 수정 없이** 새 버전에서 정상 동작합니다.
+> `cleanup-storage.sh`는 선택사항이며, 저장소 절약이 필요할 때만 실행하면 됩니다.
 
 ---
 

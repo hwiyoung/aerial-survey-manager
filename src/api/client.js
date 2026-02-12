@@ -182,6 +182,10 @@ class ApiClient {
         return this.request(`/projects/${projectId}`, { method: 'DELETE' });
     }
 
+    async deleteSourceImages(projectId) {
+        return this.request(`/projects/${projectId}/source-images`, { method: 'DELETE' });
+    }
+
     // --- Images ---
     async getProjectImages(projectId) {
         return this.request(`/upload/projects/${projectId}/images`);

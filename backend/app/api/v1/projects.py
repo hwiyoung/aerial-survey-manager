@@ -202,6 +202,7 @@ async def list_projects(
             "updated_at": project.updated_at,
             "image_count": image_count,
             "source_size": project.source_size,
+            "source_deleted": project.source_deleted,
             "ortho_size": project.ortho_size,
             "area": project.area,
             "ortho_path": project.ortho_path,
@@ -254,6 +255,7 @@ async def create_project(
         "updated_at": project.updated_at,
         "image_count": 0,
         "source_size": project.source_size,
+        "source_deleted": project.source_deleted,
         "ortho_size": project.ortho_size,
         "area": project.area,
         "ortho_path": project.ortho_path,
@@ -408,6 +410,7 @@ async def update_project(
         "updated_at": project.updated_at,
         "image_count": image_count,
         "source_size": project.source_size,
+        "source_deleted": project.source_deleted,
         "ortho_size": project.ortho_size,
         "area": project.area,
         "ortho_path": project.ortho_path,
@@ -490,6 +493,55 @@ async def delete_project(
         print(f"Failed to delete MinIO project data for {project_id}: {e}")
     
     # Note: Related images, jobs, etc. will be deleted via CASCADE
+
+
+@router.delete("/{project_id}/source-images", status_code=status.HTTP_202_ACCEPTED)
+async def delete_source_images(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    프로젝트의 원본 이미지를 삭제합니다 (MinIO + 썸네일).
+    처리가 완료된 프로젝트에서만 사용 가능합니다.
+    삭제 후 재처리가 불가능합니다.
+    """
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if project.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="원본 이미지 삭제는 처리가 완료된 프로젝트에서만 가능합니다.",
+        )
+
+    if project.source_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="이미 원본 이미지가 삭제된 프로젝트입니다.",
+        )
+
+    # Queue Celery task for deletion (worker-engine has MinIO access)
+    from app.workers.tasks import delete_source_images as delete_source_task
+    try:
+        delete_source_task.delay(str(project_id))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"삭제 작업 큐 등록 실패: {str(e)}",
+        )
+
+    return {"message": "원본 이미지 삭제가 시작되었습니다.", "project_id": str(project_id)}
 
 
 @router.post("/{project_id}/eo", response_model=EOUploadResponse)
