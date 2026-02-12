@@ -848,6 +848,9 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
 
         final_cog_path = output_dir / "result_cog.tif"
 
+        # 소스가 이미 최종 경로에 있으면 복사/이동 불필요
+        source_is_final = source.resolve() == final_cog_path.resolve()
+
         # Check if input is already COG
         is_cog = False
         try:
@@ -858,9 +861,30 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         except Exception:
             pass
 
-        if is_cog:
-            print("✓ 입력 파일이 이미 COG 형식, 복사 중...")
-            shutil.copy2(str(source), str(final_cog_path))
+        if source_is_final:
+            if is_cog:
+                print("✓ 입력 파일이 이미 최종 경로에 COG 형식으로 존재")
+            else:
+                print("🔄 COG 형식으로 변환 중...")
+                temp_cog = output_dir / "_result_cog_converting.tif"
+                try:
+                    gdal_cmd = [
+                        "gdal_translate", "-of", "COG",
+                        "-co", "COMPRESS=LZW",
+                        "-co", "BLOCKSIZE=256",
+                        "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+                        "-co", "BIGTIFF=YES",
+                        str(source), str(temp_cog)
+                    ]
+                    subprocess.run(gdal_cmd, check=True, capture_output=True)
+                    shutil.move(str(temp_cog), str(final_cog_path))
+                    print("✓ COG 변환 완료")
+                except subprocess.CalledProcessError as e:
+                    temp_cog.unlink(missing_ok=True)
+                    return {"status": "error", "message": f"COG 변환 실패: {e.stderr}"}
+        elif is_cog:
+            print("✓ 입력 파일이 이미 COG 형식, 이동 중...")
+            shutil.move(str(source), str(final_cog_path))
         else:
             print("🔄 COG 형식으로 변환 중...")
             try:
@@ -874,6 +898,7 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
                 ]
                 subprocess.run(gdal_cmd, check=True, capture_output=True)
                 print("✓ COG 변환 완료")
+                source.unlink(missing_ok=True)
             except subprocess.CalledProcessError as e:
                 return {"status": "error", "message": f"COG 변환 실패: {e.stderr}"}
 
@@ -884,9 +909,9 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         storage.upload_file(str(final_cog_path), cog_object_name, "image/tiff")
         print(f"✓ MinIO 업로드 완료: {cog_object_name}")
 
-        # Calculate checksum and file size
-        checksum = calculate_file_checksum(str(final_cog_path))
+        # File size (체크섬은 대용량 파일에서 수십 분 소요되므로 건너뜀)
         file_size = os.path.getsize(str(final_cog_path))
+        checksum = None
 
         # Extract bounds from the final COG
         bounds_wkt = get_orthophoto_bounds(str(final_cog_path))
@@ -952,11 +977,11 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
 
         db.commit()
 
-        # Clean up staging file (only if it's our temporary copy)
-        if source.name == "_inject_cog.tif":
+        # Clean up: 소스가 최종 경로와 다르고 아직 남아있으면 삭제
+        if not source_is_final and source.exists():
             try:
                 source.unlink()
-                print(f"✓ 스테이징 파일 삭제: {source}")
+                print(f"✓ 원본 파일 삭제: {source}")
             except Exception:
                 pass
 

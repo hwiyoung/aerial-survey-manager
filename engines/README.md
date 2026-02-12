@@ -117,4 +117,4 @@ docker run --rm aerial-prod-worker-engine:latest \
 > 자세한 내용은 [ADMIN_GUIDE.md](../docs/ADMIN_GUIDE.md)의 "배포 패키지 생성" 섹션 참조
 
 ---
-*Created on 2026-01-27 / Updated on 2026-02-12*
+*Created on 2026-01-27 / Updated on 2026-02-13*

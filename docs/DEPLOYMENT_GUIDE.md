@@ -493,8 +493,10 @@ cd aerial-survey-manager-v1.1.0
 cp ~/env_backup .env
 
 # Docker 이미지 로드
-./scripts/load-images.sh
+./load-images.sh
 ```
+
+> **주의**: `install.sh`는 실행하지 않습니다. `install.sh`는 초기 설치 전용으로, 비밀번호를 랜덤 재생성하기 때문에 업그레이드 시 실행하면 MinIO/DB 접근이 깨집니다.
 
 #### Step 3. 서비스 시작
 
@@ -523,7 +525,17 @@ docker compose exec db psql -U postgres -d aerial_survey \
 # 4. 웹 UI에서 기존 프로젝트 목록 및 정사영상 표시 확인
 ```
 
-#### Step 5. 기존 프로젝트 스토리지 정리 (선택)
+#### Step 5. 이전 버전 이미지 정리 (선택)
+
+이전 버전의 Docker 이미지가 디스크에 남아 공간을 차지합니다 (이미지당 수 GB).
+업그레이드 확인 후 정리를 권장합니다.
+
+```bash
+# 사용하지 않는 이미지 정리 (현재 실행 중인 이미지는 보호됨)
+docker image prune -a -f
+```
+
+#### Step 6. 기존 프로젝트 스토리지 정리 (선택)
 
 이전 버전에서 처리된 프로젝트에는 중복 파일이 남아있을 수 있습니다.
 정리 스크립트로 불필요한 파일을 삭제하여 저장소를 확보할 수 있습니다.
@@ -635,7 +647,7 @@ docker compose exec db psql -U postgres -d aerial_survey \
 
 #### Step 6. 기존 프로젝트 스토리지 정리 (선택)
 
-간편 업그레이드의 Step 5와 동일합니다. `./scripts/cleanup-storage.sh`를 실행하세요.
+간편 업그레이드의 Step 6과 동일합니다. `./scripts/cleanup-storage.sh`를 실행하세요.
 
 ---
 

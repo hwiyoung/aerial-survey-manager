@@ -858,17 +858,19 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 호스트                          worker-engine (Docker)
 ──────                          ──────────────────────
 1. 파일 검증
-2. COG → 스테이징 복사
+2. COG → output/result_cog.tif
+   로 직접 복사
 3. docker exec로 태스크 전송 →  4. GeoTIFF 유효성 검증 (gdalinfo)
                                 5. GSD/bounds 자동 추출
-                                6. COG 아닌 경우 자동 변환 (gdal_translate)
-                                7. /data/processing/{id}/output/ 배치
+                                6. 이미 최종 경로에 있으면 복사/이동 건너뜀
+                                7. COG 아닌 경우 자동 변환 (gdal_translate)
                                 8. MinIO 업로드
-                                9. SHA256 체크섬 계산
-                                10. DB 업데이트 (ProcessingJob + Project)
-                                11. PostGIS 면적 계산 + 권역 자동 배정
-                                12. WebSocket 완료 브로드캐스트
+                                9. DB 업데이트 (ProcessingJob + Project)
+                                10. PostGIS 면적 계산 + 권역 자동 배정
+                                11. WebSocket 완료 브로드캐스트
 ```
+
+> **2026-02-13 최적화**: 스테이징 파일(`_inject_cog.tif`) 방식을 제거하고 최종 경로로 직접 복사합니다. 체크섬(SHA256) 계산은 대용량 파일에서 수십 분 소요되므로 건너뜁니다.
 
 ### 4. 수행되는 상태 변경
 
@@ -876,7 +878,7 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 |------|------|-----|
 | **디스크** | `output/result_cog.tif` | COG 파일 배치 |
 | **MinIO** | `projects/{id}/ortho/result_cog.tif` | COG 업로드 |
-| **ProcessingJob** | status, completed_at, result_gsd, result_size, result_checksum, progress | completed, now(), 자동, 자동, SHA256, 100 |
+| **ProcessingJob** | status, completed_at, result_gsd, result_size, progress | completed, now(), 자동, 자동, 100 |
 | **Project** | status, progress, ortho_path, ortho_size, bounds, area, region | completed, 100, MinIO경로, 자동, gdalinfo, PostGIS, 자동 |
 
 ### 5. 활용 사례
@@ -891,8 +893,25 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 - `--force` 없이 처리 중인 프로젝트에 삽입하면 거부됩니다
 - Geographic CRS(EPSG:4326)인 파일은 GSD 자동 추출이 부정확합니다 → `--gsd` 옵션 사용 권장
 - 입력 파일이 COG가 아닌 경우 자동 변환되므로 대용량 파일은 시간이 걸릴 수 있습니다
+- **대용량 파일 (100GB+)**: MinIO 업로드에 상당한 시간이 소요됩니다. 10분 타임아웃이 발생하면 태스크는 백그라운드에서 계속 실행됩니다
+- 배포 환경 컨테이너에서는 `python3` 명령을 사용합니다 (`python`이 아님)
 
-### 7. 트러블슈팅
+### 7. 대용량 파일 진행률 확인
+
+MinIO 업로드 중 진행 상황을 확인하려면:
+
+```bash
+# 네트워크 전송량으로 확인 (TX가 계속 증가하면 진행 중)
+watch -n 10 'docker stats aerial-worker-engine --no-stream --format "{{.NetIO}}"'
+
+# mc cp로 진행률 표시하며 업로드 (대안)
+docker exec aerial-worker-engine sh -c "
+  mc alias set myminio http://minio:9000 \$MINIO_ACCESS_KEY \$MINIO_SECRET_KEY &&
+  mc cp /data/processing/{PROJECT_ID}/output/result_cog.tif myminio/aerial-survey/projects/{PROJECT_ID}/ortho/result_cog.tif
+"
+```
+
+### 8. 트러블슈팅
 
 #### 증상: "파일을 찾을 수 없습니다"
 ```
@@ -914,7 +933,20 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 해결: --force 옵션 추가하여 기존 작업 취소 후 삽입
 ```
 
-### 8. 관련 파일
+#### 증상: 10분 타임아웃 발생
+```
+원인: 대용량 파일의 MinIO 업로드에 10분 이상 소요
+참고: 태스크는 백그라운드에서 계속 실행 중 (exit code 2)
+확인: docker logs aerial-worker-engine --tail=20
+```
+
+#### 증상: "python: executable file not found" (OCI runtime error)
+```
+원인: 배포 컨테이너에 python 심볼릭 링크 없음 (python3만 존재)
+해결: inject-cog.sh, cleanup-storage.sh 최신 버전 사용 (python3 사용)
+```
+
+### 9. 관련 파일
 
 | 파일 | 설명 |
 |------|------|

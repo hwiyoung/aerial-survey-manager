@@ -107,14 +107,14 @@ fi
 
 echo -e "${BLUE}📁 처리 데이터 경로: ${PROCESSING_HOST_PATH}${NC}"
 
-# ── Copy file to staging area ───────────────────────────────────
-STAGING_DIR="${PROCESSING_HOST_PATH}/${PROJECT_ID}"
-STAGING_FILE="${STAGING_DIR}/_inject_cog.tif"
+# ── Copy file to output directory ──────────────────────────────
+OUTPUT_DIR="${PROCESSING_HOST_PATH}/${PROJECT_ID}/output"
+DEST_FILE="${OUTPUT_DIR}/result_cog.tif"
 
-echo -e "${BLUE}📋 스테이징 디렉토리로 복사 중...${NC}"
-mkdir -p "$STAGING_DIR"
-cp "$COG_FILE" "$STAGING_FILE"
-echo -e "${GREEN}✓ 복사 완료: ${STAGING_FILE}${NC}"
+echo -e "${BLUE}📋 출력 디렉토리로 복사 중...${NC}"
+mkdir -p "$OUTPUT_DIR"
+cp "$COG_FILE" "$DEST_FILE"
+echo -e "${GREEN}✓ 복사 완료: ${DEST_FILE}${NC}"
 
 # ── Build Python command ────────────────────────────────────────
 GSD_ARG="None"
@@ -124,16 +124,18 @@ fi
 
 PYTHON_CMD="
 from app.workers.tasks import inject_external_cog
+from celery.exceptions import TimeoutError
 import sys
 
 print('Celery 태스크 전송 중...')
 result = inject_external_cog.delay(
     '${PROJECT_ID}',
-    '/data/processing/${PROJECT_ID}/_inject_cog.tif',
+    '/data/processing/${PROJECT_ID}/output/result_cog.tif',
     gsd_cm=${GSD_ARG},
     force=${FORCE}
 )
-print(f'태스크 ID: {result.id}')
+task_id = result.id
+print(f'태스크 ID: {task_id}')
 print('결과 대기 중... (최대 10분)')
 
 try:
@@ -150,6 +152,16 @@ try:
     else:
         print(f'오류: {res.get(\"message\", \"알 수 없는 오류\")}')
         sys.exit(1)
+except TimeoutError:
+    print()
+    print('=' * 50)
+    print(f'  대기 시간(10분)을 초과했지만 태스크는 백그라운드에서 계속 실행 중입니다.')
+    print(f'  태스크 ID: {task_id}')
+    print()
+    print(f'  진행 상황 확인:')
+    print(f'    docker logs aerial-worker-engine --tail=20')
+    print('=' * 50)
+    sys.exit(2)
 except Exception as e:
     print(f'태스크 실행 실패: {e}')
     sys.exit(1)
@@ -159,19 +171,19 @@ except Exception as e:
 echo -e "${BLUE}🚀 COG 삽입 태스크 실행 중...${NC}"
 echo ""
 
-docker exec "$WORKER_CONTAINER" python -c "$PYTHON_CMD"
+docker exec "$WORKER_CONTAINER" python3 -c "$PYTHON_CMD"
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""
     echo -e "${GREEN}✅ COG 삽입이 완료되었습니다.${NC}"
     echo -e "${YELLOW}   웹에서 프로젝트를 확인해주세요.${NC}"
+elif [ $EXIT_CODE -eq 2 ]; then
+    echo ""
+    echo -e "${YELLOW}⏳ 태스크가 백그라운드에서 실행 중입니다.${NC}"
+    echo -e "${YELLOW}   완료 후 웹에서 프로젝트를 확인해주세요.${NC}"
 else
     echo ""
     echo -e "${RED}✗ COG 삽입에 실패했습니다.${NC}"
-    # Clean up staging file on failure
-    if [ -f "$STAGING_FILE" ]; then
-        rm -f "$STAGING_FILE"
-    fi
     exit 1
 fi

@@ -223,7 +223,7 @@ print('=' * 60)
 "
 
 # ── Execute ──────────────────────────────────────────────────────
-docker exec "$WORKER_CONTAINER" python -c "$PYTHON_CMD"
+docker exec "$WORKER_CONTAINER" python3 -c "$PYTHON_CMD"
 EXIT_CODE=$?
 
 echo ""
