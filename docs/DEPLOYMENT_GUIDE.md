@@ -654,7 +654,7 @@ docker compose exec db psql -U postgres -d aerial_survey \
 - **`.env` 백업은 필수**: `install.sh`는 비밀번호를 랜덤 생성하므로, 기존 `.env`를 잃으면 MinIO 데이터에 접근할 수 없습니다
 - **MinIO 인증 정보 일치**: `.env`의 `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`가 기존과 동일해야 합니다
 - **호스트 경로 일치**: `MINIO_DATA_PATH`, `PROCESSING_DATA_PATH`, `TILES_PATH`가 기존과 동일해야 합니다
-- **엔진 라이선스**: 간편 업그레이드 시 라이선스 볼륨이 유지됩니다. 표준 업그레이드(`down -v`) 시에는 볼륨이 삭제되므로 재활성화가 필요합니다
+- **엔진 라이선스**: 간편 업그레이드 시 라이선스 볼륨이 유지됩니다. 표준 업그레이드(`down -v`) 시에는 볼륨이 삭제되므로 재활성화가 필요합니다. 라이선스 볼륨이 유지된 경우, 다음 처리 시 로컬 검증만 수행하며 서버에 재활성화 요청을 보내지 않습니다
 
 ### DB 스키마 자동 마이그레이션
 
@@ -727,6 +727,9 @@ Metashape 처리가 반복 실패하는 경우, 외부에서 생성한 정사영
 
 ### Metashape 라이선스 오류
 
+처리 시작 시 라이선스가 이미 활성화된 상태이면 서버 호출 없이 로컬 검증만 수행합니다.
+라이선스 오류가 지속될 경우:
+
 ```bash
 # 라이선스 볼륨 초기화
 docker volume rm aerial-survey-manager_metashape-license
@@ -735,6 +738,8 @@ docker compose up -d worker-engine
 # 로그 확인
 docker compose logs worker-engine | grep -i license
 ```
+
+> 상세 내용은 [ADMIN_GUIDE.md](ADMIN_GUIDE.md)의 "Metashape Licensing Management" 섹션을 참고하세요.
 
 ### 데이터베이스 연결 실패
 

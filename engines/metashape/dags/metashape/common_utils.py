@@ -130,52 +130,51 @@ def check_success(output_path):
     print("✅ 모든 작업이 성공했습니다.")
     return True
 
+def _is_license_valid():
+    """
+    Metashape 라이선스가 이미 활성화되어 있는지 로컬에서 확인.
+    서버 호출 없이 로컬 .lic 파일 기반으로 검증합니다.
+    """
+    # Metashape 2.2.0+: License().valid
+    try:
+        lic = Metashape.License()
+        if hasattr(lic, 'valid') and lic.valid:
+            return True
+    except Exception as e:
+        print(f"⚠️ License().valid 확인 중 오류: {e}", flush=True)
+
+    # Fallback: Metashape.app.activated
+    try:
+        if hasattr(Metashape.app, 'activated') and Metashape.app.activated:
+            return True
+    except Exception as e:
+        print(f"⚠️ app.activated 확인 중 오류: {e}", flush=True)
+
+    return False
+
+
 def activate_metashape_license():
     """
     환경 변수의 라이선스 키를 사용하여 Metashape를 활성화하는 함수.
+    이미 활성화된 상태이면 서버에 활성화 요청을 보내지 않습니다.
     """
     license_key = os.getenv("METASHAPE_LICENSE_KEY")
     if not license_key:
         print("ℹ️ METASHAPE_LICENSE_KEY 환경 변수가 설정되지 않았습니다.", flush=True)
         return
 
-    # 1. 라이선스 상태 확인
-    is_activated = False
-    try:
-        # Metashape 2.2.0+ 에서는 .valid 사용
-        if hasattr(Metashape.License(), 'valid') and Metashape.License().valid:
-            is_activated = True
-    except:
-        pass
-    
-    if not is_activated:
-        try:
-            if hasattr(Metashape.app, 'activated') and Metashape.app.activated:
-                is_activated = True
-        except:
-            pass
-
-    if is_activated:
+    # 1. 로컬 라이선스 검증 (서버 호출 없음)
+    if _is_license_valid():
         print("✅ Metashape 라이선스가 이미 활성화되어 있습니다.", flush=True)
         return
 
-    # 2. 라이선스 미활성화 상태인 경우 활성화 프로세스 시작
-    print(f"🔑 Metashape 라이선스 활성화 중...", flush=True)
+    # 2. 라이선스 미활성화 상태 — 서버에 활성화 요청
+    print("🔑 Metashape 라이선스 활성화 중...", flush=True)
 
     try:
-        # 기존 세션 정리 후 활성화
-        try:
-            Metashape.License().deactivate()
-        except:
-            pass
-
         Metashape.License().activate(license_key)
 
-        # 최종 활성화 확인
-        final_valid = getattr(Metashape.License(), 'valid', False)
-        final_app_act = getattr(Metashape.app, 'activated', False)
-
-        if final_valid or final_app_act:
+        if _is_license_valid():
             print("✅ Metashape 라이선스 활성화 성공", flush=True)
         else:
             print("❌ Metashape 라이선스 활성화 실패", flush=True)

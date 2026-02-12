@@ -5,7 +5,7 @@
 ## 디렉토리 구조
 
 - `/engines/odm`: OpenDroneMap 관련 설정 및 커스텀 스크립트가 위치합니다. (Docker 기반으로 동작)
-- `/engines/metashape`: Agisoft Metashape 기반의 고성능 엔진입니다. 전용 GPU 워커를 통해 NVIDIA 가속 연산을 수행하며, 라이선스 영속화 볼륨을 사용합니다.
+- `/engines/metashape`: Agisoft Metashape 기반의 고성능 엔진입니다. 전용 GPU 워커를 통해 NVIDIA 가속 연산을 수행하며, 라이선스 영속화 볼륨을 사용합니다. 처리 시작 시 로컬 라이선스 검증을 먼저 수행하여 이미 활성화된 경우 서버 호출을 건너뜁니다.
 - `/engines/external-engine`: 사용자가 가져온 외부 처리 엔진 코드(FastAPI, Flask 등)가 위치하는 곳입니다.
 
 ## 통합 및 배포 가이드
@@ -117,4 +117,4 @@ docker run --rm aerial-prod-worker-engine:latest \
 > 자세한 내용은 [ADMIN_GUIDE.md](../docs/ADMIN_GUIDE.md)의 "배포 패키지 생성" 섹션 참조
 
 ---
-*Created on 2026-01-27 / Updated on 2026-02-06*
+*Created on 2026-01-27 / Updated on 2026-02-12*
