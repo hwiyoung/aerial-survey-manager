@@ -12,7 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from app.database import async_session
 from app.models.project import Project, Image
 from app.config import get_settings
-from app.services.storage import StorageService
+from app.services.storage import get_storage
 
 settings = get_settings()
 
@@ -73,7 +73,7 @@ async def cleanup_minio_uploads(dry_run: bool = True):
     if dry_run:
         print("(DRY RUN - no files will be deleted)")
 
-    storage = StorageService()
+    storage = get_storage()
 
     # 1. Get all original_paths from DB
     async with async_session() as db:

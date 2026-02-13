@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
-    # MinIO/S3
+    # Storage Backend: "minio" (multi-server) or "local" (single server, no MinIO)
+    STORAGE_BACKEND: str = "minio"
+    LOCAL_STORAGE_PATH: str = "/data/storage"
+
+    # MinIO/S3 (only used when STORAGE_BACKEND=minio)
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"

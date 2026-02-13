@@ -119,7 +119,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     from sqlalchemy.orm import Session
     from app.models.project import Project, ProcessingJob, Image
     from app.services.processing_router import processing_router
-    from app.services.storage import StorageService
+    from app.services.storage import get_storage
     from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
     
     # Use sync database connection for Celery
@@ -149,7 +149,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Download images from storage
-            storage = StorageService()
+            storage = get_storage()
             images = db.query(Image).filter(
                 Image.project_id == project_id,
                 Image.upload_status == "completed",
@@ -524,7 +524,7 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from app.models.project import Image
-    from app.services.storage import StorageService
+    from app.services.storage import get_storage
 
     sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
     engine = create_engine(sync_db_url)
@@ -541,7 +541,7 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
         if image.thumbnail_path and not force:
             return {"status": "skipped", "message": "Thumbnail already exists"}
 
-        storage = StorageService()
+        storage = get_storage()
 
         # Download original
         temp_path = f"/tmp/{image_id}_{image.filename}"
@@ -703,7 +703,7 @@ def delete_source_images(self, project_id: str):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from app.models.project import Project
-    from app.services.storage import StorageService
+    from app.services.storage import get_storage
 
     sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
     db_engine = create_engine(sync_db_url)
@@ -716,7 +716,7 @@ def delete_source_images(self, project_id: str):
         if project.source_deleted:
             return {"status": "skipped", "message": "이미 삭제된 원본 이미지입니다."}
 
-        storage = StorageService()
+        storage = get_storage()
         uploads_prefix = f"projects/{project_id}/uploads/"
         deleted_count = 0
 
@@ -777,7 +777,7 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
     from app.models.project import Project, ProcessingJob
-    from app.services.storage import StorageService
+    from app.services.storage import get_storage
     from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
 
     sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
@@ -904,7 +904,7 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
 
         # Upload to MinIO
         print("📤 MinIO 업로드 중...")
-        storage = StorageService()
+        storage = get_storage()
         cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
         storage.upload_file(str(final_cog_path), cog_object_name, "image/tiff")
         print(f"✓ MinIO 업로드 완료: {cog_object_name}")

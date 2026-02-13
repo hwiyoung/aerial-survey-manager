@@ -465,8 +465,8 @@ async def delete_project(
 
     # Clean up MinIO storage
     try:
-        from app.services.storage import StorageService
-        storage = StorageService()
+        from app.services.storage import get_storage
+        storage = get_storage()
 
         # Delete original uploaded images (stored in uploads/ by TUS)
         # TUS stores files as folders with chunks, so use delete_recursive

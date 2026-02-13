@@ -13,7 +13,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from app.database import async_session
 from app.models.project import Project
-from app.services.storage import StorageService
+from app.services.storage import get_storage
 from app.config import get_settings
 
 settings = get_settings()
@@ -41,7 +41,7 @@ def get_orthophoto_bounds(file_path: str):
     return None
 
 async def recalculate_all_bounds():
-    storage = StorageService()
+    storage = get_storage()
     
     async with async_session() as db:
         result = await db.execute(select(Project).where(Project.ortho_path != None))

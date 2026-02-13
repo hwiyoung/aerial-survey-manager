@@ -10,14 +10,14 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from app.database import async_session
 from app.models.project import Project, Image, ProcessingJob
-from app.services.storage import StorageService
+from app.services.storage import get_storage
 from app.config import get_settings
 
 settings = get_settings()
 
 async def sync_data():
     print("Starting data synchronization...")
-    storage = StorageService()
+    storage = get_storage()
     
     async with async_session() as db:
         # 1. Fetch all projects

@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, ProcessingJob
 from app.auth.jwt import get_current_user, PermissionChecker
-from app.services.storage import StorageService
+from app.services.storage import get_storage
 
 router = APIRouter(prefix="/download", tags=["Download"])
 
@@ -78,7 +78,7 @@ async def download_orthophoto(
         project_result = await db.execute(select(Project).where(Project.id == project_id))
         proj = project_result.scalar_one()
 
-        storage = StorageService()
+        storage = get_storage()
         minio_key = None
 
         if proj.ortho_path and storage.object_exists(proj.ortho_path):
@@ -255,7 +255,7 @@ async def get_download_info(
         # Fallback to MinIO
         project_result = await db.execute(select(Project).where(Project.id == project_id))
         proj = project_result.scalar_one()
-        storage = StorageService()
+        storage = get_storage()
         minio_key = None
         if proj.ortho_path and storage.object_exists(proj.ortho_path):
             minio_key = proj.ortho_path
@@ -312,7 +312,7 @@ async def get_cog_url(
     project = project_result.scalar_one()
     
     if project.ortho_path:
-        storage = StorageService()
+        storage = get_storage()
         if storage.object_exists(project.ortho_path):
             file_size = storage.get_object_size(project.ortho_path)
             # Return S3 URL for TiTiler (GDAL /vsis3/ access)
@@ -356,7 +356,7 @@ async def get_cog_url(
         }
     
     # For MinIO files, return S3 URL for TiTiler
-    storage = StorageService()
+    storage = get_storage()
     object_name = file_path  # Assuming result_path is the MinIO object name
 
     if not storage.object_exists(object_name):
@@ -506,7 +506,7 @@ async def batch_download(
             continue  # Skip projects without orthoimage
         
         # Check if it's a MinIO path or local path
-        storage = StorageService()
+        storage = get_storage()
         source_path = None
         if storage.object_exists(ortho_path):
             # Download from MinIO to temp file
@@ -779,7 +779,7 @@ async def prepare_batch_download(
         if not ortho_path:
             continue
 
-        storage = StorageService()
+        storage = get_storage()
         source_path = None
         if storage.object_exists(ortho_path):
             import tempfile as tf
