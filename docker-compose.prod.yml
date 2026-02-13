@@ -79,6 +79,8 @@ services:
     volumes:
       # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
       - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - ${MINIO_DATA_PATH:-./data}:/data/minio:ro
+      - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
       # 권역 GeoJSON 데이터 (초기 시드용)
       - ./data:/app/data:ro
     depends_on:

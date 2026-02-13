@@ -261,3 +261,10 @@ class RegionalStatsResponse(BaseModel):
     """Regional statistics response."""
     total: int
     data: List[RegionalStats]
+
+
+class StorageStatsResponse(BaseModel):
+    """Per-directory storage statistics."""
+    minio_size: int      # bytes - MinIO data directory
+    processing_size: int # bytes - processing data directory
+    tiles_size: int      # bytes - offline tiles directory

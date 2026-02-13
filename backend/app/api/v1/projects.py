@@ -26,6 +26,7 @@ from app.schemas.project import (
     MonthlyStatsResponse,
     RegionalStats,
     RegionalStatsResponse,
+    StorageStatsResponse,
 )
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.services.eo_parser import EOParserService
@@ -907,3 +908,74 @@ async def get_regional_stats(
     ]
     
     return RegionalStatsResponse(total=total, data=stats_list)
+
+
+_storage_cache: dict = {"data": None, "ts": 0}
+_storage_lock: "asyncio.Lock | None" = None
+
+
+def _get_storage_lock():
+    """Lazy-init asyncio.Lock (must be created inside running event loop)."""
+    import asyncio
+    global _storage_lock
+    if _storage_lock is None:
+        _storage_lock = asyncio.Lock()
+    return _storage_lock
+
+
+def _get_dir_size(path: str) -> int:
+    """Get directory size using du -sb. Returns 0 if path doesn't exist."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["du", "-sb", path],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.split()[0])
+        else:
+            logger.warning("du -sb %s failed (rc=%d): %s", path, result.returncode, result.stderr.strip())
+    except subprocess.TimeoutExpired:
+        logger.warning("du -sb %s timed out (300s)", path)
+    except Exception as e:
+        logger.warning("du -sb %s error: %s", path, e)
+    return 0
+
+
+@router.get("/stats/storage", response_model=StorageStatsResponse)
+async def get_storage_stats(
+    current_user: User = Depends(get_current_user),
+):
+    """Get per-directory storage sizes (MinIO, processing, tiles).
+
+    Results are cached for 5 minutes since du scans can be slow on large directories.
+    """
+    import asyncio
+    import time
+
+    now = time.time()
+    if _storage_cache["data"] and now - _storage_cache["ts"] < 300:
+        return _storage_cache["data"]
+
+    # Prevent concurrent du scans from multiple requests
+    async with _get_storage_lock():
+        # Re-check cache after acquiring lock
+        now = time.time()
+        if _storage_cache["data"] and now - _storage_cache["ts"] < 300:
+            return _storage_cache["data"]
+
+        # Run du -sb in parallel threads (bind mounts from host)
+        minio_size, processing_size, tiles_size = await asyncio.gather(
+            asyncio.to_thread(_get_dir_size, "/data/minio"),
+            asyncio.to_thread(_get_dir_size, "/data/processing"),
+            asyncio.to_thread(_get_dir_size, "/data/tiles"),
+        )
+
+        resp = StorageStatsResponse(
+            minio_size=minio_size,
+            processing_size=processing_size,
+            tiles_size=tiles_size,
+        )
+        _storage_cache["data"] = resp
+        _storage_cache["ts"] = now
+        return resp

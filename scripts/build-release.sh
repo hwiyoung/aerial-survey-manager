@@ -131,6 +131,8 @@ services:
       - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     volumes:
       - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - \${MINIO_DATA_PATH:-./data}:/data/minio:ro
+      - \${TILES_PATH:-/data/tiles}:/data/tiles:ro
       # 권역 GeoJSON 데이터 (초기 시드용)
       - ./data/regions:/app/data:ro
     depends_on:

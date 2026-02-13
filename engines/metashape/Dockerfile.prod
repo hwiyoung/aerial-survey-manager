@@ -106,11 +106,11 @@ COPY --from=builder /app/app /app/app
 # Metashape 스크립트 복사 (바이트코드만 - 소스 코드 보호됨)
 COPY --from=builder /app/engines /app/engines
 
-# 엔트리포인트 스크립트 복사 (라이센스 비활성화를 위한 SIGTERM 핸들러)
+# 엔트리포인트 스크립트 복사 (SIGTERM 시 라이센스 유지, graceful shutdown만 수행)
 COPY engines/metashape/entrypoint.sh /app/engines/metashape/entrypoint.sh
 RUN chmod +x /app/engines/metashape/entrypoint.sh
 
-# 엔트리포인트 설정 (SIGTERM 수신 시 라이센스 비활성화)
+# 엔트리포인트 설정 (오프라인 환경 지원 - 라이센스 비활성화 없음)
 ENTRYPOINT ["/app/engines/metashape/entrypoint.sh"]
 
 

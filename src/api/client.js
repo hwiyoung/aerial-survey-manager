@@ -355,6 +355,10 @@ class ApiClient {
         return this.request('/projects/stats/regional');
     }
 
+    async getStorageStats() {
+        return this.request('/projects/stats/storage');
+    }
+
     // --- COG/Orthoimage ---
     async getCogUrl(projectId) {
         return this.request(`/download/projects/${projectId}/cog-url`);

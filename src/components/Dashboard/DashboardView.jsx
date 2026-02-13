@@ -10,9 +10,26 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 
 
 /**
+ * Format bytes to human-readable size (GB or TB)
+ */
+function formatBytes(bytes) {
+    if (bytes == null || bytes === 0) return '0';
+    const tb = bytes / (1024 ** 4);
+    if (tb >= 1) return tb.toFixed(1);
+    const gb = bytes / (1024 ** 3);
+    return gb.toFixed(1);
+}
+
+function formatBytesUnit(bytes) {
+    if (bytes == null || bytes === 0) return 'GB';
+    const tb = bytes / (1024 ** 4);
+    return tb >= 1 ? 'TB' : 'GB';
+}
+
+/**
  * Enhanced Stats Card for dashboard - larger with more details
  */
-function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, progressLabel, children }) {
+function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, progressLabel, progressColor, children }) {
     return (
         <div className="bg-white rounded-xl p-4 shadow-sm border border-slate-100">
             <div className="flex items-start gap-3">
@@ -36,7 +53,7 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
                 <div className="mt-3 pt-3 border-t border-slate-100">
                     <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                         <div
-                            className="h-full bg-blue-500 rounded-full transition-all"
+                            className={`h-full rounded-full transition-all ${progressColor || 'bg-blue-500'}`}
                             style={{ width: `${Math.min(100, progress)}%` }}
                         />
                     </div>
@@ -55,10 +72,14 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
 /**
  * Stats summary section with 4 key metrics
  */
-function StatsSummary({ stats, isCompact = false }) {
+function StatsSummary({ stats, storageStats, isCompact = false }) {
     const completedCount = stats.completed;
     const totalCount = stats.total || (stats.completed + stats.processing);
-    const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+    // Total storage from API (sum of three dirs)
+    const totalSize = storageStats
+        ? storageStats.minio_size + storageStats.processing_size + storageStats.tiles_size
+        : 0;
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -91,14 +112,38 @@ function StatsSummary({ stats, isCompact = false }) {
                     </div>
                 </DashboardStatsCard>
 
-                {/* 총 데이터 용량 */}
-                <DashboardStatsCard
-                    icon={<HardDrive size={18} />}
-                    value={stats.dataSize || '0'}
-                    unit="GB"
-                    label="정사영상 용량"
-                    subLabel={`총 저장 용량: ${stats.totalStorage} GB`}
-                />
+                {/* 저장 용량 (디렉토리별 실사용량) */}
+                {storageStats ? (
+                    <DashboardStatsCard
+                        icon={<HardDrive size={18} />}
+                        value={formatBytes(totalSize)}
+                        unit={formatBytesUnit(totalSize)}
+                        label="총 저장 용량"
+                    >
+                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">MinIO</span>
+                                <span className="font-medium text-slate-700">{formatBytes(storageStats.minio_size)} {formatBytesUnit(storageStats.minio_size)}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">처리 데이터</span>
+                                <span className="font-medium text-slate-700">{formatBytes(storageStats.processing_size)} {formatBytesUnit(storageStats.processing_size)}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">오프라인 지도</span>
+                                <span className="font-medium text-slate-700">{formatBytes(storageStats.tiles_size)} {formatBytesUnit(storageStats.tiles_size)}</span>
+                            </div>
+                        </div>
+                    </DashboardStatsCard>
+                ) : (
+                    <DashboardStatsCard
+                        icon={<HardDrive size={18} />}
+                        value={stats.dataSize || '0'}
+                        unit="GB"
+                        label="정사영상 용량"
+                        subLabel={`총 저장 용량: ${stats.totalStorage} GB`}
+                    />
+                )}
 
                 {/* 총 원본 사진 */}
                 <DashboardStatsCard
@@ -261,43 +306,45 @@ export default function DashboardView({
     // Statistics data from API
     const [monthlyData, setMonthlyData] = useState([]);
     const [regionalData, setRegionalData] = useState([]);
+    const [storageStats, setStorageStats] = useState(null);
     const [statsLoading, setStatsLoading] = useState(true);
 
-    // Fetch statistics data from API
+    // Fetch statistics data from API (each request independent — one failure doesn't break others)
     useEffect(() => {
         const fetchStats = async () => {
             setStatsLoading(true);
-            try {
-                const [monthlyRes, regionalRes] = await Promise.all([
-                    api.getMonthlyStats(),
-                    api.getRegionalStats()
-                ]);
+            const [monthlyRes, regionalRes, storageRes] = await Promise.allSettled([
+                api.getMonthlyStats(),
+                api.getRegionalStats(),
+                api.getStorageStats(),
+            ]);
 
-                // Transform monthly data for charts
-                const transformedMonthly = monthlyRes.data.map(item => ({
+            // Monthly stats
+            if (monthlyRes.status === 'fulfilled' && monthlyRes.value?.data) {
+                setMonthlyData(monthlyRes.value.data.map(item => ({
                     name: MONTH_NAMES[item.month - 1],
                     value: item.count,
                     completed: item.completed,
                     processing: item.processing
-                }));
-                setMonthlyData(transformedMonthly);
+                })));
+            }
 
-                // Transform regional data for charts (경기 관련 권역 제외 + 퍼센트 재계산)
-                const filteredRegions = regionalRes.data.filter(item => !item.region.includes('경기'));
+            // Regional stats (경기 관련 권역 제외 + 퍼센트 재계산)
+            if (regionalRes.status === 'fulfilled' && regionalRes.value?.data) {
+                const filteredRegions = regionalRes.value.data.filter(item => !item.region.includes('경기'));
                 const filteredTotal = filteredRegions.reduce((sum, item) => sum + item.count, 0);
-                const transformedRegional = filteredRegions.map(item => ({
+                setRegionalData(filteredRegions.map(item => ({
                     name: item.region,
                     value: filteredTotal > 0 ? Math.round((item.count / filteredTotal) * 100) : 0
-                }));
-                setRegionalData(transformedRegional);
-            } catch (error) {
-                console.error('Failed to fetch statistics:', error);
-                // Use empty data on error
-                setMonthlyData([]);
-                setRegionalData([]);
-            } finally {
-                setStatsLoading(false);
+                })));
             }
+
+            // Storage stats
+            if (storageRes.status === 'fulfilled' && storageRes.value?.minio_size !== undefined) {
+                setStorageStats(storageRes.value);
+            }
+
+            setStatsLoading(false);
         };
 
         fetchStats();
@@ -423,7 +470,7 @@ export default function DashboardView({
                         ) : (
                             <>
                                 {/* Stats Summary (4 cards in 2x2 grid) */}
-                                <StatsSummary stats={stats} isCompact={true} />
+                                <StatsSummary stats={stats} storageStats={storageStats} isCompact={true} />
 
                                 {/* Additional Charts */}
                                 <TrendLineChart data={monthlyData} height={180} />
@@ -498,7 +545,7 @@ export default function DashboardView({
                     ) : (
                         <>
                             {/* Stats Summary (4 cards in a row) */}
-                            <StatsSummary stats={stats} isCompact={false} />
+                            <StatsSummary stats={stats} storageStats={storageStats} isCompact={false} />
 
                             {/* Additional Charts */}
                             <TrendLineChart data={monthlyData} height={200} />
