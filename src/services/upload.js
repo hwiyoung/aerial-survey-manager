@@ -2,7 +2,6 @@
  * Resumable Upload Service using tus protocol
  * Handles large file uploads with automatic resume capability
  */
-
 import * as tus from 'tus-js-client';
 
 // Use configured TUS URL or dynamically build from current origin
@@ -217,24 +216,6 @@ export class ResumableUploader {
         if (speed <= 0) return Infinity;
         const remaining = bytesTotal - bytesUploaded;
         return Math.ceil(remaining / speed);
-    }
-
-    /**
-     * Format bytes to human readable string
-     */
-    static formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    /**
-     * Format speed to human readable string
-     */
-    static formatSpeed(bytesPerSecond) {
-        return this.formatBytes(bytesPerSecond) + '/s';
     }
 
     /**

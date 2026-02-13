@@ -72,10 +72,8 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
                 console.log('[TiTiler] COG info for project:', projectId, cogInfo);
 
                 // Build TiTiler tile URL
+                // URL is absolute (s3:// or file://) — pass directly to TiTiler
                 let cogUrl = cogInfo.url;
-                if (cogInfo.local) {
-                    cogUrl = `${window.location.origin}${cogInfo.url}`;
-                }
 
                 // TiTiler XYZ tile endpoint
                 const tiTilerUrl = `/titiler/cog/tiles/WebMercatorQuad/{z}/{x}/{y}@2x.png?url=${encodeURIComponent(cogUrl)}`;
@@ -184,11 +182,8 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
                 const GeoRasterLayer = GeoRasterLayerModule.default;
 
                 // Build full URL for georaster
+                // URL is absolute (s3:// or file://) — pass directly to TiTiler
                 let cogUrl = cogInfo.url;
-                if (cogInfo.local) {
-                    // For local files, build absolute URL with auth header support
-                    cogUrl = `${window.location.origin}${cogInfo.url}`;
-                }
                 console.log('[COG] Loading from URL:', cogUrl);
 
                 setLoadProgress('정사영상 스트리밍 중... (Range Requests)');
@@ -516,6 +511,127 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 }
 
 /**
+ * Header bar with layer controls, legend, and COG status
+ */
+function FootprintMapHeader({
+    showRegions, setShowRegions,
+    showFootprints, setShowFootprints,
+    footprintOpacity, setFootprintOpacity,
+    selectedCogProject, cogLoadStatus, cogError,
+}) {
+    return (
+        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
+            <div>
+                <h3 className="text-sm font-bold text-slate-700">대한민국 전역 처리 현황</h3>
+                <p className="text-xs text-slate-400 mt-0.5">배경지도 및 정사영상 오버레이</p>
+            </div>
+
+            <div className="flex items-center gap-4">
+                {selectedCogProject && (
+                    <div className="flex items-center gap-2">
+                        {cogLoadStatus === 'loading' && (
+                            <span className="text-xs text-blue-600 font-medium flex items-center gap-1">
+                                <span className="animate-pulse">●</span> 정사영상 로딩중...
+                            </span>
+                        )}
+                        {cogLoadStatus === 'loaded' && (
+                            <span className="text-xs text-emerald-600 font-medium">✓ 정사영상 표시됨</span>
+                        )}
+                        {cogLoadStatus === 'error' && (
+                            <span className="text-xs text-red-500 font-medium" title={cogError}>
+                                ✕ 로딩 실패
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                {showFootprints && (
+                    <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-slate-500">영역 투명도</span>
+                        <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={footprintOpacity * 100}
+                            onChange={(e) => setFootprintOpacity(e.target.value / 100)}
+                            className="w-16 h-1 accent-violet-500"
+                        />
+                        <span className="text-xs text-slate-400 w-6">{Math.round(footprintOpacity * 100)}%</span>
+                    </div>
+                )}
+
+                <div className="flex gap-3 text-xs">
+                    <button
+                        onClick={() => setShowFootprints(!showFootprints)}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showFootprints ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}
+                        title="촬영 영역 표시 토글"
+                    >
+                        {showFootprints ? <Eye size={12} /> : <EyeOff size={12} />}
+                        <span>촬영 영역</span>
+                    </button>
+                    <button
+                        onClick={() => setShowRegions(!showRegions)}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showRegions ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}
+                        title="권역 경계 표시 토글"
+                    >
+                        <Layers size={12} />
+                        <span>권역</span>
+                    </button>
+                    <div className="flex items-center gap-1.5">
+                        <div className="w-3 h-3 rounded" style={{ backgroundColor: STATUS_COLORS.completed.fill }}></div>
+                        <span className="text-slate-600">{STATUS_COLORS.completed.label}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                        <div className="w-3 h-3 rounded" style={{ backgroundColor: STATUS_COLORS.processing.fill }}></div>
+                        <span className="text-slate-600">{STATUS_COLORS.processing.label}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Popup for selecting among overlapping projects
+ */
+function OverlapSelectionPopup({ overlapProjects, selectedProjectId, onProjectClick, onClose }) {
+    if (!overlapProjects) return null;
+    return (
+        <Popup
+            position={overlapProjects.latlng}
+            onClose={onClose}
+            minWidth={200}
+            closeOnClick={false}
+        >
+            <div className="p-1">
+                <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider border-b pb-1">프로젝트 선택 ({overlapProjects.projects.length})</h4>
+                <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+                    {overlapProjects.projects.map(p => (
+                        <button
+                            key={p.id}
+                            onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (onProjectClick) onProjectClick(p);
+                                onClose();
+                            }}
+                            onMouseDown={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                            }}
+                            className={`w-full text-left px-3 py-2 rounded text-sm transition-colors flex items-center justify-between group ${p.id === selectedProjectId ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}
+                        >
+                            <span className="truncate font-medium">{p.title}</span>
+                            <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 text-slate-400" />
+                        </button>
+                    ))}
+                </div>
+            </div>
+        </Popup>
+    );
+}
+
+/**
  * Footprint Map Component
  * Shows real map with project footprints as colored rectangles
  */
@@ -659,78 +775,13 @@ export function FootprintMap({
 
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${isFlexHeight ? 'flex flex-col h-full' : ''}`}>
-            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
-                <div>
-                    <h3 className="text-sm font-bold text-slate-700">대한민국 전역 처리 현황</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">배경지도 및 정사영상 오버레이</p>
-                </div>
-
-                {/* Layer Controls */}
-                <div className="flex items-center gap-4">
-                    {/* COG Status indicator */}
-                    {selectedCogProject && (
-                        <div className="flex items-center gap-2">
-                            {cogLoadStatus === 'loading' && (
-                                <span className="text-xs text-blue-600 font-medium flex items-center gap-1">
-                                    <span className="animate-pulse">●</span> 정사영상 로딩중...
-                                </span>
-                            )}
-                            {cogLoadStatus === 'loaded' && (
-                                <span className="text-xs text-emerald-600 font-medium">✓ 정사영상 표시됨</span>
-                            )}
-                            {cogLoadStatus === 'error' && (
-                                <span className="text-xs text-red-500 font-medium" title={cogError}>
-                                    ✕ 로딩 실패
-                                </span>
-                            )}
-                        </div>
-                    )}
-
-                    {/* Footprint Opacity Control */}
-                    {showFootprints && (
-                        <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-slate-500">영역 투명도</span>
-                            <input
-                                type="range"
-                                min="0"
-                                max="100"
-                                value={footprintOpacity * 100}
-                                onChange={(e) => setFootprintOpacity(e.target.value / 100)}
-                                className="w-16 h-1 accent-violet-500"
-                            />
-                            <span className="text-xs text-slate-400 w-6">{Math.round(footprintOpacity * 100)}%</span>
-                        </div>
-                    )}
-
-                    {/* Legend */}
-                    <div className="flex gap-3 text-xs">
-                        <button
-                            onClick={() => setShowFootprints(!showFootprints)}
-                            className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showFootprints ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}
-                            title="촬영 영역 표시 토글"
-                        >
-                            {showFootprints ? <Eye size={12} /> : <EyeOff size={12} />}
-                            <span>촬영 영역</span>
-                        </button>
-                        <button
-                            onClick={() => setShowRegions(!showRegions)}
-                            className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showRegions ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}
-                            title="권역 경계 표시 토글"
-                        >
-                            <Layers size={12} />
-                            <span>권역</span>
-                        </button>
-                        <div className="flex items-center gap-1.5">
-                            <div className="w-3 h-3 rounded" style={{ backgroundColor: STATUS_COLORS.completed.fill }}></div>
-                            <span className="text-slate-600">{STATUS_COLORS.completed.label}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                            <div className="w-3 h-3 rounded" style={{ backgroundColor: STATUS_COLORS.processing.fill }}></div>
-                            <span className="text-slate-600">{STATUS_COLORS.processing.label}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <FootprintMapHeader
+                showRegions={showRegions} setShowRegions={setShowRegions}
+                showFootprints={showFootprints} setShowFootprints={setShowFootprints}
+                footprintOpacity={footprintOpacity} setFootprintOpacity={setFootprintOpacity}
+                selectedCogProject={selectedCogProject}
+                cogLoadStatus={cogLoadStatus} cogError={cogError}
+            />
 
             <div className={`${isFlexHeight ? 'flex-1' : ''} ${hoveredProjectId ? 'project-hovered' : ''}`} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0 }}>
                 <MapContainer
@@ -899,39 +950,12 @@ export function FootprintMap({
                     })}
 
                     {/* Multiple Project Selection Popup */}
-                    {overlapProjects && (
-                        <Popup
-                            position={overlapProjects.latlng}
-                            onClose={() => setOverlapProjects(null)}
-                            minWidth={200}
-                            closeOnClick={false}
-                        >
-                            <div className="p-1">
-                                <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider border-b pb-1">프로젝트 선택 ({overlapProjects.projects.length})</h4>
-                                <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
-                                    {overlapProjects.projects.map(p => (
-                                        <button
-                                            key={p.id}
-                                            onClick={(e) => {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                if (onProjectClick) onProjectClick(p);
-                                                setOverlapProjects(null);
-                                            }}
-                                            onMouseDown={(e) => {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                            }}
-                                            className={`w-full text-left px-3 py-2 rounded text-sm transition-colors flex items-center justify-between group ${p.id === selectedProjectId ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-700'}`}
-                                        >
-                                            <span className="truncate font-medium">{p.title}</span>
-                                            <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 text-slate-400" />
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        </Popup>
-                    )}
+                    <OverlapSelectionPopup
+                        overlapProjects={overlapProjects}
+                        selectedProjectId={selectedProjectId}
+                        onProjectClick={onProjectClick}
+                        onClose={() => setOverlapProjects(null)}
+                    />
                 </MapContainer>
             </div >
         </div >

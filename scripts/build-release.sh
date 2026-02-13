@@ -222,6 +222,7 @@ services:
       - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     volumes:
       - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
+      - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
     depends_on:
       - redis
     networks:

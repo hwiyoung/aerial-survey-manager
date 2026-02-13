@@ -265,6 +265,7 @@ class RegionalStatsResponse(BaseModel):
 
 class StorageStatsResponse(BaseModel):
     """Per-directory storage statistics."""
-    minio_size: int      # bytes - MinIO data directory
+    storage_size: int    # bytes - storage directory (local or MinIO)
     processing_size: int # bytes - processing data directory
     tiles_size: int      # bytes - offline tiles directory
+    storage_backend: str = "minio"  # "local" or "minio"

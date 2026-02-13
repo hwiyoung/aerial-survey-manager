@@ -73,13 +73,14 @@ COG 변환 시 **원본 정사영상의 해상도(GSD)가 그대로 유지**됩�
 gdal_translate \
   -of COG \
   -co COMPRESS=LZW \
-  -co BLOCKSIZE=256 \
+  -co BLOCKSIZE=1024 \
   -co OVERVIEW_RESAMPLING=AVERAGE \
   -co BIGTIFF=YES \
   result.tif result_cog.tif
 ```
 
 > ⚠️ 이전에는 `TILING_SCHEME=GoogleMapsCompatible` 옵션이 있어 GSD가 Google Maps 타일 스킴에 맞게 변경되었으나, 2026-02-04부터 제거되어 원본 해상도를 유지합니다.
+> `BLOCKSIZE=1024`는 TiTiler 타일 요청 성능 최적화를 위해 기본값(256)에서 변경되었습니다 (2026-02-13).
 
 ## 배포 패키지 빌드 (2026-02-06)
 
@@ -117,4 +118,4 @@ docker run --rm aerial-prod-worker-engine:latest \
 > 자세한 내용은 [ADMIN_GUIDE.md](../docs/ADMIN_GUIDE.md)의 "배포 패키지 생성" 섹션 참조
 
 ---
-*Created on 2026-01-27 / Updated on 2026-02-13*
+*Created on 2026-01-27 / Updated on 2026-02-14*

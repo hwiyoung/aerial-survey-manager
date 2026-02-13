@@ -87,7 +87,8 @@ docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 ```bash
 # 예: /data 드라이브에 설정
 sudo mkdir -p /data/aerial-survey/processing
-sudo mkdir -p /data/aerial-survey/minio
+sudo mkdir -p /data/aerial-survey/storage    # 로컬 모드 스토리지
+# sudo mkdir -p /data/aerial-survey/minio   # MinIO 모드 스토리지
 sudo chown -R $USER:$USER /data/aerial-survey
 ```
 
@@ -124,7 +125,7 @@ cp .env.production.example .env
 nano .env
 
 # 서비스 시작
-docker compose -f docker-compose.prod.yml up -d
+docker compose up -d
 ```
 
 ---
@@ -142,29 +143,35 @@ POSTGRES_PASSWORD=your-very-secure-db-password-here
 # JWT 서명 키 (32자 이상, 랜덤 문자열)
 # 생성 방법: openssl rand -hex 32
 JWT_SECRET_KEY=your-super-secret-jwt-key-minimum-32-characters
-
-# MinIO 접근 키
-MINIO_ACCESS_KEY=your-minio-access-key
-MINIO_SECRET_KEY=your-very-secure-minio-secret-key
 ```
 
-### 필수 설정 (네트워크)
+### 필수 설정 (스토리지)
 
 ```bash
-# 브라우저에서 접근하는 주소 (도메인 또는 IP:포트)
-# 예: app.example.com 또는 192.168.1.100:8081
+# 스토리지 백엔드 선택: "local" (단일 서버) 또는 "minio" (S3 호환)
+STORAGE_BACKEND=local
+
+# 처리 데이터 경로 (1TB 이상 권장)
+PROCESSING_DATA_PATH=/data/aerial-survey/processing
+```
+
+**로컬 모드** (`STORAGE_BACKEND=local`):
+```bash
+# 파일 저장 경로 (1TB 이상 권장)
+LOCAL_STORAGE_PATH=/data/aerial-survey/storage
+```
+
+**MinIO 모드** (`STORAGE_BACKEND=minio`):
+```bash
+MINIO_ACCESS_KEY=your-minio-access-key
+MINIO_SECRET_KEY=your-very-secure-minio-secret-key
+MINIO_DATA_PATH=/data/aerial-survey/minio
+
+# 브라우저에서 MinIO에 접근하는 주소 (presigned URL 생성용)
 MINIO_PUBLIC_ENDPOINT=your-domain.com
 ```
 
-### 필수 설정 (저장소)
-
-```bash
-# 처리 데이터 경로 (1TB 이상 권장)
-PROCESSING_DATA_PATH=/data/aerial-survey/processing
-
-# MinIO 저장소 경로 (1TB 이상 권장)
-MINIO_DATA_PATH=/data/aerial-survey/minio
-```
+> 단일 서버 환경에서는 **로컬 모드**를 권장합니다. MinIO 없이 운영 가능하며 파일 복사 오버헤드가 없습니다.
 
 ### 필수 설정 (라이선스)
 
@@ -279,7 +286,7 @@ sudo netplan apply
 | 8081 | Nginx (HTTP) | O (SSL 미사용 시) |
 | 5434 | PostgreSQL | X (내부만) |
 | 6380 | Redis | X (내부만) |
-| 9002-9003 | MinIO | X (내부만) |
+| 9002-9003 | MinIO (MinIO 모드만) | X (내부만) |
 | 5555 | Flower | X (관리자만) |
 
 ```bash
@@ -390,7 +397,7 @@ curl http://localhost:8081/health
 # 데이터베이스 연결 확인
 docker compose exec db pg_isready -U postgres
 
-# MinIO 상태 확인
+# MinIO 상태 확인 (MinIO 모드만 해당)
 curl http://localhost:9002/minio/health/live
 
 # GPU 확인
@@ -418,7 +425,7 @@ docker compose exec worker-engine nvidia-smi
 | 데이터 | 저장 위치 | 유형 | 업그레이드 시 처리 |
 |--------|-----------|------|-------------------|
 | DB (프로젝트, 사용자 등) | Docker named volume (`_pgdata`) | Docker 볼륨 | **COMPOSE_PROJECT_NAME 고정 시 자동 유지** |
-| 업로드 이미지, 정사영상 | `MINIO_DATA_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
+| 업로드 이미지, 정사영상 | `LOCAL_STORAGE_PATH` 또는 `MINIO_DATA_PATH` | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
 | 처리 중간 파일 | `PROCESSING_DATA_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
 | 오프라인 타일 | `TILES_PATH` 호스트 경로 | 호스트 디렉토리 | 경로 동일하면 자동 유지 |
 | 엔진 라이선스 | Docker named volume (`_engine-license`) | Docker 볼륨 | **COMPOSE_PROJECT_NAME 고정 시 자동 유지** |
@@ -426,30 +433,38 @@ docker compose exec worker-engine nvidia-smi
 > **핵심**: `COMPOSE_PROJECT_NAME=aerial-survey-manager`가 `.env`에 설정되어 있으면, Docker named volume의 접두사가 폴더명과 무관하게 고정됩니다.
 > 따라서 새 패키지 폴더에서 `.env`만 복사하면 **DB 볼륨이 자동으로 재사용**됩니다.
 
-#### 프로젝트당 데이터 저장 위치 (2026-02-12 업데이트)
+#### 프로젝트당 데이터 저장 위치 (2026-02-13 업데이트)
 
 하나의 프로젝트가 생성~처리 완료되면 다음 데이터가 생성됩니다:
 
+**로컬 모드** (`STORAGE_BACKEND=local`):
+```
+스토리지 (LOCAL_STORAGE_PATH)
+├── images/{id}/*.tif                  <- 원본 이미지 (업로드 시)
+├── projects/{id}/thumbnails/*.jpg     <- 썸네일 (자동 생성)
+└── projects/{id}/ortho/result_cog.tif <- 정사영상 COG (처리 완료 시)
+```
+
+**MinIO 모드** (`STORAGE_BACKEND=minio`):
 ```
 MinIO (MINIO_DATA_PATH)
-├── projects/{id}/uploads/*.tif       ← 원본 이미지 (업로드 시)
-├── projects/{id}/thumbnails/*.jpg    ← 썸네일 (업로드 시 자동 생성)
-└── projects/{id}/ortho/result_cog.tif ← 정사영상 COG (처리 완료 시)
-
-로컬 (PROCESSING_DATA_PATH)
-└── processing/{id}/
-    ├── .work/status.json              ← 처리 상태 (진행률, GSD)
-    ├── .work/.processing.log          ← 처리 로그
-    └── (output/ 디렉토리는 처리 후 삭제됨)
-
-DB (Docker volume)
-├── projects 테이블                    ← 프로젝트 메타데이터, bounds, area, region
-├── processing_jobs 테이블             ← 처리 이력, GSD, checksum
-└── images 테이블                      ← 이미지 목록, 업로드 상태
+├── projects/{id}/uploads/*.tif        <- 원본 이미지 (업로드 시)
+├── projects/{id}/thumbnails/*.jpg     <- 썸네일 (자동 생성)
+└── projects/{id}/ortho/result_cog.tif <- 정사영상 COG (처리 완료 시)
 ```
 
-> **참고**: v1.1.0부터 처리 완료 후 로컬에는 `.work/` 내 상태 파일만 남습니다.
-> 정사영상 COG는 MinIO에만 보관되며, 다운로드/타일 서빙 시 MinIO에서 직접 제공합니다.
+**공통**:
+```
+처리 데이터 (PROCESSING_DATA_PATH)
+└── processing/{id}/
+    ├── .work/status.json              <- 처리 상태 (진행률, GSD)
+    └── .work/.processing.log          <- 처리 로그
+
+DB (Docker volume)
+├── projects 테이블                    <- 프로젝트 메타데이터, bounds, area, region
+├── processing_jobs 테이블             <- 처리 이력, GSD, checksum
+└── images 테이블                      <- 이미지 목록, 업로드 상태
+```
 
 ### 업그레이드 방식 선택
 
@@ -663,9 +678,10 @@ docker compose exec db psql -U postgres -d aerial_survey \
 
 ### 주의사항
 
-- **`.env` 백업은 필수**: `install.sh`는 비밀번호를 랜덤 생성하므로, 기존 `.env`를 잃으면 MinIO 데이터에 접근할 수 없습니다
-- **MinIO 인증 정보 일치**: `.env`의 `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`가 기존과 동일해야 합니다
-- **호스트 경로 일치**: `MINIO_DATA_PATH`, `PROCESSING_DATA_PATH`, `TILES_PATH`가 기존과 동일해야 합니다
+- **`.env` 백업은 필수**: `install.sh`는 비밀번호를 랜덤 생성하므로, 기존 `.env`를 잃으면 데이터에 접근할 수 없습니다
+- **MinIO 인증 정보 일치** (MinIO 모드): `.env`의 `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`가 기존과 동일해야 합니다
+- **호스트 경로 일치**: `LOCAL_STORAGE_PATH`(또는 `MINIO_DATA_PATH`), `PROCESSING_DATA_PATH`, `TILES_PATH`가 기존과 동일해야 합니다
+- **스토리지 백엔드 변경 주의**: `STORAGE_BACKEND`를 변경하면 기존 파일에 접근할 수 없습니다. 마이그레이션이 필요합니다
 - **엔진 라이선스**: 간편 업그레이드 시 라이선스 볼륨이 유지됩니다. 표준 업그레이드(`down -v`) 시에는 볼륨이 삭제되므로 재활성화가 필요합니다. 라이선스 볼륨이 유지된 경우, 다음 처리 시 로컬 검증만 수행하며 서버에 재활성화 요청을 보내지 않습니다
 
 ### DB 스키마 자동 마이그레이션
@@ -713,7 +729,7 @@ sudo apt-get install --reinstall nvidia-container-toolkit
 sudo systemctl restart docker
 ```
 
-### MinIO 업로드 실패 (507 Storage Full)
+### MinIO 업로드 실패 (507 Storage Full) — MinIO 모드만 해당
 
 ```bash
 # 디스크 용량 확인

@@ -119,9 +119,6 @@ async def tus_webhook(
     upload_info = event_data.get("Upload", {})
     metadata = upload_info.get("MetaData", {})
     
-    print(f"TUS Webhook RAW: {data}")  # Full payload
-    print(f"TUS Webhook: {event_type} - {metadata}") # DEBUG LOG
-    
     if event_type == "pre-create":
         # Check if this is a partial upload (from parallel uploads)
         is_partial = upload_info.get("IsPartial", False)
@@ -479,6 +476,16 @@ async def init_multipart_upload(
     s3_service = None if is_local else _get_s3_multipart_service()
 
     for file_info in request.files:
+        # Sanitize filename: prevent path traversal
+        import os
+        safe_filename = os.path.basename(file_info.filename)
+        if not safe_filename or safe_filename.startswith(".") or ".." in file_info.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filename: {file_info.filename}",
+            )
+        file_info.filename = safe_filename
+
         # Create or update image record
         existing_result = await db.execute(
             select(Image).where(
@@ -518,7 +525,7 @@ async def init_multipart_upload(
             offset = 0
             while offset < file_info.size:
                 end = min(offset + part_size, file_info.size) - 1
-                url = f"/api/v1/upload/projects/{project_id}/local/chunk?upload_id={upload_id}&part={part_number}&key={object_key}"
+                url = f"/api/v1/upload/projects/{project_id}/local/chunk?upload_id={upload_id}&part={part_number}"
                 parts.append(PartInfo(
                     part_number=part_number,
                     presigned_url=url,
@@ -586,6 +593,19 @@ async def complete_multipart_upload(
 
     for upload in request.uploads:
         try:
+            # Validate upload_id format
+            try:
+                uuid_mod.UUID(upload.upload_id)
+            except ValueError:
+                failed.append({"filename": upload.filename, "error": "Invalid upload_id"})
+                continue
+
+            # Validate object_key belongs to this project (prevent cross-project writes)
+            expected_prefix = f"images/{project_id}/"
+            if not upload.object_key.startswith(expected_prefix) or ".." in upload.object_key:
+                failed.append({"filename": upload.filename, "error": "Invalid object_key for this project"})
+                continue
+
             if is_local:
                 # Local mode: merge chunks and move to storage
                 import shutil
@@ -688,6 +708,19 @@ async def abort_multipart_upload(
 
     for upload in request.uploads:
         try:
+            # Validate upload_id format
+            try:
+                uuid_mod.UUID(upload.upload_id)
+            except ValueError:
+                errors.append({"filename": upload.filename, "error": "Invalid upload_id"})
+                continue
+
+            # Validate object_key belongs to this project
+            expected_prefix = f"images/{project_id}/"
+            if not upload.object_key.startswith(expected_prefix) or ".." in upload.object_key:
+                errors.append({"filename": upload.filename, "error": "Invalid object_key for this project"})
+                continue
+
             if is_local:
                 # Local mode: clean up staging directory
                 import shutil
@@ -739,7 +772,6 @@ async def upload_local_chunk(
     project_id: UUID,
     upload_id: str,
     part: int,
-    key: str,
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
@@ -749,6 +781,21 @@ async def upload_local_chunk(
     Used instead of S3 presigned URL uploads when STORAGE_BACKEND=local.
     The URL with query params is returned by init_multipart_upload.
     """
+    # Validate upload_id is a valid UUID (prevents path traversal)
+    try:
+        uuid_mod.UUID(upload_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid upload_id format",
+        )
+
+    if part < 1 or part > 10000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid part number",
+        )
+
     staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload_id
     if not staging_dir.exists():
         raise HTTPException(

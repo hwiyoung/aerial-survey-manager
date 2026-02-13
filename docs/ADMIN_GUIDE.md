@@ -105,7 +105,100 @@ cat scripts/build-release.sh | grep "profile engine"
 
 ---
 
+## 💾 스토리지 백엔드 선택 (2026-02-13)
+
+### 1. 개요
+
+`STORAGE_BACKEND` 환경변수로 파일 저장 방식을 선택합니다:
+
+| 모드 | 환경변수 | 설명 | 권장 환경 |
+|------|---------|------|----------|
+| **로컬** | `STORAGE_BACKEND=local` | 로컬 디스크에 직접 저장 | 단일 서버, 오프라인 환경 |
+| **MinIO** | `STORAGE_BACKEND=minio` | MinIO(S3 호환)에 저장 | 멀티 서버, 클라우드 환경 |
+
+### 2. 로컬 모드
+
+로컬 디스크에 파일을 직접 저장합니다. MinIO 서비스가 불필요하여 설치/운영이 간편합니다.
+
+```bash
+# .env 설정
+STORAGE_BACKEND=local
+LOCAL_STORAGE_PATH=/data/storage    # 파일 저장 경로 (1TB 이상 권장)
+```
+
+**디렉토리 구조** (`LOCAL_STORAGE_PATH` 기준):
+```
+/data/storage/
+├── images/{project_id}/            <- 원본 이미지
+├── projects/{project_id}/
+│   ├── thumbnails/*.jpg            <- 썸네일
+│   └── ortho/result_cog.tif        <- 정사영상 COG
+└── .uploads/{upload_id}/           <- 업로드 임시 파일 (완료 후 삭제)
+```
+
+**장점**:
+- 처리 시 파일 복사 없이 symlink 사용 (I/O 대폭 절감)
+- COG 결과물을 별도 업로드 없이 직접 이동 (move)
+- TiTiler가 로컬 파일을 직접 읽음 (네트워크 오버헤드 제거)
+- MinIO 서비스 불필요 (컨테이너 수 감소)
+
+**제한사항**:
+- 단일 서버에서만 사용 가능 (멀티 서버 불가)
+
+### 3. MinIO 모드
+
+기존 방식으로, S3 호환 오브젝트 스토리지(MinIO)에 저장합니다.
+
+```bash
+# .env 설정
+STORAGE_BACKEND=minio
+MINIO_ACCESS_KEY=your-access-key
+MINIO_SECRET_KEY=your-secret-key
+MINIO_DATA_PATH=/data/minio
+```
+
+### 4. Docker Compose 프로필
+
+MinIO 서비스는 Docker Compose 프로필로 선택적으로 실행됩니다:
+
+```bash
+# 로컬 모드 (MinIO 없이)
+COMPOSE_PROFILES=engine docker compose up -d
+
+# MinIO 모드 (MinIO 포함)
+COMPOSE_PROFILES=engine,minio docker compose up -d
+```
+
+> 배포 패키지(`docker-compose.yml`)에서 기본 `STORAGE_BACKEND`는 `local`입니다.
+> 개발 환경에서 기본값은 `minio`입니다.
+
+### 5. 워커 아키텍처 (2026-02-13 업데이트)
+
+시스템은 두 개의 Celery 워커를 사용합니다:
+
+| 워커 | 큐 | 역할 | GPU |
+|------|-----|------|-----|
+| **worker-engine** | `metashape` | 영상 처리 (Metashape) **전용** | ✅ |
+| **celery-worker** | `celery` | 처리 외 모든 태스크 | ❌ |
+
+**celery-worker가 처리하는 태스크**:
+- `generate_thumbnail` — 썸네일 생성
+- `regenerate_missing_thumbnails` — 누락된 썸네일 일괄 생성
+- `delete_project_data` — 프로젝트 로컬 데이터 삭제
+- `save_eo_metadata` — EO 메타데이터 파일 저장
+- `delete_source_images` — 원본 이미지 스토리지에서 삭제
+- `inject_external_cog` — 외부 COG 삽입
+
+**worker-engine이 처리하는 태스크**:
+- `process_orthophoto_metashape` — Metashape 처리 (GPU 필요)
+
+> 처리 엔진(worker-engine)은 **영상 처리만** 담당합니다. 파일 관리, 썸네일, COG 삽입 등은 모두 celery-worker에서 수행됩니다.
+
+---
+
 ## 💾 MinIO 저장소 관리
+
+> 이 섹션은 **`STORAGE_BACKEND=minio` 모드에만** 해당합니다.
 
 ### 1. 저장소 위치 설정의 중요성
 
@@ -220,20 +313,31 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 
 > 💡 **팁**: 항공 이미지 1장당 약 50~200MB, 프로젝트당 수백~수천 장을 업로드하므로, 여유롭게 TB 단위 스토리지를 확보하는 것이 좋습니다.
 
-### 7. 프로젝트 데이터 라이프사이클 (2026-02-12 업데이트)
+### 7. 프로젝트 데이터 라이프사이클 (2026-02-13 업데이트)
 
 #### 프로젝트 생성~처리 시 저장되는 데이터
+
+**MinIO 모드** (`STORAGE_BACKEND=minio`):
 
 | 단계 | 위치 | 경로 | 설명 |
 |------|------|------|------|
 | 이미지 업로드 | MinIO | `projects/{id}/uploads/*.tif` | 원본 이미지 |
 | 썸네일 생성 | MinIO | `projects/{id}/thumbnails/*.jpg` | 썸네일 (자동) |
-| 처리 완료 | MinIO | `projects/{id}/ortho/result_cog.tif` | 정사영상 COG (**유일한 결과물**) |
+| 처리 완료 | MinIO | `projects/{id}/ortho/result_cog.tif` | 정사영상 COG |
 | 처리 상태 | 로컬 | `processing/{id}/.work/status.json` | 진행률, GSD |
 | 처리 로그 | 로컬 | `processing/{id}/.work/.processing.log` | 상세 로그 |
 
-> **v1.1.0 변경**: 처리 완료 후 로컬에는 `.work/` 내 상태 파일만 남습니다.
-> 정사영상 COG는 MinIO에만 보관되며, `result.tif`(중간 산출물)는 MinIO에 업로드하지 않습니다.
+**로컬 모드** (`STORAGE_BACKEND=local`):
+
+| 단계 | 위치 | 경로 | 설명 |
+|------|------|------|------|
+| 이미지 업로드 | 로컬 스토리지 | `images/{id}/*.tif` | 원본 이미지 |
+| 썸네일 생성 | 로컬 스토리지 | `projects/{id}/thumbnails/*.jpg` | 썸네일 (자동) |
+| 처리 완료 | 로컬 스토리지 | `projects/{id}/ortho/result_cog.tif` | 정사영상 COG |
+| 처리 상태 | 처리 디렉토리 | `processing/{id}/.work/status.json` | 진행률, GSD |
+| 처리 로그 | 처리 디렉토리 | `processing/{id}/.work/.processing.log` | 상세 로그 |
+
+> **로컬 모드 장점**: 처리 시 이미지를 복사하지 않고 symlink으로 참조하며, COG 결과물은 직접 이동(move)합니다.
 
 #### 프로젝트 삭제 시 자동 정리
 
@@ -242,9 +346,9 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 | `images/{project_id}/` | S3 Multipart로 업로드된 원본 이미지 | API |
 | `uploads/{upload_id}/` | TUS로 업로드된 원본 이미지 (레거시) | API |
 | `projects/{project_id}/` | 썸네일, 정사영상 결과물 | API |
-| `/data/processing/{project_id}/` | 로컬 처리 캐시 | **worker-engine (Celery)** |
+| `/data/processing/{project_id}/` | 로컬 처리 캐시 | **celery-worker (Celery)** |
 
-> ⚠️ 로컬 처리 데이터(`/data/processing/`)는 worker-engine이 root 권한으로 생성하므로, 삭제도 Celery 태스크(`delete_project_data`)를 통해 worker-engine에서 수행합니다. API(appuser)는 권한 부족으로 직접 삭제할 수 없습니다.
+> ⚠️ 로컬 처리 데이터(`/data/processing/`)는 worker-engine이 root 권한으로 생성하므로, 삭제는 Celery 태스크(`delete_project_data`)를 통해 celery-worker에서 수행합니다.
 
 ### 8. 원본 이미지 삭제 (2026-02-12)
 
@@ -255,18 +359,18 @@ docker exec aerial-survey-manager-minio-1 mc ls local/aerial-survey/
 
 1. 처리 완료된 프로젝트의 상세 패널(InspectorPanel)에서 원본 이미지 영역의 **삭제 버튼** 클릭
 2. 확인 다이얼로그에서 **삭제** 선택
-3. Celery 태스크가 비동기로 실행되어 MinIO에서 원본 이미지 + 썸네일 삭제
+3. Celery 태스크가 비동기로 실행되어 스토리지에서 원본 이미지 + 썸네일 삭제
 
 #### 삭제되는 데이터
 
 | 경로 | 설명 |
 |------|------|
-| `projects/{id}/uploads/` | 원본 이미지 (수~수십 GB) |
+| `images/{id}/` | 원본 이미지 (수~수십 GB) |
 | `projects/{id}/thumbnails/` | 썸네일 (수~수백 MB) |
 
 #### 삭제 후 영향
 
-- 프로젝트의 **정사영상(COG)**은 유지됩니다 (MinIO `ortho/result_cog.tif`)
+- 프로젝트의 **정사영상(COG)**은 유지됩니다 (`projects/{id}/ortho/result_cog.tif`)
 - 프로젝트의 **메타데이터**(bounds, area, GSD 등)는 유지됩니다
 - **재처리 불가**: 원본 이미지가 삭제되면 해당 프로젝트는 재처리할 수 없습니다
 - DB에 `source_deleted = true`가 기록되어 UI에서 삭제 상태를 표시합니다
@@ -441,7 +545,7 @@ x-logging-worker: &worker-logging
 
 | 서비스 유형 | 로그 설정 | 최대 용량 | 적용 대상 |
 |------------|---------|----------|---------|
-| 기본 | `*default-logging` | 30MB | frontend, api, celery-beat, db, redis, minio, nginx, flower |
+| 기본 | `*default-logging` | 30MB | frontend, api, celery-worker, celery-beat, db, redis, minio, nginx, flower |
 | 처리 워커 | `*worker-logging` | 250MB | worker-engine, worker-odm, tusd |
 
 > 💡 **팁**: 처리 워커는 이미지 처리 시 상세한 로그를 남기므로, 오류 분석을 위해 더 큰 로그 용량을 확보합니다.
@@ -700,7 +804,7 @@ POST /api/v1/processing/projects/{project_id}/start?force=true
 ### 1. 처리 디렉토리 구조 (2026-02-12 업데이트)
 
 처리 중간 산출물은 숨김 폴더(`.work/`)에 저장됩니다.
-처리 완료 후 정사영상 COG는 **MinIO에만** 보관되며, 로컬에는 상태 파일만 남습니다:
+처리 완료 후 정사영상 COG는 **스토리지에만** 보관되며(MinIO 모드: MinIO, 로컬 모드: `LOCAL_STORAGE_PATH`), 처리 디렉토리에는 상태 파일만 남습니다:
 
 ```
 /data/processing/{project-id}/
@@ -709,7 +813,7 @@ POST /api/v1/processing/projects/{project_id}/start?force=true
     ├── status.json          ← 단계별 진행률 + result_gsd (유지)
     ├── .processing.log      ← 상세 처리 로그 (유지)
     ├── result.tif            ← (COG 변환 후 즉시 삭제)
-    ├── result_cog.tif        ← (MinIO 업로드 후 삭제)
+    ├── result_cog.tif        ← (스토리지 업로드/이동 후 삭제)
     ├── project.psx           ← (성공 시 삭제)
     └── project.files/        ← (조건부 삭제)
 ```
@@ -724,12 +828,12 @@ POST /api/v1/processing/projects/{project_id}/start?force=true
 
 **정리 정책**:
 
-| 처리 결과 | 로컬 파일 | MinIO | 설명 |
-|-----------|----------|-------|------|
-| 성공 | `.work/status.json`, `.processing.log`만 유지 | `ortho/result_cog.tif` 업로드됨 | 로컬 COG/result.tif 삭제 |
+| 처리 결과 | 처리 디렉토리 | 스토리지 | 설명 |
+|-----------|-------------|---------|------|
+| 성공 | `.work/status.json`, `.processing.log`만 유지 | `ortho/result_cog.tif` 저장됨 | 처리 디렉토리의 COG/result.tif 삭제 |
 | 실패 | `.work/` 모든 파일 보존 | 없음 | 디버깅용 |
 
-> **v1.1.0 변경**: 이전에는 `output/result_cog.tif`가 로컬에 남았지만, 이제 MinIO 업로드 완료 후 로컬 COG도 삭제됩니다.
+> **v1.1.0 변경**: 이전에는 `output/result_cog.tif`가 처리 디렉토리에 남았지만, 이제 스토리지 저장 완료 후 삭제됩니다.
 > 이전 버전에서 남아있는 로컬 COG는 `./scripts/cleanup-storage.sh`로 정리할 수 있습니다.
 
 ### 2. 처리 로그 확인
@@ -833,7 +937,7 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 |------|----------|
 | **COG 파일** | 유효한 GeoTIFF (CRS/투영 메타데이터 포함). 일반 GeoTIFF도 가능 (자동 COG 변환) |
 | **프로젝트** | DB에 프로젝트가 존재해야 함 |
-| **Docker** | worker-engine, db, minio, api 컨테이너 실행 중 |
+| **Docker** | api, celery-worker, db 컨테이너 실행 중 |
 | **GSD** | Projected CRS (EPSG:5186 등)인 경우 자동 추출. Geographic CRS (EPSG:4326)인 경우 `--gsd` 수동 지정 권장 |
 
 ### 2. 사용법
@@ -855,19 +959,19 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 ### 3. 동작 흐름
 
 ```
-호스트                          worker-engine (Docker)
+호스트                          celery-worker (Docker)
 ──────                          ──────────────────────
 1. 파일 검증
 2. COG → output/result_cog.tif
    로 직접 복사
-3. docker exec로 태스크 전송 →  4. GeoTIFF 유효성 검증 (gdalinfo)
-                                5. GSD/bounds 자동 추출
-                                6. 이미 최종 경로에 있으면 복사/이동 건너뜀
-                                7. COG 아닌 경우 자동 변환 (gdal_translate)
-                                8. MinIO 업로드
-                                9. DB 업데이트 (ProcessingJob + Project)
-                                10. PostGIS 면적 계산 + 권역 자동 배정
-                                11. WebSocket 완료 브로드캐스트
+3. docker exec (api)로 태스크 전송 → 4. GeoTIFF 유효성 검증 (gdalinfo)
+                                      5. GSD/bounds 자동 추출
+                                      6. 이미 최종 경로에 있으면 복사/이동 건너뜀
+                                      7. COG 아닌 경우 자동 변환 (gdal_translate)
+                                      8. 스토리지 업로드
+                                      9. DB 업데이트 (ProcessingJob + Project)
+                                      10. PostGIS 면적 계산 + 권역 자동 배정
+                                      11. WebSocket 완료 브로드캐스트
 ```
 
 > **2026-02-13 최적화**: 스테이징 파일(`_inject_cog.tif`) 방식을 제거하고 최종 경로로 직접 복사합니다. 체크섬(SHA256) 계산은 대용량 파일에서 수십 분 소요되므로 건너뜁니다.
@@ -877,9 +981,9 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 | 구분 | 필드 | 값 |
 |------|------|-----|
 | **디스크** | `output/result_cog.tif` | COG 파일 배치 |
-| **MinIO** | `projects/{id}/ortho/result_cog.tif` | COG 업로드 |
+| **스토리지** | `projects/{id}/ortho/result_cog.tif` | COG 업로드 |
 | **ProcessingJob** | status, completed_at, result_gsd, result_size, progress | completed, now(), 자동, 자동, 100 |
-| **Project** | status, progress, ortho_path, ortho_size, bounds, area, region | completed, 100, MinIO경로, 자동, gdalinfo, PostGIS, 자동 |
+| **Project** | status, progress, ortho_path, ortho_size, bounds, area, region | completed, 100, 스토리지경로, 자동, gdalinfo, PostGIS, 자동 |
 
 ### 5. 활용 사례
 
@@ -893,22 +997,19 @@ Metashape 스크립트 내부 진행률 로그는 10% 단위로만 출력됩니�
 - `--force` 없이 처리 중인 프로젝트에 삽입하면 거부됩니다
 - Geographic CRS(EPSG:4326)인 파일은 GSD 자동 추출이 부정확합니다 → `--gsd` 옵션 사용 권장
 - 입력 파일이 COG가 아닌 경우 자동 변환되므로 대용량 파일은 시간이 걸릴 수 있습니다
-- **대용량 파일 (100GB+)**: MinIO 업로드에 상당한 시간이 소요됩니다. 10분 타임아웃이 발생하면 태스크는 백그라운드에서 계속 실행됩니다
+- **대용량 파일 (100GB+)**: 스토리지 업로드에 상당한 시간이 소요됩니다. 10분 타임아웃이 발생하면 태스크는 백그라운드에서 계속 실행됩니다
 - 배포 환경 컨테이너에서는 `python3` 명령을 사용합니다 (`python`이 아님)
 
 ### 7. 대용량 파일 진행률 확인
 
-MinIO 업로드 중 진행 상황을 확인하려면:
+스토리지 업로드 중 진행 상황을 확인하려면:
 
 ```bash
-# 네트워크 전송량으로 확인 (TX가 계속 증가하면 진행 중)
-watch -n 10 'docker stats aerial-worker-engine --no-stream --format "{{.NetIO}}"'
+# celery-worker 로그로 확인
+docker logs aerial-survey-manager-celery-worker-1 --tail=20
 
-# mc cp로 진행률 표시하며 업로드 (대안)
-docker exec aerial-worker-engine sh -c "
-  mc alias set myminio http://minio:9000 \$MINIO_ACCESS_KEY \$MINIO_SECRET_KEY &&
-  mc cp /data/processing/{PROJECT_ID}/output/result_cog.tif myminio/aerial-survey/projects/{PROJECT_ID}/ortho/result_cog.tif
-"
+# 네트워크 전송량으로 확인 (TX가 계속 증가하면 진행 중, MinIO 모드 시)
+watch -n 10 'docker stats aerial-survey-manager-celery-worker-1 --no-stream --format "{{.NetIO}}"'
 ```
 
 ### 8. 트러블슈팅
@@ -916,7 +1017,7 @@ docker exec aerial-worker-engine sh -c "
 #### 증상: "파일을 찾을 수 없습니다"
 ```
 원인: 스테이징 복사 실패 또는 PROCESSING_DATA_PATH 마운트 문제
-확인: docker inspect aerial-worker-engine --format '{{range .Mounts}}{{if eq .Destination "/data/processing"}}{{.Source}}{{end}}{{end}}'
+확인: docker inspect aerial-survey-manager-celery-worker-1 --format '{{range .Mounts}}{{if eq .Destination "/data/processing"}}{{.Source}}{{end}}{{end}}'
 해결: PROCESSING_DATA_PATH가 올바른지 확인
 ```
 
@@ -935,9 +1036,9 @@ docker exec aerial-worker-engine sh -c "
 
 #### 증상: 10분 타임아웃 발생
 ```
-원인: 대용량 파일의 MinIO 업로드에 10분 이상 소요
+원인: 대용량 파일의 스토리지 업로드에 10분 이상 소요
 참고: 태스크는 백그라운드에서 계속 실행 중 (exit code 2)
-확인: docker logs aerial-worker-engine --tail=20
+확인: docker logs aerial-survey-manager-celery-worker-1 --tail=20
 ```
 
 #### 증상: "python: executable file not found" (OCI runtime error)
@@ -1140,8 +1241,7 @@ $END_CAMERA
 
 **EO 메타데이터 저장 (2026-02-06 변경)**:
 - EO 업로드 시 `metadata.txt` 파일이 `/data/processing/{project_id}/images/`에 저장됨
-- 저장은 **Celery 태스크**(`save_eo_metadata`)를 통해 worker-engine에서 수행
-- 이유: `/data/processing` 디렉토리가 root 소유이므로 API(appuser)가 직접 파일 생성 불가
+- 저장은 **Celery 태스크**(`save_eo_metadata`)를 통해 celery-worker에서 수행
 
 **데이터 불일치 경고**: 이미지 수와 EO 데이터 수가 일치하지 않으면 경고 다이얼로그가 표시됩니다:
 - "계속 진행하시겠습니까?" 메시지와 함께 "돌아가기" / "계속 진행" 버튼 제공
@@ -1188,12 +1288,12 @@ COG(Cloud Optimized GeoTIFF) 변환은 **엔진 우선** 방식으로 동작합�
 ```python
 # 엔진(export_orthomosaic.py): GDAL Python API
 gdal.TranslateOptions(format="COG", creationOptions=[
-    "BLOCKSIZE=256", "COMPRESS=LZW", "RESAMPLING=LANCZOS",
+    "BLOCKSIZE=1024", "COMPRESS=LZW", "RESAMPLING=LANCZOS",
     "PREDICTOR=2", "BIGTIFF=YES"
 ])
 
 # 폴백(tasks.py): gdal_translate CLI
-gdal_translate -of COG -co COMPRESS=LZW -co BLOCKSIZE=256
+gdal_translate -of COG -co COMPRESS=LZW -co BLOCKSIZE=1024
                -co OVERVIEW_RESAMPLING=AVERAGE -co BIGTIFF=YES
 ```
 

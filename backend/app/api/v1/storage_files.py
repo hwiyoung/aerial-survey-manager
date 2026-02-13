@@ -25,7 +25,22 @@ async def serve_storage_file(
     Only used in local storage mode for private files.
     Public files (projects/*) are served by nginx directly.
     """
+    # Reject obvious path traversal attempts early
+    if ".." in path or path.startswith("/"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
     storage = get_storage()
+
+    # This endpoint is only for local storage mode
+    if not hasattr(storage, "base_path"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found",
+        )
+
     local_path = storage.get_local_path(path)
 
     if not local_path or not Path(local_path).exists():
@@ -34,9 +49,9 @@ async def serve_storage_file(
             detail="File not found",
         )
 
-    # Security: prevent path traversal
+    # Security: verify resolved path is within storage base
     resolved = Path(local_path).resolve()
-    if not str(resolved).startswith(str(Path(storage.base_path).resolve())):
+    if not resolved.is_relative_to(Path(storage.base_path).resolve()):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",

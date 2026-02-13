@@ -5,7 +5,7 @@
 ## Features
 
 - **프로젝트 관리**: 항공/드론 촬영 프로젝트 생성, 조회, 수정, 삭제
-- **이미지 업로드**: S3 Multipart Upload (대용량 병렬 업로드)
+- **이미지 업로드**: 대용량 병렬 업로드 (로컬 디스크 또는 MinIO)
 - **EO 데이터 파싱**: 다양한 포맷의 외부표정요소 파일 지원
 - **정사영상 생성**: Metashape GPU 가속 처리 엔진
 - **결과물 다운로드**: 대용량 정사영상 Resumable Download
@@ -23,15 +23,15 @@
 │                      Nginx Reverse Proxy                     │
 └───┬───────────────────────────┬───────────────┬─────────────┘
     │                           │               │
-┌───▼───┐                 ┌─────▼─────┐   ┌─────▼─────┐
-│FastAPI│                 │  TiTiler  │   │  MinIO    │
-│Backend│                 │(COG Tiles)│   │ (Storage) │
-└───┬───┘                 └───────────┘   └───────────┘
+┌───▼───┐                 ┌─────▼─────┐   ┌─────▼──────┐
+│FastAPI│                 │  TiTiler  │   │  Storage   │
+│Backend│                 │(COG Tiles)│   │(Local/MinIO)│
+└───┬───┘                 └───────────┘   └────────────┘
     │
-┌───▼───┐    ┌─────────────┐    ┌──────────────────┐
-│ Redis │───▶│Celery Worker│───▶│  Metashape GPU   │
-│(Queue)│    │             │    │     Engine       │
-└───────┘    └─────────────┘    └──────────────────┘
+┌───▼───┐    ┌───────────────┐    ┌──────────────────┐
+│ Redis │───▶│ celery-worker │    │  worker-engine   │
+│(Queue)│    │(파일관리/썸네일)│    │ (Metashape GPU)  │
+└───────┘    └───────────────┘    └──────────────────┘
     │
 ┌───▼───────┐
 │PostgreSQL │
@@ -67,7 +67,7 @@ docker compose ps
 |---------|-----|-------------|
 | Web UI | http://localhost:8081 | 메인 인터페이스 |
 | API Docs | http://localhost:8081/api/docs | Swagger UI |
-| MinIO Console | http://localhost:9003 | 스토리지 관리 |
+| MinIO Console | http://localhost:9003 | 스토리지 관리 (MinIO 모드) |
 
 ## Project Structure
 
@@ -93,14 +93,14 @@ POSTGRES_PASSWORD=your-password
 # JWT Authentication
 JWT_SECRET_KEY=your-secret-key
 
-# MinIO Storage
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=your-password
-MINIO_PUBLIC_ENDPOINT=localhost:9002
+# Storage Backend: "local" (단일 서버) 또는 "minio" (S3 호환)
+STORAGE_BACKEND=local
+LOCAL_STORAGE_PATH=/path/to/storage        # 로컬 모드
+# MINIO_ACCESS_KEY=minioadmin              # MinIO 모드
+# MINIO_SECRET_KEY=your-password           # MinIO 모드
 
-# Storage Paths (대용량 드라이브 권장)
+# Processing Data (대용량 드라이브 권장)
 PROCESSING_DATA_PATH=/path/to/processing
-MINIO_DATA_PATH=/path/to/minio
 ```
 
 > 전체 환경변수는 `.env.example` 참조

@@ -14,6 +14,7 @@ import { useProjects, useProcessingStatus } from './hooks/useApi';
 import LoginPage from './components/LoginPage';
 import api from './api/client';
 import S3MultipartUploader from './services/s3Upload';
+import { formatSpeed } from './utils/formatting';
 import { useProcessingProgress } from './hooks/useProcessingProgress';
 
 // Modularized Components
@@ -721,7 +722,7 @@ function Dashboard() {
                   ...next[idx],
                   progress: progress.percentage,
                   status: 'uploading',
-                  speed: S3MultipartUploader.formatSpeed(progress.speed),
+                  speed: formatSpeed(progress.speed),
                   eta: S3MultipartUploader.formatETA(progress.eta)
                 };
               }

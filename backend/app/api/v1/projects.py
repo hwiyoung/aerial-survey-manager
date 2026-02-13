@@ -1,7 +1,7 @@
 """Project API endpoints."""
+import os
 import re
 import logging
-from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
@@ -29,11 +29,11 @@ from app.schemas.project import (
     StorageStatsResponse,
 )
 from app.auth.jwt import get_current_user, PermissionChecker
+from app.config import get_settings
 from app.services.eo_parser import EOParserService
 from app.utils.geo import get_region_for_point, get_region_for_point_db
 from pyproj import Transformer
 import json
-from sqlalchemy import func
 
 def serialize_geometry(geom):
     """Convert PostGIS geometry to GeoJSON-like list of coordinates.
@@ -80,6 +80,36 @@ def serialize_geometry(geom):
     return None
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) -> ProjectResponse:
+    """Build a ProjectResponse dict from ORM model and optional extras.
+
+    Common fields are extracted from the project; additional fields
+    (result_gsd, process_mode, upload_completed_count, etc.) are passed via **extra.
+    """
+    d = {
+        "id": project.id,
+        "title": project.title,
+        "region": project.region,
+        "company": project.company,
+        "status": project.status,
+        "progress": project.progress,
+        "owner_id": project.owner_id,
+        "organization_id": project.organization_id,
+        "group_id": project.group_id,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+        "image_count": image_count,
+        "source_size": project.source_size,
+        "source_deleted": project.source_deleted,
+        "ortho_size": project.ortho_size,
+        "area": project.area,
+        "ortho_path": project.ortho_path,
+        "bounds": serialize_geometry(bounds_wkt if bounds_wkt is not None else project.bounds),
+    }
+    d.update(extra)
+    return ProjectResponse.model_validate(d)
 
 
 @router.get("", response_model=ProjectListResponse)
@@ -188,32 +218,12 @@ async def list_projects(
         result_gsd = latest_job.result_gsd if latest_job else None
         process_mode = latest_job.process_mode if latest_job else None
 
-        # Convert ORM model to dict and serialize bounds BEFORE Pydantic validation
-        project_dict = {
-            "id": project.id,
-            "title": project.title,
-            "region": project.region,
-            "company": project.company,
-            "status": project.status,
-            "progress": project.progress,
-            "owner_id": project.owner_id,
-            "organization_id": project.organization_id,
-            "group_id": project.group_id,
-            "created_at": project.created_at,
-            "updated_at": project.updated_at,
-            "image_count": image_count,
-            "source_size": project.source_size,
-            "source_deleted": project.source_deleted,
-            "ortho_size": project.ortho_size,
-            "area": project.area,
-            "ortho_path": project.ortho_path,
-            "bounds": serialize_geometry(bounds_wkt),  # Now using WKT string
-            "upload_completed_count": upload_completed_count,
-            "upload_in_progress": upload_uploading_count > 0,
-            "result_gsd": result_gsd,
-            "process_mode": process_mode,
-        }
-        response = ProjectResponse.model_validate(project_dict)
+        response = _build_project_response(
+            project, bounds_wkt=bounds_wkt, image_count=image_count,
+            upload_completed_count=upload_completed_count,
+            upload_in_progress=upload_uploading_count > 0,
+            result_gsd=result_gsd, process_mode=process_mode,
+        )
         project_responses.append(response)
     
     return ProjectListResponse(
@@ -242,27 +252,7 @@ async def create_project(
     await db.flush()
     await db.refresh(project)
     
-    response_dict = {
-        "id": project.id,
-        "title": project.title,
-        "region": project.region,
-        "company": project.company,
-        "status": project.status,
-        "progress": project.progress,
-        "owner_id": project.owner_id,
-        "organization_id": project.organization_id,
-        "group_id": project.group_id,
-        "created_at": project.created_at,
-        "updated_at": project.updated_at,
-        "image_count": 0,
-        "source_size": project.source_size,
-        "source_deleted": project.source_deleted,
-        "ortho_size": project.ortho_size,
-        "area": project.area,
-        "ortho_path": project.ortho_path,
-        "bounds": serialize_geometry(project.bounds),
-    }
-    return ProjectResponse.model_validate(response_dict)
+    return _build_project_response(project)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -325,28 +315,10 @@ async def get_project(
     result_gsd = latest_job.result_gsd if latest_job else None
     process_mode = latest_job.process_mode if latest_job else None
 
-    response_dict = {
-        "id": project.id,
-        "title": project.title,
-        "region": project.region,
-        "company": project.company,
-        "status": project.status,
-        "progress": project.progress,
-        "owner_id": project.owner_id,
-        "organization_id": project.organization_id,
-        "group_id": project.group_id,
-        "created_at": project.created_at,
-        "updated_at": project.updated_at,
-        "image_count": image_count,
-        "source_size": project.source_size,
-        "ortho_size": project.ortho_size,
-        "area": project.area,
-        "ortho_path": project.ortho_path,
-        "bounds": serialize_geometry(bounds_wkt),
-        "result_gsd": result_gsd,
-        "process_mode": process_mode,
-    }
-    return ProjectResponse.model_validate(response_dict)
+    return _build_project_response(
+        project, bounds_wkt=bounds_wkt, image_count=image_count,
+        result_gsd=result_gsd, process_mode=process_mode,
+    )
 
 
 
@@ -391,33 +363,52 @@ async def update_project(
     project = row[0]
     bounds_wkt = row[1]
     
-    # Get image count
+    # Get image count and upload status
     count_result = await db.execute(
         select(func.count()).where(Image.project_id == project.id)
     )
     image_count = count_result.scalar()
-    
-    response_dict = {
-        "id": project.id,
-        "title": project.title,
-        "region": project.region,
-        "company": project.company,
-        "status": project.status,
-        "progress": project.progress,
-        "owner_id": project.owner_id,
-        "organization_id": project.organization_id,
-        "group_id": project.group_id,
-        "created_at": project.created_at,
-        "updated_at": project.updated_at,
-        "image_count": image_count,
-        "source_size": project.source_size,
-        "source_deleted": project.source_deleted,
-        "ortho_size": project.ortho_size,
-        "area": project.area,
-        "ortho_path": project.ortho_path,
-        "bounds": serialize_geometry(bounds_wkt),
-    }
-    return ProjectResponse.model_validate(response_dict)
+
+    upload_status_result = await db.execute(
+        select(
+            Image.upload_status,
+            func.count(Image.id).label("count")
+        )
+        .where(Image.project_id == project.id)
+        .group_by(Image.upload_status)
+    )
+    status_counts = {row.upload_status: row.count for row in upload_status_result}
+    upload_completed_count = status_counts.get("completed", 0)
+    upload_uploading_count = status_counts.get("uploading", 0)
+
+    # Get latest COMPLETED processing job for result_gsd and process_mode
+    job_result = await db.execute(
+        select(ProcessingJob)
+        .where(ProcessingJob.project_id == project.id)
+        .where(ProcessingJob.status == "completed")
+        .order_by(ProcessingJob.started_at.desc())
+        .limit(1)
+    )
+    latest_job = job_result.scalar_one_or_none()
+
+    if not latest_job:
+        fallback_result = await db.execute(
+            select(ProcessingJob)
+            .where(ProcessingJob.project_id == project.id)
+            .order_by(ProcessingJob.started_at.desc())
+            .limit(1)
+        )
+        latest_job = fallback_result.scalar_one_or_none()
+
+    result_gsd = latest_job.result_gsd if latest_job else None
+    process_mode = latest_job.process_mode if latest_job else None
+
+    return _build_project_response(
+        project, bounds_wkt=bounds_wkt, image_count=image_count,
+        upload_completed_count=upload_completed_count,
+        upload_in_progress=upload_uploading_count > 0,
+        result_gsd=result_gsd, process_mode=process_mode,
+    )
 
 
 
@@ -456,14 +447,14 @@ async def delete_project(
 
     await db.delete(project)
 
-    # Clean up local processing data via Celery task (worker-engine has root permission)
+    # Clean up local processing data via Celery task
     from app.workers.tasks import delete_project_data
     try:
         delete_project_data.delay(str(project_id))
     except Exception as e:
         print(f"Failed to queue delete task for {project_id}: {e}")
 
-    # Clean up MinIO storage
+    # Clean up storage (images, thumbnails, ortho)
     try:
         from app.services.storage import get_storage
         storage = get_storage()
@@ -532,17 +523,134 @@ async def delete_source_images(
             detail="이미 원본 이미지가 삭제된 프로젝트입니다.",
         )
 
-    # Queue Celery task for deletion (worker-engine has MinIO access)
+    # Set source_deleted immediately so API responses reflect the change
+    # (Celery task will revert on failure)
+    project.source_deleted = True
+    await db.commit()
+
+    # Queue Celery task for actual file deletion
     from app.workers.tasks import delete_source_images as delete_source_task
     try:
         delete_source_task.delay(str(project_id))
     except Exception as e:
+        # Revert DB flag if task queue fails
+        project.source_deleted = False
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"삭제 작업 큐 등록 실패: {str(e)}",
         )
 
     return {"message": "원본 이미지 삭제가 시작되었습니다.", "project_id": str(project_id)}
+
+
+def _parse_eo_config(config_json: str) -> EOConfig:
+    """Parse and normalize EO config from JSON string."""
+    try:
+        data = json.loads(config_json)
+        if "hasHeader" in data and "has_header" not in data:
+            data["has_header"] = data["hasHeader"]
+        if "columns" in data:
+            cols = data["columns"]
+            if "id" in cols and "image_name" not in cols:
+                cols["image_name"] = cols["id"]
+        return EOConfig(**data)
+    except Exception as e:
+        logger.warning(f"EO Config parse warning: {e}. Using defaults.")
+        return EOConfig()
+
+
+def _setup_crs_transformer(source_crs_raw: str):
+    """Setup CRS transformer if source CRS differs from WGS84.
+
+    Returns (transformer_or_None, clean_source_crs).
+    """
+    target_crs = "EPSG:4326"
+    source_crs = source_crs_raw.upper()
+
+    epsg_match = re.search(r'EPSG[:\s]+(\d+)', source_crs)
+    if epsg_match:
+        source_code = f"EPSG:{epsg_match.group(1)}"
+        if source_code != target_crs:
+            source_crs = source_code
+
+    if "WGS84" in source_crs or source_crs == "EPSG:4326":
+        return None, "EPSG:4326"
+
+    try:
+        transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
+        return transformer, source_crs
+    except Exception as e:
+        logger.warning(f"Failed to create transformer for {source_crs}: {e}")
+        return None, source_crs
+
+
+def _find_matching_image(row_name: str, image_map: dict, image_stem_map: dict):
+    """Find matching image using exact, case-insensitive, and stem matching."""
+    image = image_map.get(row_name)
+    if not image:
+        for fname, img_obj in image_map.items():
+            if fname.lower() == row_name.lower():
+                image = img_obj
+                break
+    if not image:
+        row_stem = os.path.splitext(row_name)[0].lower()
+        image = image_stem_map.get(row_stem)
+    return image
+
+
+def _match_eo_rows(parsed_rows, image_map, image_stem_map, transformer, source_crs):
+    """Match parsed EO rows to images and create EO records.
+
+    Returns (eo_objects, reference_rows, reference_crs, matched_count, errors).
+    """
+    target_crs = "EPSG:4326"
+    eo_objects = {}
+    reference_rows = []
+    reference_keys = set()
+    matched_count = 0
+    errors = []
+
+    for row in parsed_rows:
+        row_name = os.path.basename(row.image_name)
+        original_x, original_y = row.x, row.y
+        x_val, y_val = original_x, original_y
+        crs_val = source_crs
+
+        if transformer:
+            try:
+                lon, lat = transformer.transform(row.x, row.y)
+                x_val, y_val = lon, lat
+                crs_val = target_crs
+            except Exception as e:
+                errors.append(f"Transform error for {row_name}: {e}")
+                continue
+
+        image = _find_matching_image(row_name, image_map, image_stem_map)
+        if not image:
+            errors.append(f"Image not found for filename: {row_name}")
+            continue
+
+        if image.id in eo_objects:
+            continue
+
+        eo = ExteriorOrientation(
+            image_id=image.id,
+            x=x_val, y=y_val, z=row.z,
+            omega=row.omega, phi=row.phi, kappa=row.kappa,
+            crs=crs_val,
+        )
+        eo_objects[image.id] = eo
+
+        row_key = row_name.lower()
+        if row_key not in reference_keys:
+            reference_rows.append((row_name, original_x, original_y, row.z, row.omega, row.phi, row.kappa))
+            reference_keys.add(row_key)
+
+        image.location = f"SRID=4326;POINT({x_val} {y_val})"
+        matched_count += 1
+
+    return eo_objects, reference_rows, source_crs, matched_count, errors
 
 
 @router.post("/{project_id}/eo", response_model=EOUploadResponse)
@@ -554,222 +662,74 @@ async def upload_eo_data(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload and parse EO data file for a project."""
-    # Check permission
     permission_checker = PermissionChecker("edit")
     if not await permission_checker.check(str(project_id), current_user, db):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
-    
-    # Parse config
-    import json
-    try:
-        eo_config_data = json.loads(config)
-        # Handle camelCase from frontend if Pydantic alias didn't catch it
-        if "hasHeader" in eo_config_data and "has_header" not in eo_config_data:
-            eo_config_data["has_header"] = eo_config_data["hasHeader"]
-        
-        # Ensure 'image_name' exists in columns if 'id' was sent
-        if "columns" in eo_config_data:
-            cols = eo_config_data["columns"]
-            if "id" in cols and "image_name" not in cols:
-                cols["image_name"] = cols["id"]
-        
-        eo_config = EOConfig(**eo_config_data)
-    except Exception as e:
-        logger.warning(f"EO Config parse warning: {e}. Using defaults.")
-        eo_config = EOConfig()
-        
-    # Read file content
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    eo_config = _parse_eo_config(config)
+
     content = (await file.read()).decode("utf-8")
-    
-    # Parse EO data
     delimiter = eo_config.delimiter
     if delimiter == "space":
         delimiter = " "
     elif delimiter == "tab":
         delimiter = "\t"
-        
-    # Fetch project
+
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    print(f"EO Upload: Starting parse with delimiter='{delimiter}', has_header={eo_config.has_header}")  # DEBUG
-    print(f"EO Upload: Content first 200 chars: {content[:200]}")  # DEBUG
     try:
         parsed_rows = EOParserService.parse_eo_file(
-            content=content,
-            delimiter=delimiter,
-            has_header=eo_config.has_header,
-            columns=eo_config.columns
+            content=content, delimiter=delimiter,
+            has_header=eo_config.has_header, columns=eo_config.columns,
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse EO file: {str(e)}",
-        )
-    
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to parse EO file: {str(e)}")
+
     if not parsed_rows:
         return EOUploadResponse(parsed_count=0, matched_count=0, errors=["No valid data found in file"])
-    
-    # Get all images for this project to match by filename
+
+    # Build image lookup maps
     result = await db.execute(select(Image).where(Image.project_id == project_id))
     images = result.scalars().all()
-    
-    print(f"EO Upload: Found {len(images)} images for project {project_id}")  # DEBUG
-    
-    # improved matching logic
-    import os
+
     image_map = {img.filename: img for img in images}
-    # map stem (lowercase) to image for loose matching
-    # e.g. "img_001" -> Image(filename="IMG_001.JPG")
     image_stem_map = {}
     for img in images:
         stem = os.path.splitext(img.filename)[0].lower()
         if stem not in image_stem_map:
             image_stem_map[stem] = img
-    
-    # Prepare EO records
-    eo_records = []
-    matched_count = 0
-    errors = []
-    
-    # Clear existing EO for these images if any (to avoid unique constraint errors)
-    # This is a simple overwrite policy
-    parsed_filenames = [row.image_name for row in parsed_rows]
-    valid_image_ids = [image_map[name].id for name in parsed_filenames if name in image_map]
-    
-    if valid_image_ids:
-        await db.execute(
-            delete(ExteriorOrientation).where(ExteriorOrientation.image_id.in_(valid_image_ids))
-        )
-    
-    # Prepare Transformer if CRS is not WGS84
-    transformer = None
-    target_crs = "EPSG:4326"
-    source_crs = eo_config.crs.upper()
-    
-    # Extract strict EPSG code using regex if present
-    # Matches "EPSG:1234" or "EPSG: 1234"
-    epsg_match = re.search(r'EPSG[:\s]+(\d+)', source_crs)
-    if epsg_match:
-        source_code = f"EPSG:{epsg_match.group(1)}"
-        if source_code != target_crs:
-             source_crs = source_code # Use clean code for pyproj
-    
-    # Handle common aliases or variations
-    if "WGS84" in source_crs or source_crs == "EPSG:4326":
-        transformer = None
-        source_crs = "EPSG:4326"
-    else:
-        try:
-            # always_xy=True: input is (x, y) [long/east, lat/north], output is (long, lat)
-            from pyproj import Transformer
-            transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
-        except Exception as e:
-            # If CRS is invalid, we proceed with raw values
-            logger.warning(f"Failed to create transformer for {source_crs}: {e}")
-            transformer = None
 
-    # Prepare EO records + reference file rows
-    eo_objects = {}
-    matched_count = 0
-    errors = []
-    reference_rows = []
-    reference_keys = set()
-    reference_crs = source_crs
+    # Setup CRS transformer
+    transformer, source_crs = _setup_crs_transformer(eo_config.crs)
+
+    # Match EO rows to images
+    eo_objects, reference_rows, reference_crs, matched_count, errors = _match_eo_rows(
+        parsed_rows, image_map, image_stem_map, transformer, source_crs,
+    )
 
     try:
-        for row in parsed_rows:
-            row_name = os.path.basename(row.image_name)
-            # Transform if needed
-            original_x = row.x
-            original_y = row.y
-            x_val = original_x
-            y_val = original_y
-            crs_val = source_crs
-            if transformer:
-                try:
-                    lon, lat = transformer.transform(row.x, row.y)
-                    x_val = lon
-                    y_val = lat
-                    crs_val = target_crs
-                except Exception as e:
-                    errors.append(f"Transform error for {row_name}: {e}")
-                    continue
-
-            # Matching logic
-            image = image_map.get(row_name)
-            if not image:
-                 for fname, img_obj in image_map.items():
-                     if fname.lower() == row_name.lower():
-                         image = img_obj
-                         break
-            if not image:
-                row_stem = os.path.splitext(row_name)[0].lower()
-                image = image_stem_map.get(row_stem)
-
-            if not image:
-                errors.append(f"Image not found for filename: {row_name}")
-                continue
-            
-            # Skip if we already processed this image in this file
-            if image.id in eo_objects:
-                continue
-                
-            eo = ExteriorOrientation(
-                image_id=image.id,
-                x=x_val,
-                y=y_val,
-                z=row.z,
-                omega=row.omega,
-                phi=row.phi,
-                kappa=row.kappa,
-                crs=crs_val
-            )
-            eo_objects[image.id] = eo
-
-            # Collect reference rows only for matched images (dedup by name)
-            row_key = row_name.lower()
-            if row_key not in reference_keys:
-                reference_rows.append((row_name, original_x, original_y, row.z, row.omega, row.phi, row.kappa))
-                reference_keys.add(row_key)
-            
-            # Update image location (Point geometry)
-            # Use string representation for GeoAlchemy2 to handle easily
-            image.location = f"SRID=4326;POINT({x_val} {y_val})"
-            matched_count += 1
-            
         if matched_count > 0:
-            # Delete any existing EO for THESE images only
-            # The previous logic was slightly flawed in bulk delete if IDs weren't matched yet
             await db.execute(
                 delete(ExteriorOrientation).where(ExteriorOrientation.image_id.in_(list(eo_objects.keys())))
             )
-            
-            # Add all new EO records
             for eo in eo_objects.values():
                 db.add(eo)
-            
-            # Calculate project bounds from matched coordinates (WGS84)
+
+            # Calculate project bounds from matched coordinates
             lons = [eo.x for eo in eo_objects.values()]
             lats = [eo.y for eo in eo_objects.values()]
-            
+
             if lons and lats:
                 min_lon, max_lon = min(lons), max(lons)
                 min_lat, max_lat = min(lats), max(lats)
-                
-                # Check for "clumping" or invalid bounds (single point)
-                # If it's a single point, we make a tiny box
                 if min_lon == max_lon: min_lon -= 0.0001; max_lon += 0.0001
                 if min_lat == max_lat: min_lat -= 0.0001; max_lat += 0.0001
-                
+
                 project.bounds = f"SRID=4326;POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, {max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
-                
-                # Auto-assign region based on EO data (using PostGIS spatial query)
+
                 center_lon = (min_lon + max_lon) / 2
                 center_lat = (min_lat + max_lat) / 2
                 region = await get_region_for_point_db(db, center_lon, center_lat)
@@ -779,23 +739,20 @@ async def upload_eo_data(
         if matched_count == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"EO 파일의 이미지명이 업로드된 이미지와 일치하지 않습니다. (matched 0/{len(parsed_rows)})"
+                detail=f"EO 파일의 이미지명이 업로드된 이미지와 일치하지 않습니다. (matched 0/{len(parsed_rows)})",
             )
 
-        # Save normalized EO reference file via Celery task (worker-engine has root permission)
+        # Save reference file via Celery task
         if reference_rows:
             try:
                 from app.workers.tasks import save_eo_metadata
-                save_eo_metadata.delay(
-                    str(project_id),
-                    reference_crs,
-                    reference_rows
-                )
-                print(f"EO Upload: Queued metadata save task for project {project_id}")
+                save_eo_metadata.delay(str(project_id), reference_crs, reference_rows)
             except Exception as e:
                 logger.warning(f"EO Upload: Failed to queue save task: {e}")
 
         await db.commit()
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         logger.error(f"EO Upload Database Error: {str(e)}")
@@ -803,13 +760,13 @@ async def upload_eo_data(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error during EO save: {str(e)}"
+            detail=f"Database error during EO save: {str(e)}",
         )
-    
+
     return EOUploadResponse(
         parsed_count=len(parsed_rows),
         matched_count=matched_count,
-        errors=errors[:10]  # Return first 10 errors
+        errors=errors[:10],
     )
 
 
@@ -911,16 +868,20 @@ async def get_regional_stats(
 
 
 _storage_cache: dict = {"data": None, "ts": 0}
-_storage_lock: "asyncio.Lock | None" = None
+_storage_cache_lock: "asyncio.Lock | None" = None
+_storage_cache_lock_init = __import__("threading").Lock()
+_last_refresh_ts: float = 0  # Global rate limit for refresh=true requests
 
 
 def _get_storage_lock():
-    """Lazy-init asyncio.Lock (must be created inside running event loop)."""
+    """Lazy-init asyncio.Lock (thread-safe, must be called inside event loop)."""
     import asyncio
-    global _storage_lock
-    if _storage_lock is None:
-        _storage_lock = asyncio.Lock()
-    return _storage_lock
+    global _storage_cache_lock
+    if _storage_cache_lock is None:
+        with _storage_cache_lock_init:
+            if _storage_cache_lock is None:
+                _storage_cache_lock = asyncio.Lock()
+    return _storage_cache_lock
 
 
 def _get_dir_size(path: str) -> int:
@@ -932,7 +893,10 @@ def _get_dir_size(path: str) -> int:
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode == 0:
-            return int(result.stdout.split()[0])
+            parts = result.stdout.split()
+            if parts and parts[0].isdigit():
+                return int(parts[0])
+            logger.warning("du -sb %s: unexpected output: %s", path, result.stdout.strip())
         else:
             logger.warning("du -sb %s failed (rc=%d): %s", path, result.returncode, result.stderr.strip())
     except subprocess.TimeoutExpired:
@@ -944,38 +908,61 @@ def _get_dir_size(path: str) -> int:
 
 @router.get("/stats/storage", response_model=StorageStatsResponse)
 async def get_storage_stats(
+    refresh: bool = False,
     current_user: User = Depends(get_current_user),
 ):
     """Get per-directory storage sizes (MinIO, processing, tiles).
 
     Results are cached for 5 minutes since du scans can be slow on large directories.
+    Pass refresh=true to bypass cache (e.g., after source image deletion).
+    Refresh is rate-limited to once per 60 seconds to prevent du scan abuse.
     """
     import asyncio
     import time
 
+    global _last_refresh_ts
+
     now = time.time()
-    if _storage_cache["data"] and now - _storage_cache["ts"] < 300:
+
+    # Rate limit refresh requests (1 per 60s globally)
+    if refresh and now - _last_refresh_ts < 60:
+        refresh = False  # Fall back to cache behavior
+
+    if not refresh and _storage_cache["data"] and now - _storage_cache["ts"] < 300:
         return _storage_cache["data"]
 
     # Prevent concurrent du scans from multiple requests
     async with _get_storage_lock():
-        # Re-check cache after acquiring lock
+        # Re-check after acquiring lock (another request may have refreshed)
         now = time.time()
-        if _storage_cache["data"] and now - _storage_cache["ts"] < 300:
+        if refresh and now - _last_refresh_ts < 60:
+            refresh = False
+        if not refresh and _storage_cache["data"] and now - _storage_cache["ts"] < 300:
             return _storage_cache["data"]
 
+        # Determine storage directory based on backend
+        settings = get_settings()
+        if settings.STORAGE_BACKEND == "local":
+            storage_dir = settings.LOCAL_STORAGE_PATH
+        else:
+            # Scan only the aerial-survey bucket, not the entire MinIO data dir
+            storage_dir = f"/data/minio/{settings.MINIO_BUCKET}"
+
         # Run du -sb in parallel threads (bind mounts from host)
-        minio_size, processing_size, tiles_size = await asyncio.gather(
-            asyncio.to_thread(_get_dir_size, "/data/minio"),
+        storage_size, processing_size, tiles_size = await asyncio.gather(
+            asyncio.to_thread(_get_dir_size, storage_dir),
             asyncio.to_thread(_get_dir_size, "/data/processing"),
             asyncio.to_thread(_get_dir_size, "/data/tiles"),
         )
 
         resp = StorageStatsResponse(
-            minio_size=minio_size,
+            storage_size=storage_size,
             processing_size=processing_size,
             tiles_size=tiles_size,
+            storage_backend=settings.STORAGE_BACKEND,
         )
         _storage_cache["data"] = resp
         _storage_cache["ts"] = now
+        if refresh:
+            _last_refresh_ts = now
         return resp

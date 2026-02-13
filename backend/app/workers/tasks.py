@@ -1,6 +1,5 @@
 """Celery application and async tasks."""
 import os
-import hashlib
 import json
 import time
 from datetime import datetime
@@ -10,6 +9,9 @@ from typing import Optional, List
 from celery import Celery
 
 from app.config import get_settings
+from app.utils.checksum import calculate_file_checksum
+from app.utils.formatting import format_elapsed as _fmt_elapsed
+from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
 
 settings = get_settings()
 
@@ -32,59 +34,15 @@ celery_app.conf.update(
         "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
         "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
         "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
-        # 썸네일은 처리 엔진과 분리 - 별도 celery 워커에서 처리
+        # 처리 외 모든 태스크는 celery 워커에서 처리
         "app.workers.tasks.generate_thumbnail": {"queue": "celery"},
         "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "celery"},
-        # 프로젝트 데이터 삭제는 worker-engine에서 처리 (root 권한 필요)
-        "app.workers.tasks.delete_project_data": {"queue": "metashape"},
-        # EO 메타데이터 저장 (root 권한 필요)
-        "app.workers.tasks.save_eo_metadata": {"queue": "metashape"},
-        # 외부 COG 삽입 (root + GDAL + MinIO 접근 필요)
-        "app.workers.tasks.inject_external_cog": {"queue": "metashape"},
-        # 원본 이미지 삭제 (MinIO 접근 필요)
-        "app.workers.tasks.delete_source_images": {"queue": "metashape"},
+        "app.workers.tasks.delete_project_data": {"queue": "celery"},
+        "app.workers.tasks.save_eo_metadata": {"queue": "celery"},
+        "app.workers.tasks.delete_source_images": {"queue": "celery"},
+        "app.workers.tasks.inject_external_cog": {"queue": "celery"},
     },
 )
-
-
-def calculate_file_checksum(file_path: str) -> str:
-    """Calculate SHA256 checksum of a file."""
-    hash_sha256 = hashlib.sha256()
-    with open(file_path, 'rb') as f:
-        while chunk := f.read(1024 * 1024):
-            hash_sha256.update(chunk)
-    return hash_sha256.hexdigest()
-
-
-def get_orthophoto_bounds(file_path: str) -> Optional[str]:
-    """Extract WGS84 bounding box from orthophoto using gdalinfo."""
-    import subprocess
-    import json
-    try:
-        cmd = ["gdalinfo", "-json", file_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(result.stdout)
-        
-        # Look for wgs84Extent (Polygon)
-        extent = data.get("wgs84Extent")
-        if extent and extent.get("type") == "Polygon":
-            coords = extent.get("coordinates", [[]])[0]
-            if len(coords) >= 4:
-                # Convert to WKT Polygon: POLYGON((lon1 lat1, lon2 lat2, ...))
-                wkt_points = [f"{pt[0]} {pt[1]}" for pt in coords]
-                # Ensure it's closed
-                if wkt_points[0] != wkt_points[-1]:
-                    wkt_points.append(wkt_points[0])
-                return f"SRID=4326;POLYGON(({', '.join(wkt_points)}))"
-    except Exception as e:
-        print(f"Failed to extract bounds from {file_path}: {e}")
-    return None
-
-
-def calculate_area_km2(wkt_polygon: str) -> float:
-    """Calculate area of a WKT polygon in km2 using PostGIS geometry."""
-    # This will be done via SQL query in the task
-    return 0.0
 
 
 def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:
@@ -95,8 +53,8 @@ def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:
         query = text("""
             SELECT layer
             FROM regions
-            WHERE ST_Intersects(geom, ST_Transform(ST_GeomFromText(:wkt, 4326), 5179))
-            ORDER BY ST_Area(ST_Intersection(geom, ST_Transform(ST_GeomFromText(:wkt, 4326), 5179))) DESC
+            WHERE ST_Intersects(geom, ST_Transform(ST_GeomFromEWKT(:wkt), 5179))
+            ORDER BY ST_Area(ST_Intersection(geom, ST_Transform(ST_GeomFromEWKT(:wkt), 5179))) DESC
             LIMIT 1
         """)
         result = db_session.execute(query, {"wkt": wkt_polygon}).fetchone()
@@ -107,6 +65,114 @@ def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:
     return None
 
 
+# ============================================================================
+# Shared helpers (used by multiple tasks)
+# ============================================================================
+
+def _broadcast_ws(project_id: str, status: str, progress: int, message: str):
+    """Broadcast processing status update via WebSocket."""
+    try:
+        import httpx
+        httpx.post(
+            "http://api:8000/api/v1/processing/broadcast",
+            json={
+                "project_id": project_id,
+                "status": status,
+                "progress": progress,
+                "message": message
+            },
+            timeout=5.0
+        )
+    except Exception:
+        pass
+
+
+def _convert_to_cog(input_path: str, output_path: str) -> None:
+    """Convert a GeoTIFF to Cloud Optimized GeoTIFF using gdal_translate."""
+    import subprocess
+    gdal_cmd = [
+        "gdal_translate", "-of", "COG",
+        "-co", "COMPRESS=LZW",
+        "-co", "BLOCKSIZE=1024",
+        "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+        "-co", "BIGTIFF=YES",
+        input_path, output_path
+    ]
+    subprocess.run(gdal_cmd, check=True, capture_output=True)
+
+
+def _update_project_geo(project, bounds_wkt: str, db) -> None:
+    """Update project bounds, area, and region from WKT polygon."""
+    from sqlalchemy import text
+    from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
+
+    project.bounds = bounds_wkt
+
+    # Calculate area using PostGIS (EPSG:5179 for Korea)
+    try:
+        area_query = text("SELECT ST_Area(ST_Transform(ST_GeomFromEWKT(:wkt), 5179)) / 1000000.0")
+        area_result = db.execute(area_query, {"wkt": bounds_wkt}).scalar()
+        project.area = area_result
+    except Exception as area_err:
+        print(f"Area calculation failed: {area_err}")
+
+    # Auto-assign region based on overlap
+    best_region = get_best_region_overlap(bounds_wkt, db)
+    if best_region:
+        project.region = best_region
+    elif not project.region or project.region == "미지정":
+        try:
+            lon, lat = extract_center_from_wkt(bounds_wkt)
+            if lon and lat:
+                region = get_region_for_point_sync(db, lon, lat)
+                if region:
+                    project.region = region
+        except Exception:
+            pass
+
+
+def _upload_cog_to_storage(cog_path, object_name: str, storage) -> Path:
+    """Upload or move COG to storage backend. Returns final path."""
+    from app.services.storage_local import LocalStorageBackend
+    if isinstance(storage, LocalStorageBackend):
+        storage.move_file(str(cog_path), object_name)
+        return Path(storage.get_local_path(object_name))
+    else:
+        storage.upload_file(str(cog_path), object_name, "image/tiff")
+        return cog_path
+
+
+def _prepare_images(storage, images, input_dir: Path, update_progress) -> int:
+    """Download or symlink images for processing. Returns total source size."""
+    total_source_size = 0
+    for i, image in enumerate(images):
+        if image.file_size:
+            total_source_size += image.file_size
+
+        if image.original_path:
+            target_path = input_dir / image.filename
+            local_src = storage.get_local_path(image.original_path)
+
+            if local_src and os.path.exists(local_src):
+                try:
+                    os.symlink(local_src, str(target_path))
+                except OSError:
+                    import shutil
+                    shutil.copy2(local_src, str(target_path))
+            else:
+                storage.download_file(image.original_path, str(target_path))
+
+            download_progress = 5 + int((i + 1) / len(images) * 15)
+            update_progress(download_progress, f"{i + 1}/{len(images)} 이미지 준비 완료")
+
+    return total_source_size
+
+
+
+# ============================================================================
+# Main processing task
+# ============================================================================
+
 @celery_app.task(bind=True, name="app.workers.tasks.process_orthophoto")
 def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     """
@@ -115,18 +181,12 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     Routes to appropriate engine based on options.
     """
     import asyncio
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
     from app.models.project import Project, ProcessingJob, Image
     from app.services.processing_router import processing_router
     from app.services.storage import get_storage
-    from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
-    
-    # Use sync database connection for Celery
-    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    engine = create_engine(sync_db_url)
-    
-    with Session(engine) as db:
+    from app.utils.db import sync_db_session
+
+    with sync_db_session() as db:
         # Get job and project
         job = db.query(ProcessingJob).filter(ProcessingJob.id == job_id).first()
         project = db.query(Project).filter(Project.id == project_id).first()
@@ -183,60 +243,18 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     state="PROGRESS",
                     meta={"progress": progress, "message": message}
                 )
-                # Broadcast to WebSocket clients
-                try:
-                    import httpx
-                    httpx.post(
-                        "http://api:8000/api/v1/processing/broadcast",
-                        json={
-                            "project_id": project_id,
-                            "status": "processing",
-                            "progress": progress,
-                            "message": message
-                        },
-                        timeout=2.0
-                    )
-                except Exception:
-                    pass  # Don't fail the task if broadcast fails
-            
-            # 전체 처리 시간 추적
-            def _fmt_elapsed(seconds):
-                minutes, secs = divmod(int(seconds), 60)
-                if minutes > 0:
-                    return f"{minutes}분 {secs:02d}초"
-                return f"{secs}초"
+                _broadcast_ws(project_id, "processing", progress, message)
 
             phase_timings = []
             overall_start = time.time()
 
-            # Phase 1: 이미지 다운로드 (로컬 모드: symlink으로 복사 없이 접근)
+            # Phase 1: 이미지 준비
             t0 = time.time()
             is_local_storage = storage.get_local_path("") is not None
-            if is_local_storage:
-                update_progress(5, "이미지 심볼릭 링크 생성 중...")
-            else:
-                update_progress(5, "저장소에서 이미지 다운로드 중...")
+            msg = "이미지 심볼릭 링크 생성 중..." if is_local_storage else "저장소에서 이미지 다운로드 중..."
+            update_progress(5, msg)
 
-            total_source_size = 0
-            for i, image in enumerate(images):
-                if image.file_size:
-                    total_source_size += image.file_size
-
-                if image.original_path:
-                    target_path = input_dir / image.filename
-                    local_src = storage.get_local_path(image.original_path)
-
-                    if local_src and os.path.exists(local_src):
-                        # Local mode: symlink instead of copy
-                        os.symlink(local_src, str(target_path))
-                    else:
-                        # MinIO mode: download from storage
-                        storage.download_file(image.original_path, str(target_path))
-
-                    download_progress = 5 + int((i + 1) / len(images) * 15)
-                    update_progress(download_progress, f"{i + 1}/{len(images)} 이미지 준비 완료")
-
-            project.source_size = total_source_size
+            project.source_size = _prepare_images(storage, images, input_dir, update_progress)
             db.commit()
             phase_timings.append(("이미지 준비", time.time() - t0))
 
@@ -293,24 +311,13 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             result_object_name = f"projects/{project_id}/ortho/result_cog.tif"
 
             try:
-                import subprocess
                 import shutil
 
                 # 엔진(Metashape 등)이 이미 COG를 생성한 경우 변환 스킵
                 if cog_path.exists():
                     print(f"COG already created by engine, skipping conversion: {cog_path}")
                 else:
-                    gdal_cmd = [
-                        "gdal_translate",
-                        "-of", "COG",
-                        "-co", "COMPRESS=LZW",
-                        "-co", "BLOCKSIZE=256",
-                        "-co", "OVERVIEW_RESAMPLING=AVERAGE",
-                        "-co", "BIGTIFF=YES",
-                        str(result_path),
-                        str(cog_path)
-                    ]
-                    subprocess.run(gdal_cmd, check=True, capture_output=True)
+                    _convert_to_cog(str(result_path), str(cog_path))
 
                 # result.tif 조기 삭제 (COG 변환 완료 후 불필요)
                 if result_path.exists() and result_path.name == "result.tif":
@@ -322,19 +329,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
                 update_progress(92, "결과물 저장 중...")
 
-                if is_local_storage:
-                    # 로컬 모드: 스토리지로 직접 이동 (복사 없음)
-                    from app.services.storage_local import LocalStorageBackend
-                    if isinstance(storage, LocalStorageBackend):
-                        storage.move_file(str(cog_path), result_object_name)
-                        result_path = Path(storage.get_local_path(result_object_name))
-                        print(f"COG moved to local storage: {result_path}")
-                    else:
-                        storage.upload_file(str(cog_path), result_object_name, "image/tiff")
-                        result_path = cog_path
-                else:
-                    # MinIO 모드: 업로드 후 로컬 임시 파일 관리
-                    storage.upload_file(str(cog_path), result_object_name, "image/tiff")
+                result_path = _upload_cog_to_storage(cog_path, result_object_name, storage)
+                if not is_local_storage:
+                    # MinIO: COG를 output/으로 이동 (체크섬/bounds 추출용)
                     final_output_dir = base_dir / "output"
                     final_output_dir.mkdir(parents=True, exist_ok=True)
                     final_cog_path = final_output_dir / "result_cog.tif"
@@ -397,30 +394,8 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             t0 = time.time()
             update_progress(98, "프로젝트 영역 정보 업데이트 중...")
             if bounds_wkt:
-                project.bounds = bounds_wkt
-                
-                # Calculate area using PostGIS
-                try:
-                    from sqlalchemy import text
-                    # Project to 5179 (suitable for Korea area calculation)
-                    area_query = text("SELECT ST_Area(ST_Transform(ST_GeomFromText(:wkt, 4326), 5179)) / 1000000.0")
-                    area_result = db.execute(area_query, {"wkt": bounds_wkt}).scalar()
-                    project.area = area_result
-                except Exception as area_err:
-                    print(f"Area calculation failed: {area_err}")
-                
-                # Auto-assign region based on overlap
-                best_region = get_best_region_overlap(bounds_wkt, db)
-                if best_region:
-                    project.region = best_region
-                elif not project.region:
-                    # Fallback to point check if no intersection found in regions table
-                    lon, lat = extract_center_from_wkt(bounds_wkt)
-                    if lon and lat:
-                        region = get_region_for_point_sync(db, lon, lat)
-                        if region:
-                            project.region = region
-            
+                _update_project_geo(project, bounds_wkt, db)
+
             phase_timings.append(("영역 정보 업데이트", time.time() - t0))
 
             # 전체 처리 시간 요약
@@ -454,21 +429,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             write_status_file(100, "Processing completed successfully", status_value="completed")
 
             # Broadcast completion via WebSocket AFTER all DB updates
-            try:
-                import httpx
-                # Call internal API to broadcast WebSocket update
-                httpx.post(
-                    f"http://api:8000/api/v1/processing/broadcast",
-                    json={
-                        "project_id": project_id,
-                        "status": "completed",
-                        "progress": 100,
-                        "message": "Processing completed successfully"
-                    },
-                    timeout=5.0
-                )
-            except Exception as ws_error:
-                print(f"WebSocket broadcast failed: {ws_error}")
+            _broadcast_ws(project_id, "completed", 100, "Processing completed successfully")
             
             return {
                 "status": "completed",
@@ -500,19 +461,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             write_status_file(0, user_friendly_error, status_value="error")
             
             # Broadcast error via WebSocket
-            try:
-                httpx.post(
-                    f"http://api:8000/api/v1/processing/broadcast",
-                    json={
-                        "project_id": project_id,
-                        "status": "error",
-                        "progress": 0,
-                        "message": user_friendly_error
-                    },
-                    timeout=5.0
-                )
-            except Exception:
-                pass
+            _broadcast_ws(project_id, "error", 0, user_friendly_error)
             
             raise
 
@@ -535,18 +484,14 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
     from PIL import Image as PILImage
     # Increase limit for large aerial images (e.g., UltraCam Eagle: 17310x11310 = 195MP)
     PILImage.MAX_IMAGE_PIXELS = 300000000  # 300 megapixels
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
     from app.models.project import Image
     from app.services.storage import get_storage
-
-    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    engine = create_engine(sync_db_url)
+    from app.utils.db import sync_db_session
 
     temp_path = None
     thumb_path = None
 
-    with Session(engine) as db:
+    with sync_db_session() as db:
         image = db.query(Image).filter(Image.id == image_id).first()
         if not image or not image.original_path:
             return {"status": "error", "message": "Image not found or no original path"}
@@ -615,14 +560,11 @@ def regenerate_missing_thumbnails(self, project_id: str = None):
     Args:
         project_id: Optional - limit to specific project
     """
-    from sqlalchemy import create_engine, and_
-    from sqlalchemy.orm import Session
+    from sqlalchemy import and_
     from app.models.project import Image
+    from app.utils.db import sync_db_session
 
-    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    engine = create_engine(sync_db_url)
-
-    with Session(engine) as db:
+    with sync_db_session() as db:
         query = db.query(Image).filter(
             and_(
                 Image.thumbnail_path.is_(None),
@@ -656,10 +598,7 @@ def regenerate_missing_thumbnails(self, project_id: str = None):
     name="app.workers.tasks.delete_project_data",
 )
 def delete_project_data(self, project_id: str):
-    """
-    프로젝트의 로컬 처리 데이터를 삭제합니다.
-    worker-engine에서 root 권한으로 실행됩니다.
-    """
+    """프로젝트의 로컬 처리 데이터를 삭제합니다."""
     import shutil
 
     local_path = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id
@@ -682,9 +621,7 @@ def delete_project_data(self, project_id: str):
     name="app.workers.tasks.save_eo_metadata",
 )
 def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: list):
-    """
-    EO 메타데이터를 로컬 파일로 저장합니다.
-    worker-engine에서 root 권한으로 실행됩니다.
+    """EO 메타데이터를 로컬 파일로 저장합니다.
 
     Args:
         project_id: 프로젝트 UUID
@@ -715,25 +652,15 @@ def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: 
     name="app.workers.tasks.delete_source_images",
 )
 def delete_source_images(self, project_id: str):
-    """
-    프로젝트의 원본 이미지를 MinIO에서 삭제하고 DB를 업데이트합니다.
-    worker-engine에서 root 권한으로 실행됩니다.
-    """
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
+    """프로젝트의 원본 이미지를 스토리지에서 삭제하고 DB를 업데이트합니다."""
     from app.models.project import Project
     from app.services.storage import get_storage
+    from app.utils.db import sync_db_session
 
-    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    db_engine = create_engine(sync_db_url)
-
-    with Session(db_engine) as db:
+    with sync_db_session() as db:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             return {"status": "error", "message": f"프로젝트를 찾을 수 없습니다: {project_id}"}
-
-        if project.source_deleted:
-            return {"status": "skipped", "message": "이미 삭제된 원본 이미지입니다."}
 
         storage = get_storage()
         deleted_count = 0
@@ -756,10 +683,6 @@ def delete_source_images(self, project_id: str):
                 storage.delete_recursive(thumbnails_prefix)
                 print(f"✓ 썸네일 삭제: {len(thumb_objects)}개")
 
-            # DB 업데이트
-            project.source_deleted = True
-            db.commit()
-
             freed_bytes = project.source_size or 0
             freed_gb = freed_bytes / (1024 * 1024 * 1024)
             print(f"✅ 프로젝트 {project_id} 원본 이미지 삭제 완료 ({freed_gb:.2f} GB 확보)")
@@ -772,7 +695,10 @@ def delete_source_images(self, project_id: str):
             }
 
         except Exception as e:
-            print(f"✗ 원본 이미지 삭제 실패: {e}")
+            # Revert source_deleted flag on failure (API set it optimistically)
+            project.source_deleted = False
+            db.commit()
+            print(f"✗ 원본 이미지 삭제 실패 (source_deleted 복원): {e}")
             return {"status": "error", "message": str(e)}
 
 
@@ -781,9 +707,7 @@ def delete_source_images(self, project_id: str):
     name="app.workers.tasks.inject_external_cog",
 )
 def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float = None, force: bool = False):
-    """
-    외부에서 생성한 COG/GeoTIFF를 프로젝트에 삽입하여 완료 상태로 만듭니다.
-    worker-engine에서 root 권한으로 실행됩니다.
+    """외부에서 생성한 COG/GeoTIFF를 프로젝트에 삽입하여 완료 상태로 만듭니다.
 
     Args:
         project_id: 프로젝트 UUID
@@ -793,20 +717,15 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
     """
     import subprocess
     import shutil
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.orm import Session
     from app.models.project import Project, ProcessingJob
     from app.services.storage import get_storage
-    from app.utils.geo import extract_center_from_wkt, get_region_for_point_sync
-
-    sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    db_engine = create_engine(sync_db_url)
+    from app.utils.db import sync_db_session
 
     source = Path(source_path)
     if not source.exists():
         return {"status": "error", "message": f"파일을 찾을 수 없습니다: {source_path}"}
 
-    with Session(db_engine) as db:
+    with sync_db_session() as db:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             return {"status": "error", "message": f"프로젝트를 찾을 수 없습니다: {project_id}"}
@@ -835,12 +754,14 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         try:
             gdalinfo_result = subprocess.run(
                 ["gdalinfo", "-json", str(source)],
-                capture_output=True, text=True, check=True
+                capture_output=True, text=True, check=True, timeout=120
             )
             gdalinfo_data = json.loads(gdalinfo_result.stdout)
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "message": "gdalinfo 타임아웃 (120초 초과)"}
         except subprocess.CalledProcessError as e:
             return {"status": "error", "message": f"유효한 GeoTIFF가 아닙니다: {e.stderr}"}
-        except Exception as e:
+        except (json.JSONDecodeError, Exception) as e:
             return {"status": "error", "message": f"gdalinfo 실행 실패: {e}"}
 
         # Extract GSD if not provided
@@ -848,15 +769,18 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
             geo_transform = gdalinfo_data.get('geoTransform', [])
             if len(geo_transform) >= 2:
                 pixel_size = abs(geo_transform[1])
-                coord_wkt = gdalinfo_data.get('coordinateSystem', {}).get('wkt', '')
-                if 'GEOGCS' in coord_wkt and 'PROJCS' not in coord_wkt:
-                    # Geographic CRS (degrees) - 한국 위도 기준 근사 변환
-                    gsd_cm = pixel_size * 111320 * 0.8 * 100
-                    print(f"⚠ Geographic CRS 감지, GSD 근사값: {gsd_cm:.2f} cm/pixel (정확한 값은 --gsd 옵션 사용)")
+                if pixel_size > 0:
+                    coord_wkt = gdalinfo_data.get('coordinateSystem', {}).get('wkt', '')
+                    if 'GEOGCS' in coord_wkt and 'PROJCS' not in coord_wkt:
+                        # Geographic CRS (degrees) - 한국 위도 기준 근사 변환
+                        gsd_cm = pixel_size * 111320 * 0.8 * 100
+                        print(f"⚠ Geographic CRS 감지, GSD 근사값: {gsd_cm:.2f} cm/pixel (정확한 값은 --gsd 옵션 사용)")
+                    else:
+                        # Projected CRS (meters)
+                        gsd_cm = pixel_size * 100
+                        print(f"📊 GSD 추출: {gsd_cm:.2f} cm/pixel")
                 else:
-                    # Projected CRS (meters)
-                    gsd_cm = pixel_size * 100
-                    print(f"📊 GSD 추출: {gsd_cm:.2f} cm/pixel")
+                    print("⚠ geoTransform pixel_size가 0 → GSD 추출 불가")
 
         # Setup directories
         base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id
@@ -887,54 +811,31 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
                 print("🔄 COG 형식으로 변환 중...")
                 temp_cog = output_dir / "_result_cog_converting.tif"
                 try:
-                    gdal_cmd = [
-                        "gdal_translate", "-of", "COG",
-                        "-co", "COMPRESS=LZW",
-                        "-co", "BLOCKSIZE=256",
-                        "-co", "OVERVIEW_RESAMPLING=AVERAGE",
-                        "-co", "BIGTIFF=YES",
-                        str(source), str(temp_cog)
-                    ]
-                    subprocess.run(gdal_cmd, check=True, capture_output=True)
+                    _convert_to_cog(str(source), str(temp_cog))
                     shutil.move(str(temp_cog), str(final_cog_path))
                     print("✓ COG 변환 완료")
-                except subprocess.CalledProcessError as e:
+                except Exception as e:
                     temp_cog.unlink(missing_ok=True)
-                    return {"status": "error", "message": f"COG 변환 실패: {e.stderr}"}
+                    return {"status": "error", "message": f"COG 변환 실패: {e}"}
         elif is_cog:
             print("✓ 입력 파일이 이미 COG 형식, 이동 중...")
             shutil.move(str(source), str(final_cog_path))
         else:
             print("🔄 COG 형식으로 변환 중...")
             try:
-                gdal_cmd = [
-                    "gdal_translate", "-of", "COG",
-                    "-co", "COMPRESS=LZW",
-                    "-co", "BLOCKSIZE=256",
-                    "-co", "OVERVIEW_RESAMPLING=AVERAGE",
-                    "-co", "BIGTIFF=YES",
-                    str(source), str(final_cog_path)
-                ]
-                subprocess.run(gdal_cmd, check=True, capture_output=True)
+                _convert_to_cog(str(source), str(final_cog_path))
                 print("✓ COG 변환 완료")
                 source.unlink(missing_ok=True)
-            except subprocess.CalledProcessError as e:
-                return {"status": "error", "message": f"COG 변환 실패: {e.stderr}"}
+            except Exception as e:
+                return {"status": "error", "message": f"COG 변환 실패: {e}"}
 
         # Upload / move to storage
         storage = get_storage()
         cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
 
-        from app.services.storage_local import LocalStorageBackend
-        if isinstance(storage, LocalStorageBackend):
-            print("📤 로컬 스토리지로 이동 중...")
-            storage.move_file(str(final_cog_path), cog_object_name)
-            final_cog_path = Path(storage.get_local_path(cog_object_name))
-            print(f"✓ 로컬 스토리지 이동 완료: {final_cog_path}")
-        else:
-            print("📤 MinIO 업로드 중...")
-            storage.upload_file(str(final_cog_path), cog_object_name, "image/tiff")
-            print(f"✓ MinIO 업로드 완료: {cog_object_name}")
+        print("📤 스토리지로 이동/업로드 중...")
+        final_cog_path = _upload_cog_to_storage(final_cog_path, cog_object_name, storage)
+        print(f"✓ 스토리지 저장 완료: {final_cog_path}")
 
         # File size (체크섬은 대용량 파일에서 수십 분 소요되므로 건너뜀)
         file_size = os.path.getsize(str(final_cog_path))
@@ -976,31 +877,7 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         project.ortho_size = file_size
 
         if bounds_wkt:
-            project.bounds = bounds_wkt
-
-            # Calculate area using PostGIS
-            try:
-                area_query = text(
-                    "SELECT ST_Area(ST_Transform(ST_GeomFromEWKT(:wkt), 5179)) / 1000000.0"
-                )
-                area_result = db.execute(area_query, {"wkt": bounds_wkt}).scalar()
-                project.area = area_result
-            except Exception as area_err:
-                print(f"⚠ 면적 계산 실패: {area_err}")
-
-            # Auto-assign region
-            best_region = get_best_region_overlap(bounds_wkt, db)
-            if best_region:
-                project.region = best_region
-            elif not project.region or project.region == "미지정":
-                try:
-                    lon, lat = extract_center_from_wkt(bounds_wkt)
-                    if lon and lat:
-                        region = get_region_for_point_sync(db, lon, lat)
-                        if region:
-                            project.region = region
-                except Exception:
-                    pass
+            _update_project_geo(project, bounds_wkt, db)
 
         db.commit()
 
@@ -1025,27 +902,14 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
             json.dump(status_data, f, ensure_ascii=False, indent=2)
 
         # Broadcast via WebSocket
-        try:
-            import httpx
-            httpx.post(
-                "http://api:8000/api/v1/processing/broadcast",
-                json={
-                    "project_id": project_id,
-                    "status": "completed",
-                    "progress": 100,
-                    "message": "외부 COG 삽입 완료"
-                },
-                timeout=5.0
-            )
-        except Exception:
-            pass
+        _broadcast_ws(project_id, "completed", 100, "외부 COG 삽입 완료")
 
         gsd_str = f"{gsd_cm:.2f} cm/pixel" if gsd_cm else "N/A"
         size_mb = file_size / (1024 * 1024)
         print(f"✅ 프로젝트 {project_id} COG 삽입 완료")
         print(f"   GSD: {gsd_str}")
         print(f"   Size: {size_mb:.1f} MB")
-        print(f"   Checksum: {checksum[:16]}...")
+        print(f"   Checksum: {checksum[:16] + '...' if checksum else 'N/A'}")
         print(f"   Region: {project.region}")
 
         return {

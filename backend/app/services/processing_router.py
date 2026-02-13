@@ -5,7 +5,7 @@ import asyncio
 import re
 import logging
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 from pathlib import Path
 from typing import Optional, List, Callable, Awaitable
 from datetime import datetime
@@ -370,10 +370,8 @@ class MetashapeEngine(ProcessingEngine):
     @staticmethod
     def _format_elapsed(seconds):
         """초 단위 시간을 읽기 쉬운 형식으로 변환"""
-        minutes, secs = divmod(int(seconds), 60)
-        if minutes > 0:
-            return f"{minutes}분 {secs:02d}초"
-        return f"{secs}초"
+        from app.utils.formatting import format_elapsed
+        return format_elapsed(seconds)
 
     @staticmethod
     def _read_log_tail(log_path, lines=20):

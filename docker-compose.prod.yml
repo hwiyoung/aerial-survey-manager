@@ -159,6 +159,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     depends_on:
       - redis
@@ -167,7 +168,7 @@ services:
     logging: *default-logging
 
   # ============================================================
-  # Celery Worker (썸네일 등 경량 작업용)
+  # Celery Worker (처리 외 모든 태스크: 썸네일, 파일관리, COG삽입 등)
   # ============================================================
   celery-worker:
     build:
@@ -187,6 +188,7 @@ services:
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     volumes:
       - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
     depends_on:
       - redis
     networks:

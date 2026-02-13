@@ -13,6 +13,7 @@
 | Phase 5: Advanced | ✅ | TiTiler 통합, 통계 API, 내보내기 |
 | Phase 6: Hardening | ✅ | TB급 업로드, 라이선스 안정화 |
 | Phase 7: UX Polish | ✅ | 멀티 프로젝트 업로드, UI 개선 |
+| Phase 8: Storage | ✅ | 로컬/MinIO 스토리지 추상화 |
 
 ---
 
@@ -38,11 +39,11 @@
 - **오프라인 타일**: `VITE_MAP_OFFLINE=true` 설정 시 로컬 타일 필요
 
 ### 시스템
-- **COG Loading**: MinIO 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
+- **COG Loading (MinIO 모드)**: 외부 접근 시 `MINIO_PUBLIC_ENDPOINT` 설정 필요
 - **처리 중단 후 재시작**: `Empty DEM` 오류 발생 가능 (EO 재업로드 권장)
 
 ### 저장소
-- **MinIO 용량 부족**: 디스크 여유 10% 미만 시 HTTP 507 오류
+- **MinIO 용량 부족 (MinIO 모드)**: 디스크 여유 10% 미만 시 HTTP 507 오류
   - 해결: `MINIO_DATA_PATH`를 대용량 드라이브로 설정
   - 상세: [ADMIN_GUIDE.md](./ADMIN_GUIDE.md#minio-저장소-관리)
 
@@ -53,7 +54,8 @@
 | 영역 | 기술 |
 |------|------|
 | Frontend | React, Vite, TailwindCSS, Leaflet |
-| Backend | FastAPI, PostgreSQL, PostGIS, MinIO |
+| Backend | FastAPI, PostgreSQL, PostGIS |
+| Storage | 로컬 디스크 또는 MinIO (선택) |
 | Processing | Metashape 2.2.0 (GPU, Celery) |
 | Tiles | TiTiler (COG 스트리밍) |
 
@@ -63,6 +65,8 @@
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-13 | 워커 아키텍처 개선 (처리 엔진 분리, 태스크 큐 재배치), 보안 강화 (object_key 검증, 디버그 로그 제거, HEAD 응답 수정) |
+| 2026-02-13 | 로컬/MinIO 스토리지 추상화 (STORAGE_BACKEND 환경변수), 코드 품질 개선 (유틸리티 모듈 분리, 보안 강화, 중복 제거) |
 | 2026-02-13 | 외부 COG 삽입 최적화 (체크섬 제거, 중복 복사 제거, 타임아웃 처리), 배포 컨테이너 python3 호환 |
 | 2026-02-12 | 저장소 최적화 (result.tif 업로드 제거, COG 로컬 삭제, 원본 이미지 삭제 기능), 외부 COG 삽입, 라이선스 활성화 최적화 (로컬 검증 우선) |
 | 2026-02-10 | COG 중복 변환 제거 (엔진 생성분 재사용), project.files 삭제 기준 완화 (95%→80%), 오프라인 타일 캐시 수정, 권역 폴백 데이터 수정 |
@@ -78,4 +82,4 @@
 
 ---
 
-*마지막 업데이트: 2026-02-13*
+*마지막 업데이트: 2026-02-14*

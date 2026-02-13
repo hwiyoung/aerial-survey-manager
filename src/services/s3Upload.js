@@ -2,7 +2,6 @@
  * S3 Multipart Upload Service
  * High-performance direct upload to MinIO using presigned URLs
  */
-
 const API_BASE = '/api/v1';
 
 export class S3MultipartUploader {
@@ -361,24 +360,6 @@ export class S3MultipartUploader {
         }
 
         return response.json();
-    }
-
-    /**
-     * Format bytes to human readable string
-     */
-    static formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    /**
-     * Format speed to human readable string
-     */
-    static formatSpeed(bytesPerSecond) {
-        return this.formatBytes(bytesPerSecond) + '/s';
     }
 
     /**

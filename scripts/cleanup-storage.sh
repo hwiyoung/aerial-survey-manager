@@ -27,7 +27,8 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-WORKER_CONTAINER="aerial-worker-engine"
+# Celery 태스크 실행용 컨테이너
+TASK_CONTAINER="aerial-survey-manager-celery-worker-1"
 DRY_RUN=true
 
 # ── Parse arguments ──────────────────────────────────────────────
@@ -52,20 +53,20 @@ while [ $# -gt 0 ]; do
 done
 
 # ── Check container ──────────────────────────────────────────────
-if ! docker inspect "$WORKER_CONTAINER" >/dev/null 2>&1; then
-    echo -e "${RED}✗ ${WORKER_CONTAINER} 컨테이너가 실행 중이 아닙니다.${NC}"
-    echo "  docker compose up -d worker-engine 으로 시작해주세요."
+if ! docker inspect "$TASK_CONTAINER" >/dev/null 2>&1; then
+    echo -e "${RED}✗ ${TASK_CONTAINER} 컨테이너가 실행 중이 아닙니다.${NC}"
+    echo "  docker compose up -d 으로 시작해주세요."
     exit 1
 fi
 
-CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$WORKER_CONTAINER")
+CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$TASK_CONTAINER")
 if [ "$CONTAINER_STATUS" != "running" ]; then
-    echo -e "${RED}✗ ${WORKER_CONTAINER} 컨테이너 상태: ${CONTAINER_STATUS}${NC}"
+    echo -e "${RED}✗ ${TASK_CONTAINER} 컨테이너 상태: ${CONTAINER_STATUS}${NC}"
     exit 1
 fi
 
 # ── Get processing data path ────────────────────────────────────
-PROCESSING_HOST_PATH=$(docker inspect "$WORKER_CONTAINER" \
+PROCESSING_HOST_PATH=$(docker inspect "$TASK_CONTAINER" \
     --format '{{range .Mounts}}{{if eq .Destination "/data/processing"}}{{.Source}}{{end}}{{end}}')
 
 if [ -z "$PROCESSING_HOST_PATH" ]; then
@@ -98,8 +99,8 @@ else:
     DRY_RUN = True
 
 # Setup storage
-from app.services.storage import StorageService
-storage = StorageService()
+from app.services.storage import get_storage
+storage = get_storage()
 
 # ── Phase 1: MinIO result.tif 정리 ──────────────────────────
 print('=' * 60)
@@ -223,7 +224,7 @@ print('=' * 60)
 "
 
 # ── Execute ──────────────────────────────────────────────────────
-docker exec "$WORKER_CONTAINER" python3 -c "$PYTHON_CMD"
+docker exec "$TASK_CONTAINER" python3 -c "$PYTHON_CMD"
 EXIT_CODE=$?
 
 echo ""

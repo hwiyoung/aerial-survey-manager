@@ -355,8 +355,9 @@ class ApiClient {
         return this.request('/projects/stats/regional');
     }
 
-    async getStorageStats() {
-        return this.request('/projects/stats/storage');
+    async getStorageStats(refresh = false) {
+        const query = refresh ? '?refresh=true' : '';
+        return this.request(`/projects/stats/storage${query}`);
     }
 
     // --- COG/Orthoimage ---

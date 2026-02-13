@@ -1,30 +1,12 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye } from 'lucide-react';
-import { StatsCard } from './StatsCard';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
 import { api } from '../../api/client';
+import { formatBytesValue as formatBytes, formatBytesUnit } from '../../utils/formatting';
 
 // Month names for chart display
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-
-/**
- * Format bytes to human-readable size (GB or TB)
- */
-function formatBytes(bytes) {
-    if (bytes == null || bytes === 0) return '0';
-    const tb = bytes / (1024 ** 4);
-    if (tb >= 1) return tb.toFixed(1);
-    const gb = bytes / (1024 ** 3);
-    return gb.toFixed(1);
-}
-
-function formatBytesUnit(bytes) {
-    if (bytes == null || bytes === 0) return 'GB';
-    const tb = bytes / (1024 ** 4);
-    return tb >= 1 ? 'TB' : 'GB';
-}
 
 /**
  * Enhanced Stats Card for dashboard - larger with more details
@@ -78,8 +60,9 @@ function StatsSummary({ stats, storageStats, isCompact = false }) {
 
     // Total storage from API (sum of three dirs)
     const totalSize = storageStats
-        ? storageStats.minio_size + storageStats.processing_size + storageStats.tiles_size
+        ? storageStats.storage_size + storageStats.processing_size + storageStats.tiles_size
         : 0;
+    const storageLabel = '영상 데이터';
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -122,15 +105,15 @@ function StatsSummary({ stats, storageStats, isCompact = false }) {
                     >
                         <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
                             <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">MinIO</span>
-                                <span className="font-medium text-slate-700">{formatBytes(storageStats.minio_size)} {formatBytesUnit(storageStats.minio_size)}</span>
+                                <span className="text-slate-500">{storageLabel}</span>
+                                <span className="font-medium text-slate-700">{formatBytes(storageStats.storage_size)} {formatBytesUnit(storageStats.storage_size)}</span>
                             </div>
                             <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">처리 데이터</span>
+                                <span className="text-slate-500">작업 데이터</span>
                                 <span className="font-medium text-slate-700">{formatBytes(storageStats.processing_size)} {formatBytesUnit(storageStats.processing_size)}</span>
                             </div>
                             <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">오프라인 지도</span>
+                                <span className="text-slate-500">배경 지도</span>
                                 <span className="font-medium text-slate-700">{formatBytes(storageStats.tiles_size)} {formatBytesUnit(storageStats.tiles_size)}</span>
                             </div>
                         </div>
@@ -309,6 +292,26 @@ export default function DashboardView({
     const [storageStats, setStorageStats] = useState(null);
     const [statsLoading, setStatsLoading] = useState(true);
 
+    // Track source_deleted count for delayed storage refresh
+    const sourceDeletedCount = useMemo(() => projects.filter(p => p.source_deleted).length, [projects]);
+    const prevDeletedCount = useRef(sourceDeletedCount);
+
+    // Delayed storage stats refresh after source image deletion
+    useEffect(() => {
+        if (sourceDeletedCount > prevDeletedCount.current) {
+            // source_deleted increased → Celery is deleting files, re-fetch after delay
+            const timer = setTimeout(async () => {
+                const res = await api.getStorageStats(true).catch(() => null);
+                if (res?.storage_size !== undefined) {
+                    setStorageStats(res);
+                }
+            }, 10000); // 10s delay for Celery to finish deleting
+            prevDeletedCount.current = sourceDeletedCount;
+            return () => clearTimeout(timer);
+        }
+        prevDeletedCount.current = sourceDeletedCount;
+    }, [sourceDeletedCount]);
+
     // Fetch statistics data from API (each request independent — one failure doesn't break others)
     useEffect(() => {
         const fetchStats = async () => {
@@ -340,7 +343,7 @@ export default function DashboardView({
             }
 
             // Storage stats
-            if (storageRes.status === 'fulfilled' && storageRes.value?.minio_size !== undefined) {
+            if (storageRes.status === 'fulfilled' && storageRes.value?.storage_size !== undefined) {
                 setStorageStats(storageRes.value);
             }
 
@@ -348,7 +351,7 @@ export default function DashboardView({
         };
 
         fetchStats();
-    }, [projects.length, projects.map(p => p.status).join(',')]); // Refetch when projects count or status changes
+    }, [projects.length, projects.map(p => `${p.status}:${p.source_deleted}`).join(',')]); // Refetch when projects count, status, or source_deleted changes
 
     // Observe container width changes
     useEffect(() => {

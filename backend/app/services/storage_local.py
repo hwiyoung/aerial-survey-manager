@@ -19,8 +19,16 @@ class LocalStorageBackend(StorageBackend):
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _resolve(self, object_name: str) -> Path:
-        """Resolve object name to absolute path."""
-        return self.base_path / object_name
+        """Resolve object name to absolute path with path traversal protection."""
+        # Empty string = base path (used for storage detection and list_objects)
+        if object_name == "":
+            return self.base_path.resolve()
+        if not object_name or object_name.startswith("/"):
+            raise ValueError(f"Invalid object name: {object_name}")
+        target = (self.base_path / object_name).resolve()
+        if not target.is_relative_to(self.base_path.resolve()):
+            raise ValueError(f"Path traversal detected: {object_name}")
+        return target
 
     def upload_file(
         self,

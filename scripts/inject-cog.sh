@@ -2,7 +2,7 @@
 # inject-cog.sh - 외부 COG/GeoTIFF를 프로젝트에 삽입하여 완료 상태로 만듭니다.
 #
 # 전제조건:
-#   1. Docker 컨테이너 실행 중 (worker-engine, db, minio, api)
+#   1. Docker 컨테이너 실행 중 (api, celery-worker, db)
 #   2. 입력 파일이 유효한 GeoTIFF (CRS/투영 메타데이터 포함)
 #   3. 프로젝트가 DB에 존재
 #
@@ -30,7 +30,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-WORKER_CONTAINER="aerial-worker-engine"
+# Celery 태스크 트리거용 컨테이너 (API 컨테이너는 항상 실행 중)
+TASK_CONTAINER="aerial-survey-manager-api-1"
 
 # ── Parse arguments ──────────────────────────────────────────────
 if [ $# -lt 2 ]; then
@@ -83,21 +84,21 @@ FILE_SIZE_MB=$((FILE_SIZE / 1024 / 1024))
 echo -e "${BLUE}📄 입력 파일: ${COG_FILE} (${FILE_SIZE_MB} MB)${NC}"
 
 # Check container is running
-if ! docker inspect "$WORKER_CONTAINER" >/dev/null 2>&1; then
-    echo -e "${RED}✗ ${WORKER_CONTAINER} 컨테이너가 실행 중이 아닙니다.${NC}"
-    echo -e "  docker compose up -d worker-engine 으로 시작해주세요."
+if ! docker inspect "$TASK_CONTAINER" >/dev/null 2>&1; then
+    echo -e "${RED}✗ ${TASK_CONTAINER} 컨테이너가 실행 중이 아닙니다.${NC}"
+    echo -e "  docker compose up -d 으로 시작해주세요."
     exit 1
 fi
 
-CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$WORKER_CONTAINER")
+CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$TASK_CONTAINER")
 if [ "$CONTAINER_STATUS" != "running" ]; then
-    echo -e "${RED}✗ ${WORKER_CONTAINER} 컨테이너 상태: ${CONTAINER_STATUS}${NC}"
+    echo -e "${RED}✗ ${TASK_CONTAINER} 컨테이너 상태: ${CONTAINER_STATUS}${NC}"
     exit 1
 fi
 
 # ── Get processing data path ────────────────────────────────────
 # Find the host path mounted to /data/processing in the worker container
-PROCESSING_HOST_PATH=$(docker inspect "$WORKER_CONTAINER" \
+PROCESSING_HOST_PATH=$(docker inspect "$TASK_CONTAINER" \
     --format '{{range .Mounts}}{{if eq .Destination "/data/processing"}}{{.Source}}{{end}}{{end}}')
 
 if [ -z "$PROCESSING_HOST_PATH" ]; then
@@ -159,7 +160,7 @@ except TimeoutError:
     print(f'  태스크 ID: {task_id}')
     print()
     print(f'  진행 상황 확인:')
-    print(f'    docker logs aerial-worker-engine --tail=20')
+    print(f'    docker logs aerial-survey-manager-celery-worker-1 --tail=20')
     print('=' * 50)
     sys.exit(2)
 except Exception as e:
@@ -171,7 +172,7 @@ except Exception as e:
 echo -e "${BLUE}🚀 COG 삽입 태스크 실행 중...${NC}"
 echo ""
 
-docker exec "$WORKER_CONTAINER" python3 -c "$PYTHON_CMD"
+docker exec "$TASK_CONTAINER" python3 -c "$PYTHON_CMD"
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
