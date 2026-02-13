@@ -122,6 +122,8 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
+      - STORAGE_BACKEND=\${STORAGE_BACKEND:-local}
+      - LOCAL_STORAGE_PATH=/data/storage
       - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
@@ -131,6 +133,7 @@ services:
       - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     volumes:
       - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
       - \${MINIO_DATA_PATH:-./data}:/data/minio:ro
       - \${TILES_PATH:-/data/tiles}:/data/tiles:ro
       # 권역 GeoJSON 데이터 (초기 시드용)
@@ -139,8 +142,6 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
-      minio:
         condition: service_started
     networks:
       - aerial-network
@@ -164,6 +165,8 @@ services:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
+      - STORAGE_BACKEND=\${STORAGE_BACKEND:-local}
+      - LOCAL_STORAGE_PATH=/data/storage
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
@@ -174,12 +177,12 @@ services:
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
     volumes:
       - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
       - engine-license:/var/tmp/agisoft/licensing
       # 처리 엔진 스크립트는 Docker 이미지 내부에 포함됨 (Python 버전 호환성)
     depends_on:
       - redis
       - db
-      - minio
     networks:
       aerial-network:
         aliases:
@@ -211,13 +214,16 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
+      - STORAGE_BACKEND=\${STORAGE_BACKEND:-local}
+      - LOCAL_STORAGE_PATH=/data/storage
       - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+    volumes:
+      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
     depends_on:
       - redis
-      - minio
     networks:
       - aerial-network
     logging: *default-logging
@@ -253,6 +259,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    profiles: ["minio"]
     command: server /data --console-address ":9001"
     restart: always
     environment:
@@ -274,6 +281,7 @@ services:
 
   minio-init:
     image: minio/mc
+    profiles: ["minio"]
     depends_on:
       minio:
         condition: service_healthy
@@ -302,8 +310,8 @@ services:
       - AWS_VIRTUAL_HOSTING=FALSE
       - AWS_HTTPS=NO
       - AWS_NO_SIGN_REQUEST=NO
-    depends_on:
-      - minio
+    volumes:
+      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage:ro
     networks:
       - aerial-network
     logging: *default-logging
@@ -320,6 +328,8 @@ services:
       - ./ssl:/etc/nginx/ssl:ro
       # 오프라인 타일맵
       - \${TILES_PATH:-./data/tiles}:/data/tiles:ro
+      # 로컬 스토리지
+      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage:ro
     depends_on:
       - frontend
       - api

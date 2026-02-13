@@ -307,75 +307,68 @@ async def get_cog_url(
             detail="Access denied",
         )
     
-    # First, check if Project has an explicit ortho_path (MinIO)
     project_result = await db.execute(select(Project).where(Project.id == project_id))
     project = project_result.scalar_one()
-    
-    if project.ortho_path:
-        storage = get_storage()
-        if storage.object_exists(project.ortho_path):
-            file_size = storage.get_object_size(project.ortho_path)
-            # Return S3 URL for TiTiler (GDAL /vsis3/ access)
-            s3_url = f"s3://{storage.bucket}/{project.ortho_path}"
-            return {
-                "url": s3_url,
-                "local": False,
-                "file_size": file_size,
-                "project_id": str(project_id),
-            }
 
-    # Fallback to ProcessingJob
-    result = await db.execute(
-        select(ProcessingJob)
-        .where(
-            ProcessingJob.project_id == project_id,
-            ProcessingJob.status == "completed",
+    storage = get_storage()
+
+    # Try Project.ortho_path first, then fall back to ProcessingJob
+    ortho_path = project.ortho_path
+    if not ortho_path:
+        result = await db.execute(
+            select(ProcessingJob)
+            .where(
+                ProcessingJob.project_id == project_id,
+                ProcessingJob.status == "completed",
+            )
+            .order_by(ProcessingJob.completed_at.desc())
         )
-        .order_by(ProcessingJob.completed_at.desc())
-    )
-    job = result.scalar_one_or_none()
-    
-    if not job or not job.result_path:
+        job = result.scalar_one_or_none()
+        if job and job.result_path:
+            ortho_path = job.result_path
+
+    if not ortho_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No completed orthophoto found for this project",
         )
-    
-    file_path = job.result_path
-    
-    # Check if file exists locally
-    if os.path.exists(file_path):
-        file_size = os.path.getsize(file_path)
-        # For local files, return the streaming endpoint URL
-        # The /ortho endpoint already supports Range requests
+
+    # Local storage mode: return file:// URL for TiTiler direct access
+    local_path = storage.get_local_path(ortho_path)
+    if local_path and os.path.exists(local_path):
+        file_size = os.path.getsize(local_path)
         return {
-            "url": f"/api/v1/download/projects/{project_id}/ortho",
+            "url": f"file://{local_path}",
             "local": True,
             "file_size": file_size,
             "project_id": str(project_id),
         }
-    
-    # For MinIO files, return S3 URL for TiTiler
-    storage = get_storage()
-    object_name = file_path  # Assuming result_path is the MinIO object name
 
-    if not storage.object_exists(object_name):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Result file not found in storage",
-        )
+    # MinIO mode: check if object exists in storage
+    if storage.object_exists(ortho_path):
+        file_size = storage.get_object_size(ortho_path)
+        s3_url = f"s3://{storage.bucket}/{ortho_path}"
+        return {
+            "url": s3_url,
+            "local": False,
+            "file_size": file_size,
+            "project_id": str(project_id),
+        }
 
-    file_size = storage.get_object_size(object_name)
+    # Check if it's a local file path (legacy processing jobs)
+    if os.path.exists(ortho_path):
+        file_size = os.path.getsize(ortho_path)
+        return {
+            "url": f"file://{ortho_path}",
+            "local": True,
+            "file_size": file_size,
+            "project_id": str(project_id),
+        }
 
-    # Return S3 URL for TiTiler (GDAL /vsis3/ access)
-    s3_url = f"s3://{storage.bucket}/{object_name}"
-
-    return {
-        "url": s3_url,
-        "local": False,
-        "file_size": file_size,
-        "project_id": str(project_id),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Result file not found in storage",
+    )
 
 
 from pydantic import BaseModel

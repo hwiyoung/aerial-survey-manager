@@ -10,6 +10,7 @@ from app.api.v1.camera_models import router as camera_models_router
 from app.api.v1.presets import router as presets_router
 from app.api.v1.groups import router as groups_router
 from app.api.v1.regions import router as regions_router
+from app.api.v1.storage_files import router as storage_files_router
 
 router = APIRouter()
 
@@ -22,3 +23,4 @@ router.include_router(camera_models_router)
 router.include_router(presets_router)
 router.include_router(groups_router)
 router.include_router(regions_router)
+router.include_router(storage_files_router)

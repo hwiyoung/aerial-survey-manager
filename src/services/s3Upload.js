@@ -194,9 +194,15 @@ export class S3MultipartUploader {
                 const { part_number, presigned_url, start, end } = part;
                 const chunk = file.slice(start, end + 1);
 
+                // Local mode: API URLs need auth header
+                const headers = presigned_url.startsWith('/api/')
+                    ? { 'Authorization': `Bearer ${this.authToken}` }
+                    : {};
+
                 const response = await fetch(presigned_url, {
                     method: 'PUT',
                     body: chunk,
+                    headers,
                     signal: abortController.signal
                 });
 
@@ -204,7 +210,14 @@ export class S3MultipartUploader {
                     throw new Error(`Part ${part_number} failed: ${response.status}`);
                 }
 
-                const etag = response.headers.get('ETag');
+                // Local mode returns ETag in JSON body, S3 returns it in header
+                let etag;
+                if (presigned_url.startsWith('/api/')) {
+                    const data = await response.json();
+                    etag = data.etag;
+                } else {
+                    etag = response.headers.get('ETag');
+                }
                 uploadedBytes += chunk.size;
 
                 // Calculate speed

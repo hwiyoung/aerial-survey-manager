@@ -209,9 +209,13 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             phase_timings = []
             overall_start = time.time()
 
-            # Phase 1: 이미지 다운로드
+            # Phase 1: 이미지 다운로드 (로컬 모드: symlink으로 복사 없이 접근)
             t0 = time.time()
-            update_progress(5, "저장소에서 이미지 다운로드 중...")
+            is_local_storage = storage.get_local_path("") is not None
+            if is_local_storage:
+                update_progress(5, "이미지 심볼릭 링크 생성 중...")
+            else:
+                update_progress(5, "저장소에서 이미지 다운로드 중...")
 
             total_source_size = 0
             for i, image in enumerate(images):
@@ -219,16 +223,22 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     total_source_size += image.file_size
 
                 if image.original_path:
-                    local_path = input_dir / image.filename
-                    storage.download_file(image.original_path, str(local_path))
+                    target_path = input_dir / image.filename
+                    local_src = storage.get_local_path(image.original_path)
 
-                    # Update download progress
+                    if local_src and os.path.exists(local_src):
+                        # Local mode: symlink instead of copy
+                        os.symlink(local_src, str(target_path))
+                    else:
+                        # MinIO mode: download from storage
+                        storage.download_file(image.original_path, str(target_path))
+
                     download_progress = 5 + int((i + 1) / len(images) * 15)
-                    update_progress(download_progress, f"{i + 1}/{len(images)} 이미지 다운로드 완료")
+                    update_progress(download_progress, f"{i + 1}/{len(images)} 이미지 준비 완료")
 
             project.source_size = total_source_size
             db.commit()
-            phase_timings.append(("이미지 다운로드", time.time() - t0))
+            phase_timings.append(("이미지 준비", time.time() - t0))
 
             # Phase 2: 처리 엔진
             t0 = time.time()
@@ -276,10 +286,11 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     except Exception as e:
                         print(f"Failed to read result_gsd from status.json: {e}")
 
-            # Phase 3: COG 변환/업로드/정리 (result.tif는 MinIO 업로드 불필요 - COG만 업로드)
+            # Phase 3: COG 변환/저장/정리
             t0 = time.time()
             update_progress(90, "클라우드 최적화 GeoTIFF 변환 중...")
             cog_path = output_dir / "result_cog.tif"
+            result_object_name = f"projects/{project_id}/ortho/result_cog.tif"
 
             try:
                 import subprocess
@@ -289,7 +300,6 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 if cog_path.exists():
                     print(f"COG already created by engine, skipping conversion: {cog_path}")
                 else:
-                    # Use GDAL to create COG with proper tiling and overviews
                     gdal_cmd = [
                         "gdal_translate",
                         "-of", "COG",
@@ -310,19 +320,26 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     except Exception as del_err:
                         print(f"Failed to delete result.tif: {del_err}")
 
-                # Upload COG to MinIO
-                update_progress(92, "결과물 업로드 중...")
-                result_object_name = f"projects/{project_id}/ortho/result_cog.tif"
-                storage.upload_file(str(cog_path), result_object_name, "image/tiff")
+                update_progress(92, "결과물 저장 중...")
 
-                # COG를 output/ 디렉토리로 이동 후 삭제 (MinIO가 primary)
-                final_output_dir = base_dir / "output"
-                final_output_dir.mkdir(parents=True, exist_ok=True)
-                final_cog_path = final_output_dir / "result_cog.tif"
-                shutil.move(str(cog_path), str(final_cog_path))
-
-                # Use COG as primary result (체크섬/사이즈 계산용)
-                result_path = final_cog_path
+                if is_local_storage:
+                    # 로컬 모드: 스토리지로 직접 이동 (복사 없음)
+                    from app.services.storage_local import LocalStorageBackend
+                    if isinstance(storage, LocalStorageBackend):
+                        storage.move_file(str(cog_path), result_object_name)
+                        result_path = Path(storage.get_local_path(result_object_name))
+                        print(f"COG moved to local storage: {result_path}")
+                    else:
+                        storage.upload_file(str(cog_path), result_object_name, "image/tiff")
+                        result_path = cog_path
+                else:
+                    # MinIO 모드: 업로드 후 로컬 임시 파일 관리
+                    storage.upload_file(str(cog_path), result_object_name, "image/tiff")
+                    final_output_dir = base_dir / "output"
+                    final_output_dir.mkdir(parents=True, exist_ok=True)
+                    final_cog_path = final_output_dir / "result_cog.tif"
+                    shutil.move(str(cog_path), str(final_cog_path))
+                    result_path = final_cog_path
 
                 # Clean up intermediate files in .work/ (숨김 폴더)
                 update_progress(93, "중간 파일 정리 중...")
@@ -340,7 +357,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                         except Exception as cleanup_err:
                             print(f"Failed to clean up {item}: {cleanup_err}")
 
-                # Clean input directory (downloaded images)
+                # Clean input directory (downloaded images / symlinks)
                 if input_dir.exists():
                     try:
                         shutil.rmtree(input_dir)
@@ -349,11 +366,10 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                         print(f"Failed to clean up input directory: {cleanup_err}")
 
             except Exception as cog_error:
-                # COG conversion failed, upload original result.tif as fallback
                 print(f"COG conversion failed: {cog_error}")
                 result_object_name = f"projects/{project_id}/ortho/result.tif"
                 storage.upload_file(str(result_path), result_object_name, "image/tiff")
-            phase_timings.append(("COG/업로드/정리", time.time() - t0))
+            phase_timings.append(("COG/저장/정리", time.time() - t0))
 
             # Phase 4: 체크섬 계산 + 영역 정보 추출
             t0 = time.time()
@@ -361,15 +377,13 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             checksum = calculate_file_checksum(str(result_path))
             file_size = os.path.getsize(result_path)
 
-            # 영역 정보는 파일 삭제 전에 추출해야 함
             update_progress(96, "프로젝트 영역 정보 추출 중...")
             bounds_wkt = get_orthophoto_bounds(str(result_path))
 
-            # 로컬 COG 삭제 (MinIO에 업로드 완료, 로컬 저장소 절약)
-            if result_path.exists():
+            # MinIO 모드에서만 로컬 COG 삭제 (로컬 모드에서는 스토리지 자체가 로컬)
+            if not is_local_storage and result_path.exists():
                 try:
                     result_path.unlink()
-                    # output 디렉토리도 비었으면 삭제
                     output_parent = result_path.parent
                     if output_parent.exists() and not any(output_parent.iterdir()):
                         output_parent.rmdir()
@@ -543,13 +557,17 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
 
         storage = get_storage()
 
-        # Download original
-        temp_path = f"/tmp/{image_id}_{image.filename}"
-        try:
-            storage.download_file(image.original_path, temp_path)
-        except Exception as e:
-            print(f"Failed to download original image {image_id}: {e}")
-            raise  # Will trigger retry
+        # Download original (or use local path directly)
+        local_src = storage.get_local_path(image.original_path)
+        if local_src and os.path.exists(local_src):
+            temp_path = local_src  # Use directly, no download needed
+        else:
+            temp_path = f"/tmp/{image_id}_{image.filename}"
+            try:
+                storage.download_file(image.original_path, temp_path)
+            except Exception as e:
+                print(f"Failed to download original image {image_id}: {e}")
+                raise  # Will trigger retry
 
         # Generate thumbnail
         try:
@@ -576,8 +594,9 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
             raise  # Will trigger retry
 
         finally:
-            # Cleanup temp files
-            if temp_path and os.path.exists(temp_path):
+            # Cleanup temp files (don't delete if it's the local storage original)
+            is_temp = temp_path and temp_path.startswith("/tmp/")
+            if is_temp and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except Exception:
@@ -717,18 +736,18 @@ def delete_source_images(self, project_id: str):
             return {"status": "skipped", "message": "이미 삭제된 원본 이미지입니다."}
 
         storage = get_storage()
-        uploads_prefix = f"projects/{project_id}/uploads/"
         deleted_count = 0
 
         try:
-            # MinIO에서 원본 이미지 삭제
-            objects = storage.list_objects(prefix=uploads_prefix, recursive=True)
+            # 원본 이미지 삭제 (images/{project_id}/)
+            images_prefix = f"images/{project_id}/"
+            objects = storage.list_objects(prefix=images_prefix, recursive=True)
             if objects:
-                storage.delete_recursive(uploads_prefix)
+                storage.delete_recursive(images_prefix)
                 deleted_count = len(objects)
-                print(f"✓ MinIO 원본 이미지 삭제: {deleted_count}개 ({uploads_prefix})")
+                print(f"✓ 원본 이미지 삭제: {deleted_count}개 ({images_prefix})")
             else:
-                print(f"ℹ MinIO에 원본 이미지 없음: {uploads_prefix}")
+                print(f"ℹ 원본 이미지 없음: {images_prefix}")
 
             # 썸네일도 삭제
             thumbnails_prefix = f"projects/{project_id}/thumbnails/"
@@ -902,12 +921,20 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
             except subprocess.CalledProcessError as e:
                 return {"status": "error", "message": f"COG 변환 실패: {e.stderr}"}
 
-        # Upload to MinIO
-        print("📤 MinIO 업로드 중...")
+        # Upload / move to storage
         storage = get_storage()
         cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
-        storage.upload_file(str(final_cog_path), cog_object_name, "image/tiff")
-        print(f"✓ MinIO 업로드 완료: {cog_object_name}")
+
+        from app.services.storage_local import LocalStorageBackend
+        if isinstance(storage, LocalStorageBackend):
+            print("📤 로컬 스토리지로 이동 중...")
+            storage.move_file(str(final_cog_path), cog_object_name)
+            final_cog_path = Path(storage.get_local_path(cog_object_name))
+            print(f"✓ 로컬 스토리지 이동 완료: {final_cog_path}")
+        else:
+            print("📤 MinIO 업로드 중...")
+            storage.upload_file(str(final_cog_path), cog_object_name, "image/tiff")
+            print(f"✓ MinIO 업로드 완료: {cog_object_name}")
 
         # File size (체크섬은 대용량 파일에서 수십 분 소요되므로 건너뜀)
         file_size = os.path.getsize(str(final_cog_path))

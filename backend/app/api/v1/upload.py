@@ -1,6 +1,8 @@
 """Upload API endpoints with tus webhook handling and S3 multipart upload."""
 import json
+import uuid as uuid_mod
 from uuid import UUID
+from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,10 +16,14 @@ from app.schemas.project import ImageResponse, ImageUploadResponse
 from app.auth.jwt import get_current_user, PermissionChecker
 from app.config import get_settings
 from app.services.storage import get_storage
-from app.services.s3_multipart import get_s3_multipart_service
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 settings = get_settings()
+
+# Lazy import for MinIO-only service
+def _get_s3_multipart_service():
+    from app.services.s3_multipart import get_s3_multipart_service
+    return get_s3_multipart_service()
 
 
 @router.post("/projects/{project_id}/images/init", response_model=ImageUploadResponse)
@@ -455,7 +461,6 @@ async def init_multipart_upload(
             detail="Project not found",
         )
 
-    s3_service = get_s3_multipart_service()
     uploads = []
 
     # Look up camera model if provided
@@ -467,6 +472,11 @@ async def init_multipart_upload(
         camera_model = cam_result.scalar_one_or_none()
         if camera_model:
             camera_model_id = camera_model.id
+
+    is_local = settings.STORAGE_BACKEND == "local"
+
+    # Only initialize S3 service when in MinIO mode
+    s3_service = None if is_local else _get_s3_multipart_service()
 
     for file_info in request.files:
         # Create or update image record
@@ -499,26 +509,49 @@ async def init_multipart_upload(
         # Generate object key
         object_key = f"images/{project_id}/{file_info.filename}"
 
-        # Create multipart upload
-        upload_id = s3_service.create_multipart_upload(
-            object_key=object_key,
-            content_type=file_info.content_type
-        )
+        if is_local:
+            # Local mode: generate API URLs for chunk upload
+            upload_id = str(uuid_mod.uuid4())
+            part_size = request.part_size
+            parts = []
+            part_number = 1
+            offset = 0
+            while offset < file_info.size:
+                end = min(offset + part_size, file_info.size) - 1
+                url = f"/api/v1/upload/projects/{project_id}/local/chunk?upload_id={upload_id}&part={part_number}&key={object_key}"
+                parts.append(PartInfo(
+                    part_number=part_number,
+                    presigned_url=url,
+                    start=offset,
+                    end=end,
+                    size=end - offset + 1,
+                ))
+                offset += part_size
+                part_number += 1
 
-        # Generate presigned URLs for parts
-        parts = s3_service.generate_part_presigned_urls(
-            object_key=object_key,
-            upload_id=upload_id,
-            file_size=file_info.size,
-            part_size=request.part_size
-        )
+            # Create staging directory
+            staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload_id
+            staging_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # MinIO mode: use S3 multipart upload
+            upload_id = s3_service.create_multipart_upload(
+                object_key=object_key,
+                content_type=file_info.content_type
+            )
+            raw_parts = s3_service.generate_part_presigned_urls(
+                object_key=object_key,
+                upload_id=upload_id,
+                file_size=file_info.size,
+                part_size=request.part_size
+            )
+            parts = [PartInfo(**p) for p in raw_parts]
 
         uploads.append(UploadInfo(
             filename=file_info.filename,
             image_id=image.id,
             upload_id=upload_id,
             object_key=object_key,
-            parts=[PartInfo(**p) for p in parts]
+            parts=parts,
         ))
 
     await db.commit()
@@ -546,18 +579,43 @@ async def complete_multipart_upload(
             detail="Access denied",
         )
 
-    s3_service = get_s3_multipart_service()
+    is_local = settings.STORAGE_BACKEND == "local"
+    s3_service = None if is_local else _get_s3_multipart_service()
     completed = []
     failed = []
 
     for upload in request.uploads:
         try:
-            # Complete the S3 multipart upload
-            s3_service.complete_multipart_upload(
-                object_key=upload.object_key,
-                upload_id=upload.upload_id,
-                parts=[{"part_number": p.part_number, "etag": p.etag} for p in upload.parts]
-            )
+            if is_local:
+                # Local mode: merge chunks and move to storage
+                import shutil
+                staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload.upload_id
+
+                # Determine number of parts from the sorted staging files
+                part_files = sorted(staging_dir.glob("part_*"), key=lambda p: int(p.name.split("_")[1]))
+                if not part_files:
+                    failed.append({"filename": upload.filename, "error": "No uploaded parts found"})
+                    continue
+
+                # Merge chunks into final path in storage
+                storage = get_storage()
+                final_path = Path(storage.get_local_path(upload.object_key))
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+
+                with open(final_path, "wb") as out_f:
+                    for part_file in part_files:
+                        with open(part_file, "rb") as in_f:
+                            shutil.copyfileobj(in_f, out_f)
+
+                # Clean up staging directory
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            else:
+                # MinIO mode: complete S3 multipart upload
+                s3_service.complete_multipart_upload(
+                    object_key=upload.object_key,
+                    upload_id=upload.upload_id,
+                    parts=[{"part_number": p.part_number, "etag": p.etag} for p in upload.parts]
+                )
 
             # Update image record
             result = await db.execute(
@@ -623,17 +681,25 @@ async def abort_multipart_upload(
             detail="Access denied",
         )
 
-    s3_service = get_s3_multipart_service()
+    is_local = settings.STORAGE_BACKEND == "local"
+    s3_service = None if is_local else _get_s3_multipart_service()
     aborted = []
     errors = []
 
     for upload in request.uploads:
         try:
-            # Abort the S3 multipart upload
-            s3_service.abort_multipart_upload(
-                object_key=upload.object_key,
-                upload_id=upload.upload_id
-            )
+            if is_local:
+                # Local mode: clean up staging directory
+                import shutil
+                staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload.upload_id
+                if staging_dir.exists():
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+            else:
+                # MinIO mode: abort S3 multipart upload
+                s3_service.abort_multipart_upload(
+                    object_key=upload.object_key,
+                    upload_id=upload.upload_id
+                )
 
             # Update image record
             result = await db.execute(
@@ -662,3 +728,44 @@ async def abort_multipart_upload(
         "aborted": aborted,
         "errors": errors
     }
+
+
+# ============================================================================
+# Local Storage Chunk Upload - receives file chunks for local storage mode
+# ============================================================================
+
+@router.put("/projects/{project_id}/local/chunk")
+async def upload_local_chunk(
+    project_id: UUID,
+    upload_id: str,
+    part: int,
+    key: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Receive a file chunk for local storage mode.
+
+    Used instead of S3 presigned URL uploads when STORAGE_BACKEND=local.
+    The URL with query params is returned by init_multipart_upload.
+    """
+    staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload_id
+    if not staging_dir.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Upload session not found",
+        )
+
+    part_path = staging_dir / f"part_{part}"
+
+    # Stream request body directly to disk (memory-efficient)
+    with open(part_path, "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+
+    # Return a fake ETag for compatibility with the frontend flow
+    import hashlib
+    file_size = part_path.stat().st_size
+    etag = hashlib.md5(f"{upload_id}:{part}:{file_size}".encode()).hexdigest()
+
+    return {"etag": etag, "part_number": part}
