@@ -58,6 +58,7 @@ export const getTileConfig = () => {
             attribution: import.meta.env.VITE_TILE_ATTRIBUTION || MAP_CONFIG.attribution.offline,
             subdomains: undefined,
             maxZoom: maxZoom,
+            minZoom: MAP_CONFIG.minZoom,
         };
     } else {
         config = {
@@ -65,6 +66,7 @@ export const getTileConfig = () => {
             attribution: isOffline ? MAP_CONFIG.attribution.offline : MAP_CONFIG.attribution.online,
             subdomains: isOffline ? undefined : MAP_CONFIG.subdomains,
             maxZoom: maxZoom,
+            minZoom: MAP_CONFIG.minZoom,
         };
     }
 

@@ -3,17 +3,30 @@ import os
 import json
 import time
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional, List
+try:
+    import resource
+except Exception:
+    resource = None
 
 from celery import Celery
 
 from app.config import get_settings
+from app.auth.jwt import create_internal_token
 from app.utils.checksum import calculate_file_checksum
 from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
 
 settings = get_settings()
+
+QUEUE_WAIT_WARN_SECONDS = float(os.getenv("PROCESSING_QUEUE_WAIT_WARN_SECONDS", "300"))
+PROCESSING_TOTAL_WARN_SECONDS = float(os.getenv("PROCESSING_TOTAL_WARN_SECONDS", "7200"))
+PROCESSING_MEMORY_WARN_MB = float(os.getenv("PROCESSING_MEMORY_WARN_MB", "8192"))
+ENABLE_EXTERNAL_COG_INGEST = (
+    os.getenv("ENABLE_EXTERNAL_COG_INGEST", "false").strip().lower() == "true"
+)
 
 # Create Celery application
 celery_app = Celery(
@@ -31,9 +44,7 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_routes={
-        "app.workers.tasks.process_orthophoto": {"queue": "odm"},  # default to odm
-        "app.workers.tasks.process_orthophoto_metashape": {"queue": "metashape"},
-        "app.workers.tasks.process_orthophoto_external": {"queue": "external"},
+        "app.workers.tasks.process_orthophoto": {"queue": "metashape"},
         # 처리 외 모든 태스크는 celery 워커에서 처리
         "app.workers.tasks.generate_thumbnail": {"queue": "celery"},
         "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "celery"},
@@ -73,8 +84,14 @@ def _broadcast_ws(project_id: str, status: str, progress: int, message: str):
     """Broadcast processing status update via WebSocket."""
     try:
         import httpx
+        token = create_internal_token(
+            "processing_broadcast",
+            subject="worker",
+            expires_delta=timedelta(minutes=5),
+        )
         httpx.post(
             "http://api:8000/api/v1/processing/broadcast",
+            params={"internal_token": token},
             json={
                 "project_id": project_id,
                 "status": status,
@@ -85,6 +102,21 @@ def _broadcast_ws(project_id: str, status: str, progress: int, message: str):
         )
     except Exception:
         pass
+
+
+def _get_process_memory_mb() -> Optional[float]:
+    """Get current process max RSS memory usage in MB."""
+    if resource is None:
+        return None
+
+    try:
+        max_rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # Linux ru_maxrss: KB, macOS/BSD: bytes
+        if max_rss > 10_000_000:
+            return round(max_rss / (1024 * 1024), 2)
+        return round(max_rss / 1024, 2)
+    except Exception:
+        return None
 
 
 def _convert_to_cog(input_path: str, output_path: str) -> None:
@@ -178,7 +210,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     """
     Main orthophoto processing task.
     
-    Routes to appropriate engine based on options.
+    Dispatches to configured processing engines (metashape/odm/external).
     """
     import asyncio
     from app.models.project import Project, ProcessingJob, Image
@@ -195,11 +227,34 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             return {"status": "error", "message": "Job or project not found"}
         
         try:
+            queue_name = "unknown"
+            try:
+                queue_name = self.request.delivery_info.get("routing_key", "unknown")
+            except Exception:
+                pass
+
             # Update status to processing
             job.status = "processing"
             job.started_at = datetime.utcnow()
             project.status = "processing"
             db.commit()
+
+            queue_wait_seconds = None
+            if job.created_at:
+                queue_wait_seconds = max(
+                    0.0,
+                    (job.started_at - job.created_at).total_seconds(),
+                )
+                print(
+                    f"[Metrics] queue_wait_seconds={queue_wait_seconds:.2f} "
+                    f"queue={queue_name} job_id={job_id} project_id={project_id}"
+                )
+                if queue_wait_seconds > QUEUE_WAIT_WARN_SECONDS:
+                    print(
+                        f"[SLO][WARN] queue_wait_seconds={queue_wait_seconds:.2f} "
+                        f"exceeds_threshold={QUEUE_WAIT_WARN_SECONDS:.2f} "
+                        f"queue={queue_name} job_id={job_id} project_id={project_id}"
+                    )
             
             # Setup directories
             base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id)
@@ -217,14 +272,21 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             
             status_file = base_dir / "processing_status.json"
 
-            def write_status_file(progress, message, status_value="processing"):
+            def write_status_file(
+                progress: int,
+                message: str,
+                status_value: str = "processing",
+                metrics: dict[str, object] | None = None,
+            ):
                 try:
                     payload = {
                         "status": status_value,
                         "progress": progress,
                         "message": message,
-                        "updated_at": datetime.utcnow().isoformat()
+                        "updated_at": datetime.utcnow().isoformat(),
                     }
+                    if metrics is not None:
+                        payload["metrics"] = metrics
                     with open(status_file, "w", encoding="utf-8") as f:
                         json.dump(payload, f)
                 except Exception:
@@ -269,7 +331,8 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 update_progress(scaled_progress, message)
             
             # Run processing engine
-            engine_name = options.get("engine", "odm")
+            engine_name = options.get("engine", "metashape")
+            print(f"[Processing] Engine dispatch: {engine_name} / queue={queue_name}")
             
             # Run async processing in event loop
             loop = asyncio.new_event_loop()
@@ -290,19 +353,18 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 loop.close()
             phase_timings.append(("처리 엔진", time.time() - t0))
 
-            # Read result_gsd from status.json (Metashape engine)
-            if engine_name == "metashape":
-                status_json_path = output_dir / "status.json"
-                if status_json_path.exists():
-                    try:
-                        with open(status_json_path, "r") as f:
-                            status_data = json.load(f)
-                        if "result_gsd" in status_data:
-                            job.result_gsd = status_data["result_gsd"]
-                            print(f"📊 Result GSD saved to job: {job.result_gsd} cm/pixel")
-                            db.commit()
-                    except Exception as e:
-                        print(f"Failed to read result_gsd from status.json: {e}")
+            # Read result_gsd from status.json when provided by the engine
+            status_json_path = output_dir / "status.json"
+            if status_json_path.exists():
+                try:
+                    with open(status_json_path, "r") as f:
+                        status_data = json.load(f)
+                    if "result_gsd" in status_data:
+                        job.result_gsd = status_data["result_gsd"]
+                        print(f"📊 Result GSD saved to job: {job.result_gsd} cm/pixel")
+                        db.commit()
+                except Exception as e:
+                    print(f"Failed to read result_gsd from status.json: {e}")
 
             # Phase 3: COG 변환/저장/정리
             t0 = time.time()
@@ -400,9 +462,33 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
             # 전체 처리 시간 요약
             overall_elapsed = time.time() - overall_start
+            total_elapsed_exceeded = overall_elapsed > PROCESSING_TOTAL_WARN_SECONDS
+            queue_wait_exceeded = (
+                queue_wait_seconds is not None and queue_wait_seconds > QUEUE_WAIT_WARN_SECONDS
+            )
+            memory_usage_mb = _get_process_memory_mb()
+            memory_usage_exceeded = (
+                memory_usage_mb is not None and memory_usage_mb > PROCESSING_MEMORY_WARN_MB
+            )
+            if total_elapsed_exceeded:
+                print(
+                    f"[SLO][WARN] total_elapsed_seconds={overall_elapsed:.2f} "
+                    f"exceeds_threshold={PROCESSING_TOTAL_WARN_SECONDS:.2f} "
+                    f"job_id={job_id} project_id={project_id}"
+                )
+            if memory_usage_exceeded:
+                print(
+                    f"[SLO][WARN] memory_usage_mb={memory_usage_mb:.2f} "
+                    f"exceeds_threshold={PROCESSING_MEMORY_WARN_MB:.2f} "
+                    f"job_id={job_id} project_id={project_id}"
+                )
             summary_lines = []
             summary_lines.append(f"{'='*60}")
             summary_lines.append(f"전체 처리 완료 - 총 {_fmt_elapsed(overall_elapsed)}")
+            if queue_wait_seconds is not None:
+                summary_lines.append(f"큐 대기 시간            : {queue_wait_seconds:.2f}s")
+            if memory_usage_mb is not None:
+                summary_lines.append(f"최대 메모리 사용량      : {memory_usage_mb:.2f}MB")
             for idx, (phase_name, elapsed) in enumerate(phase_timings, 1):
                 summary_lines.append(f"  {idx}. {phase_name:<20s}: {_fmt_elapsed(elapsed)}")
             summary_lines.append(f"{'='*60}")
@@ -426,7 +512,30 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             project.ortho_path = result_object_name  # Store ortho path in project
             project.ortho_size = file_size
             db.commit()
-            write_status_file(100, "Processing completed successfully", status_value="completed")
+            final_metrics = {
+                "queue_wait_seconds": queue_wait_seconds,
+                "total_elapsed_seconds": round(overall_elapsed, 2),
+                "slo": {
+                    "queue_wait_warn_seconds": QUEUE_WAIT_WARN_SECONDS,
+                    "total_elapsed_warn_seconds": PROCESSING_TOTAL_WARN_SECONDS,
+                    "memory_warn_mb": PROCESSING_MEMORY_WARN_MB,
+                    "queue_wait_exceeded": bool(queue_wait_exceeded),
+                    "total_elapsed_exceeded": bool(total_elapsed_exceeded),
+                    "memory_exceeded": bool(memory_usage_exceeded),
+                },
+                "memory_usage_mb": memory_usage_mb,
+                "phase_elapsed_seconds": {
+                    phase_name: round(elapsed, 2)
+                    for phase_name, elapsed in phase_timings
+                },
+            }
+
+            write_status_file(
+                100,
+                "Processing completed successfully",
+                status_value="completed",
+                metrics=final_metrics,
+            )
 
             # Broadcast completion via WebSocket AFTER all DB updates
             _broadcast_ws(project_id, "completed", 100, "Processing completed successfully")
@@ -436,13 +545,14 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 "result_path": result_object_name,
                 "checksum": checksum,
                 "size": file_size,
+                "metrics": final_metrics,
             }
             
         except Exception as e:
-            # Handle error - extract user-friendly message from ODM output
+            # Handle error - extract user-friendly message from processing output
             error_str = str(e)
             
-            # Try to find [ERROR] message in ODM output
+            # Try to find [ERROR] message in output
             user_friendly_error = "처리 중 오류가 발생했습니다."
             if "[ERROR]" in error_str:
                 # Extract the ERROR line
@@ -451,14 +561,25 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 if error_match:
                     user_friendly_error = error_match.group(1).strip()
             elif "Exit code:" in error_str:
-                user_friendly_error = "ODM 처리 실패 (데이터 품질 문제일 수 있음)"
+                user_friendly_error = "처리 실패 (데이터 품질 문제일 수 있음)"
             
             job.status = "error"
             job.error_message = user_friendly_error
             project.status = "error"
             project.error_message = user_friendly_error  # Also save to project for UI display
             db.commit()
-            write_status_file(0, user_friendly_error, status_value="error")
+            write_status_file(
+                0,
+                user_friendly_error,
+                status_value="error",
+                metrics={
+                    "phase_elapsed_seconds": {
+                        phase_name: round(elapsed, 2)
+                        for phase_name, elapsed in phase_timings
+                    },
+                    "error_message": user_friendly_error,
+                },
+            )
             
             # Broadcast error via WebSocket
             _broadcast_ws(project_id, "error", 0, user_friendly_error)
@@ -720,6 +841,12 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
     from app.models.project import Project, ProcessingJob
     from app.services.storage import get_storage
     from app.utils.db import sync_db_session
+
+    if not ENABLE_EXTERNAL_COG_INGEST:
+        return {
+            "status": "error",
+            "message": "External COG ingest is disabled by policy. Set ENABLE_EXTERNAL_COG_INGEST=true to enable.",
+        }
 
     source = Path(source_path)
     if not source.exists():

@@ -1,6 +1,6 @@
 """Pydantic schemas for Project and related models."""
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal, Any
 from uuid import UUID
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,10 @@ class ProjectResponse(ProjectBase):
     # 처리 결과 정보
     result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
     process_mode: Optional[str] = None  # 마지막 처리 모드 (Preview, Normal, High)
+    # 현재 사용자 기준 권한(유효 권한)
+    current_user_permission: Optional[str] = None  # view | edit | admin
+    can_edit: bool = False
+    can_delete: bool = False
 
     class Config:
         from_attributes = True
@@ -62,6 +66,27 @@ class ProjectListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ProjectBatchAction(BaseModel):
+    """Batch operation request payload."""
+    action: Literal["delete", "update_status"]
+    project_ids: List[UUID] = Field(default_factory=list, min_length=1)
+    status: Optional[str] = None
+
+
+class ProjectBatchFailure(BaseModel):
+    """Per-project error detail for batch operations."""
+    project_id: UUID
+    reason: str
+
+
+class ProjectBatchResponse(BaseModel):
+    """Batch operation result."""
+    action: Literal["delete", "update_status"]
+    requested: int
+    succeeded: List[UUID] = Field(default_factory=list)
+    failed: List[ProjectBatchFailure] = Field(default_factory=list)
 
 
 # --- Image Schemas ---
@@ -170,7 +195,7 @@ class CameraModelResponse(CameraModelBase):
 # --- Processing Job Schemas ---
 class ProcessingOptions(BaseModel):
     """Processing options schema."""
-    engine: str = "metashape"  # metashape only (odm, external disabled)
+    engine: str = "metashape"
     gsd: float = 5.0  # cm/pixel
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
@@ -197,9 +222,26 @@ class ProcessingJobResponse(BaseModel):
     result_size: Optional[int] = None
     result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
     process_mode: Optional[str] = None  # Preview, Normal, High
+    metrics: Optional[dict[str, Any]] = None
 
     class Config:
         from_attributes = True
+
+
+class ProcessingEnginePolicy(BaseModel):
+    """Processing engine support/policy item."""
+
+    name: str
+    enabled: bool
+    reason: Optional[str] = None
+    queue_name: Optional[str] = None
+
+
+class ProcessingEnginesResponse(BaseModel):
+    """Available processing engines and policy summary."""
+
+    engines: List[ProcessingEnginePolicy]
+    default_engine: str
 
 
 class ProcessingStatusUpdate(BaseModel):
@@ -269,3 +311,53 @@ class StorageStatsResponse(BaseModel):
     processing_size: int # bytes - processing data directory
     tiles_size: int      # bytes - offline tiles directory
     storage_backend: str = "minio"  # "local" or "minio"
+
+
+class ProcessingMetricJobSummary(BaseModel):
+    """Summary item for a single processing job metric."""
+    project_id: UUID
+    project_title: Optional[str] = None
+    engine: Optional[str] = None
+    status: str
+    progress: int
+    queue_wait_seconds: Optional[float] = None
+    total_elapsed_seconds: Optional[float] = None
+    memory_usage_mb: Optional[float] = None
+    queue_wait_warn_seconds: Optional[float] = None
+    total_elapsed_warn_seconds: Optional[float] = None
+    memory_warn_mb: Optional[float] = None
+    queue_wait_exceeded: bool = False
+    total_elapsed_exceeded: bool = False
+    memory_exceeded: bool = False
+
+
+class ProcessingMetricsSummary(BaseModel):
+    """Aggregate queue/processing metrics summary."""
+    queue_wait_sample_count: int = 0
+    queue_wait_avg_seconds: Optional[float] = None
+    queue_wait_p95_seconds: Optional[float] = None
+    queue_wait_violation_count: int = 0
+    queue_wait_violation_rate: Optional[float] = None
+
+    total_elapsed_sample_count: int = 0
+    total_elapsed_avg_seconds: Optional[float] = None
+    total_elapsed_p95_seconds: Optional[float] = None
+    total_elapsed_violation_count: int = 0
+    total_elapsed_violation_rate: Optional[float] = None
+
+    memory_usage_sample_count: int = 0
+    memory_usage_avg_mb: Optional[float] = None
+    memory_usage_p95_mb: Optional[float] = None
+    memory_violation_count: int = 0
+    memory_violation_rate: Optional[float] = None
+
+
+class ProcessingMetricsResponse(BaseModel):
+    """Processing performance metrics response."""
+    generated_at: datetime
+    scope: str
+    organization_id: Optional[UUID] = None
+    total_jobs: int
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    summary: ProcessingMetricsSummary
+    recent_jobs: List[ProcessingMetricJobSummary] = Field(default_factory=list)

@@ -16,6 +16,34 @@ settings = get_settings()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
+CANONICAL_USER_ROLES = {"admin", "manager", "user"}
+ROLE_ALIASES = {
+    "viewer": "user",
+    "user": "user",
+    "editor": "manager",
+    "manager": "manager",
+    "admin": "admin",
+}
+
+
+def normalize_role(role: Optional[str]) -> str:
+    """Normalize legacy and frontend-facing role names to canonical roles."""
+    if not role or not isinstance(role, str):
+        return "user"
+
+    normalized = role.strip().lower()
+    return ROLE_ALIASES.get(normalized, normalized if normalized in CANONICAL_USER_ROLES else "user")
+
+
+def is_admin_role(role: Optional[str]) -> bool:
+    """Return True when role has admin permission."""
+    return normalize_role(role) == "admin"
+
+
+def is_manager_role(role: Optional[str]) -> bool:
+    """Return True when role has manager or higher permission."""
+    return normalize_role(role) in {"admin", "manager"}
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against a hash."""
@@ -73,6 +101,50 @@ def verify_token(token: str, token_type: str = "access") -> dict:
         )
 
 
+def create_internal_token(
+    scope: str = "processing_internal",
+    *,
+    subject: Optional[str] = None,
+    expires_delta: Optional[timedelta] = None,
+):
+    """Create a short-lived JWT token for internal service calls."""
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(minutes=10)
+    )
+    payload = {
+        "sub": subject or "system",
+        "type": "internal",
+        "scope": scope,
+        "iat": datetime.utcnow(),
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def verify_internal_token(token: str, *, required_scope: str | None = None) -> dict:
+    """Verify an internal service token."""
+    try:
+        payload = jwt.decode(
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
+        if payload.get("type") != "internal":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid internal token type",
+            )
+        if required_scope and payload.get("scope") != required_scope:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid internal token scope",
+            )
+        return payload
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired internal token",
+        )
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
@@ -109,10 +181,22 @@ async def get_current_active_admin(
     current_user: User = Depends(get_current_user),
 ) -> User:
     """Get the current user and verify they are an admin."""
-    if current_user.role != "admin":
+    if not is_admin_role(current_user.role):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",
+        )
+    return current_user
+
+
+async def get_current_active_manager(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Get the current user and verify they are an admin or manager."""
+    if not is_manager_role(current_user.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manager privileges required",
         )
     return current_user
 
@@ -135,23 +219,28 @@ class PermissionChecker:
         from app.models.user import ProjectPermission
         
         # Admin users have all permissions
-        if user.role == "admin":
+        if is_admin_role(user.role):
             return True
-        
-        # Check if user is project owner
+
+        # Resolve project once and enforce organization boundary early
         result = await db.execute(
             select(Project).where(Project.id == project_id)
         )
         project = result.scalar_one_or_none()
-        
+        if project is None:
+            return False
+
+        if project.organization_id != user.organization_id:
+            return False
+
+        # Check if user is project owner
         if project and project.owner_id == user.id:
             return True
         
         # Check organization access
-        if project and project.organization_id == user.organization_id:
-            # Users in same org have view access by default
-            if self.required_permission == "view":
-                return True
+        # Users in same org have view access by default
+        if self.required_permission == "view":
+            return True
         
         # Check explicit permissions
         result = await db.execute(

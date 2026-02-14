@@ -9,7 +9,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.project import CameraModel
 from app.schemas.project import CameraModelCreate, CameraModelResponse
-from app.auth.jwt import get_current_user
+from app.auth.jwt import get_current_user, is_admin_role
 
 router = APIRouter(prefix="/camera-models", tags=["Camera Models"])
 
@@ -23,7 +23,7 @@ async def list_camera_models(
     query = select(CameraModel)
     
     # Filter by organization or public
-    if current_user.role != "admin":
+    if not is_admin_role(current_user.role):
         query = query.where(
             (CameraModel.organization_id == current_user.organization_id) |
             (CameraModel.organization_id == None)
@@ -72,13 +72,13 @@ async def delete_camera_model(
         )
     
     # Permission check
-    if current_user.role != "admin" and camera_model.organization_id != current_user.organization_id:
+    if not is_admin_role(current_user.role) and camera_model.organization_id != current_user.organization_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this camera model",
         )
     
-    if not camera_model.is_custom and current_user.role != "admin":
+    if not camera_model.is_custom and not is_admin_role(current_user.role):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can delete standard camera models",

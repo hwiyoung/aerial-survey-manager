@@ -1,5 +1,7 @@
 """Upload API endpoints with tus webhook handling and S3 multipart upload."""
 import json
+import hashlib
+import hmac
 import uuid as uuid_mod
 from uuid import UUID
 from pathlib import Path
@@ -13,12 +15,55 @@ from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, Image, CameraModel
 from app.schemas.project import ImageResponse, ImageUploadResponse
-from app.auth.jwt import get_current_user, PermissionChecker
+from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role
 from app.config import get_settings
 from app.services.storage import get_storage
+from app.services.quota import ensure_organization_quota
+
+
+def _verify_tus_webhook_request(token: str, signature: str, body: bytes) -> None:
+    """Verify tus hook caller.
+
+    - If TUS_WEBHOOK_TOKEN is configured, caller must provide either:
+      - X-Tus-Webhook-Token header (exact match)
+      - token query param match
+      - or X-Tus-Signature (HMAC-SHA256) in header
+    - If token is not configured, behavior keeps backward compatibility.
+    """
+    if not settings.TUS_WEBHOOK_TOKEN:
+        return
+
+    token_ok = (
+        token == settings.TUS_WEBHOOK_TOKEN
+        or signature == hashlib.sha256(body + settings.TUS_WEBHOOK_TOKEN.encode()).hexdigest()
+    )
+    if token_ok:
+        return
+
+    # HMAC verification
+    if signature:
+        expected_signature = hmac.new(
+            settings.TUS_WEBHOOK_TOKEN.encode(), body, hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(signature, expected_signature):
+            return
+
+    raise HTTPException(status_code=403, detail="Invalid TUS webhook auth")
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 settings = get_settings()
+
+
+async def _get_scoped_project(
+    project_id: UUID,
+    current_user: User,
+    db: AsyncSession,
+):
+    query = select(Project).where(Project.id == project_id)
+    if not is_admin_role(current_user.role):
+        query = query.where(Project.organization_id == current_user.organization_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
 
 # Lazy import for MinIO-only service
 def _get_s3_multipart_service():
@@ -46,10 +91,8 @@ async def initiate_image_upload(
             detail="Access denied",
         )
     
-    # Check project exists
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    if not project:
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
@@ -65,13 +108,24 @@ async def initiate_image_upload(
     existing_image = existing_result.scalar_one_or_none()
 
     if existing_image:
+        additional_bytes = max(file_size - (existing_image.file_size or 0), 0)
         # Reset status to uploading for retry/re-upload
         existing_image.upload_status = "uploading"
         existing_image.file_size = file_size
+        await ensure_organization_quota(
+            db,
+            current_user.organization_id,
+            additional_storage_bytes=additional_bytes,
+        )
         await db.commit()
         await db.refresh(existing_image)
         image = existing_image
     else:
+        await ensure_organization_quota(
+            db,
+            current_user.organization_id,
+            additional_storage_bytes=file_size,
+        )
         # Create new image record
         image = Image(
             project_id=project_id,
@@ -108,6 +162,16 @@ async def tus_webhook(
     - post-terminate: Handle cancelled upload
     """
     body = await request.body()
+
+    _verify_tus_webhook_request(
+        request.headers.get("X-Tus-Webhook-Token")
+        or request.query_params.get("token")
+        or request.headers.get("Authorization")
+        or "",
+        request.headers.get("X-Tus-Signature") or "",
+        body,
+    )
+
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
@@ -211,6 +275,13 @@ async def list_project_images(
             detail="Access denied",
         )
 
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     from sqlalchemy.orm import joinedload
     from app.models.project import ExteriorOrientation, CameraModel
 
@@ -286,6 +357,13 @@ async def regenerate_project_thumbnails(
             detail="Access denied",
         )
 
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     try:
         from app.workers.tasks import regenerate_missing_thumbnails
         task = regenerate_missing_thumbnails.delay(str(project_id))
@@ -318,6 +396,13 @@ async def regenerate_image_thumbnail(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found",
+        )
+
+    scoped_project = await _get_scoped_project(image.project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
         )
 
     # Check permission
@@ -449,16 +534,57 @@ async def init_multipart_upload(
             detail="Access denied",
         )
 
-    # Check project exists
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    if not project:
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
 
+    # Sanitize filenames and calculate incremental storage demand
+    safe_filenames = []
+    import os
+    for file_info in request.files:
+        safe_filename = os.path.basename(file_info.filename)
+        if not safe_filename or safe_filename.startswith(".") or ".." in file_info.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filename: {file_info.filename}",
+            )
+        safe_filenames.append(safe_filename)
+        file_info.filename = safe_filename
+
+    existing_result = await db.execute(
+        select(Image.filename, Image.file_size)
+        .where(
+            Image.project_id == project_id,
+            Image.filename.in_(safe_filenames),
+        )
+    )
+    existing_sizes = {row.filename: row.file_size or 0 for row in existing_result.all()}
+
+    cumulative_sizes = {}
+    total_additional_bytes = 0
+    for file_info in request.files:
+        prev_size = cumulative_sizes.get(file_info.filename, existing_sizes.get(file_info.filename, 0))
+        if file_info.size > prev_size:
+            total_additional_bytes += file_info.size - prev_size
+        cumulative_sizes[file_info.filename] = file_info.size
+
+    await ensure_organization_quota(
+        db,
+        current_user.organization_id,
+        additional_storage_bytes=total_additional_bytes,
+    )
+
     uploads = []
+    existing_image_rows = await db.execute(
+        select(Image).where(
+            Image.project_id == project_id,
+            Image.filename.in_(safe_filenames),
+        )
+    )
+    existing_images = {img.filename: img for img in existing_image_rows.scalars().all()}
 
     # Look up camera model if provided
     camera_model_id = None
@@ -476,24 +602,8 @@ async def init_multipart_upload(
     s3_service = None if is_local else _get_s3_multipart_service()
 
     for file_info in request.files:
-        # Sanitize filename: prevent path traversal
-        import os
-        safe_filename = os.path.basename(file_info.filename)
-        if not safe_filename or safe_filename.startswith(".") or ".." in file_info.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid filename: {file_info.filename}",
-            )
-        file_info.filename = safe_filename
-
         # Create or update image record
-        existing_result = await db.execute(
-            select(Image).where(
-                Image.project_id == project_id,
-                Image.filename == file_info.filename,
-            )
-        )
-        existing_image = existing_result.scalar_one_or_none()
+        existing_image = existing_images.get(file_info.filename)
 
         if existing_image:
             existing_image.upload_status = "uploading"
@@ -584,6 +694,13 @@ async def complete_multipart_upload(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
         )
 
     is_local = settings.STORAGE_BACKEND == "local"
@@ -701,6 +818,13 @@ async def abort_multipart_upload(
             detail="Access denied",
         )
 
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     is_local = settings.STORAGE_BACKEND == "local"
     s3_service = None if is_local else _get_s3_multipart_service()
     aborted = []
@@ -774,6 +898,7 @@ async def upload_local_chunk(
     part: int,
     request: Request,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Receive a file chunk for local storage mode.
@@ -781,6 +906,21 @@ async def upload_local_chunk(
     Used instead of S3 presigned URL uploads when STORAGE_BACKEND=local.
     The URL with query params is returned by init_multipart_upload.
     """
+    # Check permission for the target project
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     # Validate upload_id is a valid UUID (prevents path traversal)
     try:
         uuid_mod.UUID(upload_id)

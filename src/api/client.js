@@ -154,6 +154,97 @@ class ApiClient {
         return this.request('/auth/me');
     }
 
+    // --- User & Organization Management (Admin) ---
+    async getUsers(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        return this.request(`/users${query ? `?${query}` : ''}`);
+    }
+
+    async createUser(data) {
+        return this.request('/users', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async inviteUser(data) {
+        return this.request('/users/invite', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async transferUser(userId, data) {
+        return this.request(`/users/${userId}/transfer`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async updateUser(userId, data) {
+        return this.request(`/users/${userId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async deactivateUser(userId) {
+        return this.request(`/users/${userId}`, {
+            method: 'DELETE',
+        });
+    }
+
+    async deleteUser(userId) {
+        return this.request(`/users/${userId}/permanent`, {
+            method: 'DELETE',
+        });
+    }
+
+    async getOrganizations() {
+        return this.request('/organizations');
+    }
+
+    async createOrganization(data) {
+        return this.request('/organizations', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async updateOrganization(organizationId, data) {
+        return this.request(`/organizations/${organizationId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async deleteOrganization(organizationId, force = false) {
+        return this.request(`/organizations/${organizationId}?force=${force ? 'true' : 'false'}`, {
+            method: 'DELETE',
+        });
+    }
+
+    async getPermissionCatalog() {
+        return this.request('/permissions/roles');
+    }
+
+    async getProjectPermissions(projectId) {
+        return this.request(`/permissions/projects/${projectId}`);
+    }
+
+    async setProjectPermission(projectId, userId, data) {
+        return this.request(`/permissions/projects/${projectId}/users/${userId}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async removeProjectPermission(projectId, userId) {
+        return this.request(`/permissions/projects/${projectId}/users/${userId}`, {
+            method: 'DELETE',
+        });
+    }
+
     // --- Projects ---
     async getProjects(params = {}) {
         const query = new URLSearchParams(params).toString();
@@ -179,7 +270,29 @@ class ApiClient {
     }
 
     async deleteProject(projectId) {
-        return this.request(`/projects/${projectId}`, { method: 'DELETE' });
+        return this.batchDeleteProjects([projectId]);
+    }
+
+    async batchProjects(payload) {
+        return this.request('/projects/batch', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    }
+
+    async batchDeleteProjects(projectIds) {
+        return this.batchProjects({
+            action: 'delete',
+            project_ids: projectIds,
+        });
+    }
+
+    async batchUpdateProjectStatus(projectIds, status) {
+        return this.batchProjects({
+            action: 'update_status',
+            project_ids: projectIds,
+            status,
+        });
     }
 
     async deleteSourceImages(projectId) {
@@ -210,6 +323,10 @@ class ApiClient {
         });
     }
 
+    async getProcessingEngines() {
+        return this.request('/processing/engines');
+    }
+
     async getProcessingStatus(projectId) {
         return this.request(`/processing/projects/${projectId}/status`);
     }
@@ -222,6 +339,10 @@ class ApiClient {
 
     async getProcessingJobs() {
         return this.request('/processing/jobs');
+    }
+
+    async getProcessingMetrics() {
+        return this.request('/processing/metrics');
     }
 
     // --- Download ---

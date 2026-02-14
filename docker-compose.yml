@@ -63,9 +63,13 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_METASHAPE_ENGINE:-true}
+      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
+      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - COG_LOOKUP_WARN_MS=${COG_LOOKUP_WARN_MS:-1000}
     volumes:
       - ./backend:/app
       - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
@@ -197,6 +201,13 @@ services:
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
+      - PROCESSING_QUEUE_WAIT_WARN_SECONDS=${PROCESSING_QUEUE_WAIT_WARN_SECONDS:-300}
+      - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
+      - PROCESSING_MEMORY_WARN_MB=${PROCESSING_MEMORY_WARN_MB:-8192}
+      - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_METASHAPE_ENGINE:-true}
+      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
+      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       - ./backend/app:/app/app
       - ./engines/metashape:/app/engines/metashape
@@ -249,6 +260,13 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - PROCESSING_QUEUE_WAIT_WARN_SECONDS=${PROCESSING_QUEUE_WAIT_WARN_SECONDS:-300}
+      - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
+      - PROCESSING_MEMORY_WARN_MB=${PROCESSING_MEMORY_WARN_MB:-8192}
+      - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_METASHAPE_ENGINE:-true}
+      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
+      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       - ./backend:/app
       - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage
@@ -359,6 +377,9 @@ services:
       - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.TIF,.tiff
       - VSI_CACHE=TRUE
       - VSI_CACHE_SIZE=50000000
+      - CPL_VSIL_CURL_CACHE_SIZE=200000000
+      - GDAL_HTTP_MAX_RETRY=5
+      - CPL_VSIL_CURL_USE_HEAD=NO
     volumes:
       # 로컬 모드에서 file:// URL로 직접 읽기
       - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage:ro

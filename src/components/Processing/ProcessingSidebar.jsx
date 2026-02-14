@@ -3,8 +3,20 @@ import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Bookmark,
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 
-export default function ProcessingSidebar({ width, project, onCancel, onStartProcessing, onComplete, onEoReloaded, onCancelled, activeUploads = [] }) {
+export default function ProcessingSidebar({
+    width,
+    project,
+    onCancel,
+    onStartProcessing,
+    onComplete,
+    onEoReloaded,
+    onCancelled,
+    activeUploads = [],
+    availableEngines = [],
+    defaultEngine = 'metashape',
+}) {
     const [isStarting, setIsStarting] = useState(false);
+    const [startError, setStartError] = useState('');
     const [presets, setPresets] = useState([]);
     const [defaultPresets, setDefaultPresets] = useState([]);
     const [selectedPresetId, setSelectedPresetId] = useState(null);
@@ -19,9 +31,33 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
     const [rawEoData, setRawEoData] = useState('');
     const eoInputRef = useRef(null);
 
-    // Processing options state (Metashape only)
+    const processingEngines = useMemo(() => {
+        if (!Array.isArray(availableEngines)) return [{ name: 'metashape', enabled: true, reason: '기본 엔진' }];
+
+        const normalized = availableEngines
+            .map((engine) => ({
+                name: String(engine?.name || '').trim(),
+                enabled: Boolean(engine?.enabled),
+                reason: engine?.reason ? String(engine.reason) : '',
+            }))
+            .filter((engine) => engine.name);
+
+        return normalized.length > 0 ? normalized : [{ name: 'metashape', enabled: true, reason: '기본 엔진' }];
+    }, [availableEngines]);
+
+    const enabledEngines = useMemo(() => processingEngines.filter((engine) => engine.enabled), [processingEngines]);
+    const defaultAvailableEngine = useMemo(() => {
+        const normalizedDefault = String(defaultEngine || '').trim();
+        const matched = enabledEngines.find((engine) => engine.name === normalizedDefault);
+        if (matched) return matched.name;
+        if (enabledEngines.length > 0) return enabledEngines[0].name;
+        if (processingEngines.length > 0) return processingEngines[0].name;
+        return 'metashape';
+    }, [defaultEngine, enabledEngines, processingEngines]);
+
+    // Processing options state
     const [options, setOptions] = useState({
-        engine: 'metashape',  // Fixed to metashape
+        engine: defaultAvailableEngine || 'metashape',
         gsd: 5.0,
         output_crs: 'EPSG:5186',
         process_mode: 'Normal',
@@ -108,6 +144,28 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         loadPresets();
     }, []);
 
+    useEffect(() => {
+        setOptions((prev) => {
+            const isEngineValid = processingEngines.some((engine) => engine.name === prev.engine && engine.enabled);
+            if (isEngineValid) return prev;
+            return {
+                ...prev,
+                engine: defaultAvailableEngine || 'metashape',
+            };
+        });
+    }, [defaultAvailableEngine, processingEngines]);
+
+    const normalizedSelectedEngine = useMemo(() => {
+        const selected = String(options.engine || '').trim();
+        return selected || defaultAvailableEngine || 'metashape';
+    }, [options.engine, defaultAvailableEngine]);
+
+    const selectedEnginePolicy = useMemo(() => {
+        return processingEngines.find((engine) => engine.name === normalizedSelectedEngine);
+    }, [processingEngines, normalizedSelectedEngine]);
+
+    const isSelectedEngineEnabled = Boolean(selectedEnginePolicy?.enabled);
+
     // Trigger refresh when processing complete (한 번만 실행)
     // onComplete는 모달에서 사용자가 선택할 때만 호출 (깜빡거림 방지)
     useEffect(() => {
@@ -122,6 +180,7 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
     useEffect(() => {
         setHasTriggeredComplete(false);
         setHasTriggeredCancel(false);
+        setStartError('');
     }, [project?.id]);
 
     useEffect(() => {
@@ -146,19 +205,24 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
 
     // Apply preset options when selected
     const handlePresetSelect = (presetId) => {
+        setStartError('');
         setSelectedPresetId(presetId);
         if (!presetId) return;
 
         const allPresets = [...presets, ...defaultPresets];
         const preset = allPresets.find(p => p.id === presetId);
         if (preset?.options) {
-            setOptions({
-                engine: 'metashape',  // Always use metashape
+            const candidateEngine = preset.options.engine || normalizedSelectedEngine || defaultAvailableEngine;
+            const isEngineEnabled = processingEngines.some((engine) => engine.name === candidateEngine && engine.enabled);
+
+            setOptions((prevOptions) => ({
+                ...prevOptions,
+                engine: isEngineEnabled ? candidateEngine : defaultAvailableEngine || 'metashape',
                 gsd: preset.options.gsd || 5.0,
                 output_crs: preset.options.output_crs || 'EPSG:5186',
                 process_mode: preset.options.process_mode || 'Normal',
                 build_point_cloud: preset.options.build_point_cloud || false
-            });
+            }));
         }
     };
 
@@ -171,16 +235,20 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         if (defaultPreset?.id) {
             setSelectedPresetId(defaultPreset.id);
             if (defaultPreset.options) {
-                setOptions({
-                    engine: 'metashape',  // Always use metashape
+                const candidateEngine = defaultPreset.options.engine || normalizedSelectedEngine || defaultAvailableEngine;
+                const isEngineEnabled = processingEngines.some((engine) => engine.name === candidateEngine && engine.enabled);
+
+                setOptions((prevOptions) => ({
+                    ...prevOptions,
+                    engine: isEngineEnabled ? candidateEngine : defaultAvailableEngine || 'metashape',
                     gsd: defaultPreset.options.gsd || 5.0,
                     output_crs: defaultPreset.options.output_crs || 'EPSG:5186',
                     process_mode: defaultPreset.options.process_mode || 'Normal',
                     build_point_cloud: defaultPreset.options.build_point_cloud || false
-                });
+                }));
             }
         }
-    }, [loadingPresets, selectedPresetId, presets, defaultPresets]);
+    }, [loadingPresets, selectedPresetId, presets, defaultPresets, normalizedSelectedEngine, defaultAvailableEngine, processingEngines]);
 
     // Save current settings as new preset
     const handleSavePreset = async () => {
@@ -222,10 +290,29 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
 
     // Start processing with current options
     const handleStart = async (forceRestart = false) => {
+        setStartError('');
         if (!selectedPresetId) {
-            alert('프리셋을 선택해주세요.');
+            setStartError('프리셋을 선택해 주세요.');
             return;
         }
+
+        const hasEnabledEngine = processingEngines.some((engine) => engine.enabled);
+        if (!hasEnabledEngine) {
+            setStartError('사용 가능한 처리 엔진이 없습니다. 서버 설정을 확인해 주세요.');
+            return;
+        }
+
+        if (!isSelectedEngineEnabled) {
+            const fallbackEngine = enabledEngines[0]?.name;
+            if (fallbackEngine && fallbackEngine !== normalizedSelectedEngine) {
+                setOptions((prev) => ({ ...prev, engine: fallbackEngine }));
+                setStartError(`현재 엔진(${normalizedSelectedEngine})은 비활성입니다. ${fallbackEngine}으로 자동 전환합니다.`);
+            } else {
+                setStartError('현재 엔진이 비활성입니다.');
+            }
+            return;
+        }
+
         setHasTriggeredCancel(false);
         setIsStarting(true);
         try {
@@ -234,8 +321,22 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
         } catch (error) {
             console.error('Failed to start processing:', error);
 
+            const errorData = error.response?.data?.detail || error.response?.data || {};
+            if (errorData?.type === 'unsupported_engine') {
+                const fallbackEngine = enabledEngines.find((engine) => errorData?.supported_engines?.includes(engine.name))?.name
+                    || enabledEngines[0]?.name;
+                if (fallbackEngine) {
+                    setOptions((prev) => ({ ...prev, engine: fallbackEngine }));
+                    setStartError(`요청한 엔진(${errorData.engine})은 현재 정책에서 비활성입니다. ${fallbackEngine}으로 자동 전환했습니다.`);
+                } else {
+                    setStartError(errorData.message || '요청한 처리 엔진이 현재 비활성입니다.');
+                }
+
+                setIsStarting(false);
+                return;
+            }
+
             // Handle job_already_running error with force restart option
-            const errorData = error.response?.data?.detail || error.response?.data;
             if (errorData?.type === 'job_already_running') {
                 const confirmRestart = window.confirm(
                     `현재 진행 중인 처리 작업이 있습니다.\n\n` +
@@ -251,6 +352,10 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                 }
             }
 
+            const message = errorData?.message || error.message || '처리 시작에 실패했습니다.';
+            if (message) {
+                setStartError(message);
+            }
             setIsStarting(false);
         }
     };
@@ -432,6 +537,42 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                         2. 처리 설정 (Processing Options)
                     </h4>
 
+                    {/* Engine Selection */}
+                    <div className="space-y-2">
+                        <label className="text-xs text-slate-500 font-medium ml-1">처리 엔진</label>
+                        <select
+                            className="w-full border border-slate-200 p-2.5 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                            value={normalizedSelectedEngine}
+                            onChange={(e) => {
+                                setStartError('');
+                                setOptions((prev) => ({ ...prev, engine: e.target.value }));
+                            }}
+                        >
+                            {processingEngines.map((engine) => (
+                                <option
+                                    key={engine.name}
+                                    value={engine.name}
+                                    disabled={!engine.enabled}
+                                >
+                                    {engine.name} {engine.enabled ? '' : '(비활성)'}
+                                </option>
+                            ))}
+                        </select>
+                        {selectedEnginePolicy && (
+                            <div className={`px-2 py-1.5 text-xs border rounded-md ${selectedEnginePolicy.enabled ? 'text-slate-600 bg-slate-50 border-slate-200' : 'text-red-700 bg-red-50 border-red-200'}`}>
+                                {selectedEnginePolicy.enabled
+                                    ? `선택된 엔진으로 처리합니다. ${selectedEnginePolicy.reason || ''}`
+                                    : `선택한 엔진은 사용 불가 상태입니다. ${selectedEnginePolicy.reason || ''}`
+                                }
+                            </div>
+                        )}
+                        {startError && (
+                            <div className="px-2 py-1.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md">
+                                {startError}
+                            </div>
+                        )}
+                    </div>
+
                     {/* Preset Selector */}
                     <div className="space-y-2">
                         <label className="text-xs text-slate-500 font-medium ml-1">프리셋 불러오기</label>
@@ -484,12 +625,15 @@ export default function ProcessingSidebar({ width, project, onCancel, onStartPro
                     const uploadCompleted = project?.upload_completed_count ?? totalImages;
                     const hasImages = totalImages > 0 && uploadCompleted > 0;
                     const isProcessingNow = isProcessing;
-                    const isDisabled = !hasImages || uploadsInProgress || isProcessingNow || !selectedPresetId;
+                    const hasEnabledEngine = processingEngines.some((engine) => engine.enabled);
+                    const isDisabled = !hasEnabledEngine || !hasImages || uploadsInProgress || isProcessingNow || !selectedPresetId || !isSelectedEngineEnabled;
 
                     let buttonText = '처리 시작';
                     if (!hasImages) buttonText = '업로드된 이미지 없음';
                     else if (frontendUploading) buttonText = `업로드 중... (${activeUploads.filter(u => u.status === 'completed').length}/${activeUploads.length})`;
                     else if (backendUploading) buttonText = `업로드 중... (${uploadCompleted}/${totalImages})`;
+                    else if (!hasEnabledEngine) buttonText = '사용 가능한 처리 엔진 없음';
+                    else if (!isSelectedEngineEnabled) buttonText = `${normalizedSelectedEngine} 사용 불가`;
                     else if (!selectedPresetId) buttonText = '프리셋 선택 필요';
                     else if (isProcessingNow) buttonText = '처리 중...';
                     else buttonText = `처리 시작 (${uploadCompleted}장)`;

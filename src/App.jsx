@@ -36,6 +36,68 @@ import DashboardView from './components/Dashboard/DashboardView';
 // --- 1. CONSTANTS ---
 const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역', '제주 권역'];
 const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
+const ADMIN_PANEL_TAB_STORAGE_KEY = 'aerial_admin_last_tab';
+const ADMIN_PANEL_TABS = ['users', 'organizations', 'permissions'];
+const ADMIN_ROLE_OPTIONS = [
+  { value: 'admin', label: '관리자' },
+  { value: 'manager', label: '편집자' },
+  { value: 'user', label: '뷰어' },
+];
+
+const normalizeAdminRoleForForm = (role) => {
+  const normalized = typeof role === 'string' ? role.trim().toLowerCase() : 'user';
+
+  if (normalized === 'editor') {
+    return 'manager';
+  }
+
+  if (normalized === 'viewer') {
+    return 'user';
+  }
+
+  if (['admin', 'manager', 'user'].includes(normalized)) {
+    return normalized;
+  }
+
+  return 'user';
+};
+
+const getAdminRoleLabel = (role) => {
+  const normalized = normalizeAdminRoleForForm(role);
+  const roleMap = { admin: '관리자', manager: '편집자', user: '뷰어' };
+  return roleMap[normalized] || '뷰어';
+};
+
+const normalizePermissionRoleOption = (role) => {
+  if (!role || typeof role !== 'object') {
+    return null;
+  }
+
+  const rawValue = typeof role.value === 'string' ? role.value.trim().toLowerCase() : '';
+  const normalizedValue =
+    rawValue === 'editor' ? 'manager' : rawValue === 'viewer' ? 'user' : rawValue;
+
+  const roleMap = {
+    admin: '관리자',
+    manager: '편집자',
+    user: '뷰어',
+  };
+
+  return {
+    value: normalizedValue || 'user',
+    label: roleMap[normalizedValue] || role.label || roleMap[rawValue] || '뷰어',
+    description: role.description || '',
+  };
+};
+
+const getInitialAdminTab = () => {
+  if (typeof window === 'undefined') {
+    return 'users';
+  }
+
+  const saved = window.localStorage.getItem(ADMIN_PANEL_TAB_STORAGE_KEY);
+  return ADMIN_PANEL_TABS.includes(saved) ? saved : 'users';
+};
 
 // Status mapping for display
 const STATUS_MAP = {
@@ -46,6 +108,17 @@ const STATUS_MAP = {
   'error': '오류',
   'cancelled': '취소',
 };
+const PROJECT_STATUS_OPTIONS = [
+  { value: 'pending', label: '대기' },
+  { value: 'queued', label: '대기열' },
+  { value: 'processing', label: '진행중' },
+  { value: 'completed', label: '완료' },
+  { value: 'cancelled', label: '취소' },
+  { value: 'error', label: '오류' },
+];
+const PROJECT_STATUS_LABEL_BY_VALUE = Object.fromEntries(
+  PROJECT_STATUS_OPTIONS.map(({ value, label }) => [value, label])
+);
 
 // Generate placeholder images for visualization
 const generatePlaceholderImages = (projectId, count) => {
@@ -91,8 +164,29 @@ class ErrorBoundary extends React.Component {
 
 // --- 3. MAIN DASHBOARD ---
 function Dashboard() {
+    const {
+        role,
+        canCreateProject,
+        canEditProject,
+        canDeleteProject,
+        canManageUsers,
+        canManageOrganizations,
+        canManagePermissions,
+        user: currentUser,
+    } = useAuth();
+    const canExportProject = canCreateProject || canEditProject;
+    const hasAdminMenuAccess = canManageUsers || canManageOrganizations || canManagePermissions;
   // Use API hook for projects
-  const { projects: apiProjects, loading: projectsLoading, error: projectsError, refresh: refreshProjects, createProject, deleteProject } = useProjects();
+  const {
+    projects: apiProjects,
+    loading: projectsLoading,
+    error: projectsError,
+    refresh: refreshProjects,
+    createProject,
+    deleteProject,
+    batchDeleteProjects,
+    batchUpdateProjectStatus
+  } = useProjects();
 
   // 멀티 프로젝트 업로드 지원: 프로젝트별로 업로드 상태 관리 (projects useMemo보다 먼저 선언)
   const [uploadsByProject, setUploadsByProject] = useState({}); // { projectId: [uploads...] }
@@ -124,6 +218,60 @@ function Dashboard() {
       };
     });
   }, [apiProjects, uploadsByProject]);
+
+  const isAdminUser = role === 'admin';
+
+  const getProjectMutationCapabilities = useCallback((project) => {
+    if (!project) {
+      return { canEdit: false, canDelete: false };
+    }
+
+    const isOwner = Boolean(currentUser?.id) && project.owner_id === currentUser.id;
+    const canEditFromApi = project.can_edit === true;
+    const canDeleteFromApi = project.can_delete === true;
+
+    return {
+      canEdit: canEditFromApi || canDeleteFromApi || isAdminUser || isOwner,
+      canDelete: canDeleteFromApi || isAdminUser || isOwner,
+    };
+  }, [isAdminUser, currentUser?.id]);
+
+  const canEditProjectById = useCallback((projectId) => {
+    const project = projects.find((item) => item.id === projectId);
+    return getProjectMutationCapabilities(project).canEdit;
+  }, [projects, getProjectMutationCapabilities]);
+
+  const canDeleteProjectById = useCallback((projectId) => {
+    const project = projects.find((item) => item.id === projectId);
+    return getProjectMutationCapabilities(project).canDelete;
+  }, [projects, getProjectMutationCapabilities]);
+
+  const canEditAnyProject = useMemo(
+    () => projects.some((project) => getProjectMutationCapabilities(project).canEdit),
+    [projects, getProjectMutationCapabilities]
+  );
+
+  const canDeleteAnyProject = useMemo(
+    () => projects.some((project) => getProjectMutationCapabilities(project).canDelete),
+    [projects, getProjectMutationCapabilities]
+  );
+
+  const filterAuthorizedProjectIds = useCallback((projectIds, authorizeProjectId) => {
+    const allowed = [];
+    const denied = [];
+    const uniqueIds = Array.from(new Set(projectIds || []));
+
+    const resolver = typeof authorizeProjectId === 'function' ? authorizeProjectId : (() => true);
+    uniqueIds.forEach((projectId) => {
+      if (resolver(projectId)) {
+        allowed.push(projectId);
+      } else {
+        denied.push(projectId);
+      }
+    });
+
+    return { allowed, denied };
+  }, []);
 
   // Groups state for folder organization
   const [groups, setGroups] = useState([]);
@@ -179,6 +327,11 @@ function Dashboard() {
   };
 
   const handleMoveProjectToGroup = async (projectId, groupId) => {
+    if (!canEditProjectById(projectId)) {
+      alert('프로젝트 이동 권한이 없습니다.');
+      return;
+    }
+
     try {
       await api.moveProjectToGroup(projectId, groupId);
       refreshProjects();
@@ -188,6 +341,11 @@ function Dashboard() {
   };
 
   const handleRenameProject = async (projectId, newTitle) => {
+    if (!canEditProjectById(projectId)) {
+      alert('프로젝트 수정 권한이 없습니다.');
+      return;
+    }
+
     try {
       await api.updateProject(projectId, { title: newTitle });
       refreshProjects();
@@ -247,6 +405,51 @@ function Dashboard() {
 
   const [loadingImages, setLoadingImages] = useState(false);
   const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
+  const [processingEngines, setProcessingEngines] = useState([
+    { name: 'metashape', enabled: true, reason: '기본 엔진' },
+  ]);
+  const [defaultProcessingEngine, setDefaultProcessingEngine] = useState('metashape');
+
+  // 처리 엔진 정책 조회 (운영 정책에 맞춰 엔진 선택지 동기화)
+  useEffect(() => {
+    let active = true;
+
+    const loadProcessingEngines = async () => {
+      try {
+        const response = await api.getProcessingEngines();
+        if (!active) return;
+
+        const catalog = response?.engines;
+        const nextDefault = typeof response?.default_engine === 'string' ? response.default_engine : 'metashape';
+
+        if (Array.isArray(catalog) && catalog.length > 0) {
+          const normalized = catalog
+            .map((item) => ({
+              name: String(item?.name || '').trim(),
+              enabled: Boolean(item?.enabled),
+              reason: item?.reason ? String(item.reason) : '',
+            }))
+            .filter((engine) => engine.name);
+          setProcessingEngines(normalized.length > 0 ? normalized : [{ name: 'metashape', enabled: true, reason: '기본 엔진' }]);
+          setDefaultProcessingEngine(nextDefault || 'metashape');
+          return;
+        }
+
+        setProcessingEngines([{ name: 'metashape', enabled: true, reason: '기본 엔진' }]);
+        setDefaultProcessingEngine(nextDefault || 'metashape');
+      } catch (error) {
+        if (!active) return;
+        setProcessingEngines([{ name: 'metashape', enabled: true, reason: '기본 엔진' }]);
+        setDefaultProcessingEngine('metashape');
+      }
+    };
+
+    loadProcessingEngines();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // 완료된 프로젝트의 업로드 상태 정리 (프론트엔드 업로더가 없는 경우)
   useEffect(() => {
@@ -500,6 +703,32 @@ function Dashboard() {
 
   // Map reset key - increment to reset map to default view
   const [mapResetKey, setMapResetKey] = useState(0);
+  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [adminTab, setAdminTab] = useState(() => getInitialAdminTab());
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminOrganizations, setAdminOrganizations] = useState([]);
+  const [adminPermissionCatalog, setAdminPermissionCatalog] = useState({ roles: [], project_permissions: [] });
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState('');
+  const [adminEditingUser, setAdminEditingUser] = useState(null);
+  const [adminUserForm, setAdminUserForm] = useState({
+    email: '',
+    password: '',
+    name: '',
+    role: 'user',
+    organizationId: '',
+    inviteUser: false,
+  });
+  const [adminEditingOrganization, setAdminEditingOrganization] = useState(null);
+  const [adminOrganizationForm, setAdminOrganizationForm] = useState({
+    name: '',
+    quota_storage_gb: 1000,
+    quota_projects: 100,
+  });
+  const [selectedPermissionProjectId, setSelectedPermissionProjectId] = useState('');
+  const [projectPermissions, setProjectPermissions] = useState([]);
+  const [selectedPermissionUserId, setSelectedPermissionUserId] = useState('');
+  const [selectedPermissionLevel, setSelectedPermissionLevel] = useState('view');
 
   const selectedProject = useMemo(() => {
     // Try to find in projects list first
@@ -855,10 +1084,11 @@ function Dashboard() {
     if (!processingProject) return;
 
     const projectId = processingProject.id;
+    const selectedEngine = options.engine || defaultProcessingEngine || 'metashape';
 
     // Use provided options or defaults (Metashape only)
     const processingOptions = {
-      engine: 'metashape',  // Fixed to metashape
+      engine: selectedEngine,
       gsd: options.gsd || 5.0,
       output_crs: options.output_crs || 'EPSG:5186',
       output_format: options.output_format || 'GeoTiff',
@@ -936,8 +1166,558 @@ function Dashboard() {
     setCheckedProjectIds(newChecked);
   };
 
+  const handleExportGroupProjects = (groupId) => {
+    const groupProjectIds = projects
+      .filter(project => project.group_id === groupId)
+      .map(project => project.id);
+
+    if (groupProjectIds.length === 0) {
+      alert('해당 그룹에 내보낼 프로젝트가 없습니다.');
+      return;
+    }
+
+    openExportDialog(groupProjectIds);
+  };
+
+  const handleDeleteGroupProjects = async (groupId) => {
+    if (!canDeleteAnyProject) {
+      alert('프로젝트 삭제 권한이 없습니다.');
+      return;
+    }
+
+    const targetProjects = projects.filter(project => project.group_id === groupId);
+    if (targetProjects.length === 0) {
+      alert('해당 그룹에 삭제할 프로젝트가 없습니다.');
+      return;
+    }
+
+    const { allowed: authorizedProjectIds, denied: deniedProjectIds } = filterAuthorizedProjectIds(
+      targetProjects.map(project => project.id),
+      canDeleteProjectById
+    );
+
+    if (authorizedProjectIds.length === 0) {
+      alert('삭제 권한이 있는 프로젝트가 없습니다.');
+      return;
+    }
+
+    const groupName = groups.find(group => group.id === groupId)?.name || '그룹';
+    const deniedNotice = deniedProjectIds.length > 0
+      ? `\n권한이 없는 ${deniedProjectIds.length}개 항목은 제외됩니다.`
+      : '';
+    if (!window.confirm(`"${groupName}" 그룹의 ${authorizedProjectIds.length}개 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.${deniedNotice}`)) return;
+
+    try {
+      const result = await batchDeleteProjects(authorizedProjectIds);
+      const successIds = new Set(result.succeeded || []);
+      const failedIds = (result.failed || []);
+
+      if (result.succeeded.length > 0) {
+        await refreshProjects();
+      }
+
+      if (selectedProjectId && successIds.has(selectedProjectId)) {
+        setSelectedProjectId(null);
+      }
+
+      setCheckedProjectIds(prev => {
+        const next = new Set(prev);
+        successIds.forEach(projectId => next.delete(projectId));
+        return next;
+      });
+
+      if (result.failed && result.failed.length > 0) {
+        const failDetails = failedIds.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
+        alert(`그룹 삭제가 부분적으로 완료되었습니다.\n성공 ${result.succeeded.length}개, 실패 ${result.failed.length}개\n${failDetails}`);
+
+        const retryProjectIds = failedIds.map(item => item.project_id).filter(Boolean);
+        if (retryProjectIds.length > 0 && window.confirm(`삭제 실패 ${retryProjectIds.length}개 항목을 다시 시도하시겠습니까?`)) {
+          const retryResult = await batchDeleteProjects(retryProjectIds);
+          const retrySuccessIds = new Set(retryResult.succeeded || []);
+
+          if (retrySuccessIds.size > 0) {
+            await refreshProjects();
+            setCheckedProjectIds(prev => {
+              const next = new Set(prev);
+              retrySuccessIds.forEach(projectId => next.delete(projectId));
+              return next;
+            });
+          }
+
+          if (retryResult.failed && retryResult.failed.length > 0) {
+            const retryFailDetails = retryResult.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
+            alert(`재시도 결과: 성공 ${retryResult.succeeded.length}개, 실패 ${retryResult.failed.length}개\n${retryFailDetails}`);
+          } else {
+            alert(`재시도에서 ${retryResult.succeeded.length}개 항목이 추가로 삭제되었습니다.`);
+          }
+        }
+      } else {
+        alert(`그룹의 ${result.succeeded.length}개 프로젝트가 삭제되었습니다.`);
+      }
+    } catch (err) {
+      alert(`그룹 삭제 실패: ${err.message}`);
+    }
+  };
+
+  const handleBulkUpdateProjectStatus = async (status) => {
+    if (!canEditAnyProject) {
+      alert('프로젝트 수정 권한이 없습니다.');
+      return;
+    }
+
+    const targetProjectIds = Array.from(checkedProjectIds);
+    if (targetProjectIds.length === 0) return;
+
+    const { allowed: authorizedProjectIds, denied: deniedProjectIds } = filterAuthorizedProjectIds(
+      targetProjectIds,
+      canEditProjectById
+    );
+    if (authorizedProjectIds.length === 0) {
+      alert('상태를 변경할 수 있는 프로젝트가 없습니다.');
+      return;
+    }
+
+    const statusLabel = PROJECT_STATUS_LABEL_BY_VALUE[status] || status;
+    const deniedNotice = deniedProjectIds.length > 0
+      ? `\n권한이 없는 ${deniedProjectIds.length}개 항목은 제외됩니다.`
+      : '';
+    if (!window.confirm(`선택한 ${authorizedProjectIds.length}개 프로젝트의 상태를 "${statusLabel}"(으)로 변경하시겠습니까?${deniedNotice}`)) return;
+
+    try {
+      const result = await batchUpdateProjectStatus(authorizedProjectIds, status);
+      const successIds = new Set(result.succeeded || []);
+
+      setCheckedProjectIds(prev => {
+        const next = new Set(prev);
+        successIds.forEach(projectId => next.delete(projectId));
+        return next;
+      });
+
+      if (result.succeeded.length > 0) {
+        await refreshProjects();
+      }
+
+      if (result.failed && result.failed.length > 0) {
+        const failDetails = result.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
+        alert(`상태 변경이 부분적으로 완료되었습니다.\n성공 ${result.succeeded.length}개, 실패 ${result.failed.length}개\n${failDetails}`);
+
+        const retryProjectIds = result.failed.map(item => item.project_id).filter(Boolean);
+        if (retryProjectIds.length > 0 && window.confirm(`상태 변경 실패 ${retryProjectIds.length}개 항목을 다시 시도하시겠습니까?`)) {
+          const retryResult = await batchUpdateProjectStatus(retryProjectIds, status);
+          const retrySuccessIds = new Set(retryResult.succeeded || []);
+
+          setCheckedProjectIds(prev => {
+            const next = new Set(prev);
+            retrySuccessIds.forEach(projectId => next.delete(projectId));
+            return next;
+          });
+
+          if (retryResult.succeeded.length > 0) {
+            await refreshProjects();
+          }
+
+          if (retryResult.failed && retryResult.failed.length > 0) {
+            const retryFailDetails = retryResult.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
+            alert(`재시도 결과: 성공 ${retryResult.succeeded.length}개, 실패 ${retryResult.failed.length}개\n${retryFailDetails}`);
+          } else {
+            alert(`재시도에서 ${retryResult.succeeded.length}개 항목 상태가 추가로 변경되었습니다.`);
+          }
+        }
+      } else {
+        alert(`선택한 ${result.succeeded.length}개 프로젝트의 상태가 "${statusLabel}"(으)로 변경되었습니다.`);
+      }
+    } catch (err) {
+      alert('상태 변경 실패: ' + err.message);
+    }
+  };
+
   const openExportDialog = (projectIds) => {
     setExportModalState({ isOpen: true, projectIds: projectIds });
+  };
+
+  const resetAdminUserForm = () => {
+    setAdminEditingUser(null);
+    setAdminUserForm({
+      email: '',
+      password: '',
+      name: '',
+      role: 'user',
+      organizationId: '',
+      inviteUser: false,
+    });
+  };
+
+  const resetAdminOrganizationForm = () => {
+    setAdminEditingOrganization(null);
+    setAdminOrganizationForm({
+      name: '',
+      quota_storage_gb: 1000,
+      quota_projects: 100,
+    });
+  };
+
+  const loadAdminData = async (nextTab = adminTab) => {
+    if (!hasAdminMenuAccess) return;
+
+    setAdminLoading(true);
+    setAdminError('');
+    const shouldLoadUsersForPermissions = canManageUsers || canManagePermissions;
+
+    try {
+      if (shouldLoadUsersForPermissions) {
+        const usersResponse = await api.getUsers();
+        setAdminUsers(Array.isArray(usersResponse) ? usersResponse : (usersResponse.items || []));
+      } else {
+        setAdminUsers([]);
+      }
+
+      if (canManageOrganizations) {
+        const orgResponse = await api.getOrganizations();
+        setAdminOrganizations(Array.isArray(orgResponse) ? orgResponse : (orgResponse.items || []));
+      } else {
+        setAdminOrganizations([]);
+      }
+
+      if (canManagePermissions) {
+        const catalogResponse = await api.getPermissionCatalog();
+        const normalizedRoles = (catalogResponse.roles || [])
+          .map(normalizePermissionRoleOption)
+          .filter(Boolean);
+
+        setAdminPermissionCatalog({
+          roles: normalizedRoles,
+          project_permissions: catalogResponse.project_permissions || [],
+        });
+
+        if (nextTab === 'permissions') {
+          const projectIds = new Set(projects.map(p => p.id));
+          const projectId = (projectIds.has(selectedPermissionProjectId) ? selectedPermissionProjectId : '') || projects[0]?.id || '';
+          setSelectedPermissionProjectId(projectId);
+          if (projectId) {
+            const permissionResponse = await api.getProjectPermissions(projectId);
+            setProjectPermissions(permissionResponse.items || []);
+          } else {
+            setProjectPermissions([]);
+          }
+        } else {
+          setProjectPermissions([]);
+        }
+      } else {
+        setAdminPermissionCatalog({ roles: [], project_permissions: [] });
+        setProjectPermissions([]);
+      }
+    } catch (err) {
+      setAdminError(err.message || '관리 데이터 조회 실패');
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const resolveAdminTab = useCallback((requestedTab = 'users') => {
+    const allowed = {
+      users: canManageUsers,
+      organizations: canManageOrganizations,
+      permissions: canManagePermissions,
+    };
+
+    const normalizedRequestedTab = ADMIN_PANEL_TABS.includes(requestedTab) ? requestedTab : 'users';
+
+    if (allowed[normalizedRequestedTab]) {
+      return normalizedRequestedTab;
+    }
+
+    return ADMIN_PANEL_TABS.find((tab) => allowed[tab]) || null;
+  }, [canManageOrganizations, canManagePermissions, canManageUsers]);
+
+  const openAdminPanel = async (tab = adminTab) => {
+    if (!hasAdminMenuAccess) {
+      return;
+    }
+
+    const resolvedTab = resolveAdminTab(tab);
+
+    if (!resolvedTab) {
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(ADMIN_PANEL_TAB_STORAGE_KEY, resolvedTab);
+    }
+
+    setAdminTab(resolvedTab);
+    if (resolvedTab === 'users') {
+      resetAdminUserForm();
+      setSelectedPermissionUserId('');
+      setSelectedPermissionProjectId('');
+      setProjectPermissions([]);
+    }
+    if (resolvedTab === 'organizations') {
+      resetAdminOrganizationForm();
+      setSelectedPermissionUserId('');
+      setSelectedPermissionProjectId('');
+      setProjectPermissions([]);
+    }
+    if (resolvedTab === 'permissions') {
+      setSelectedPermissionLevel('view');
+    }
+    setIsAdminPanelOpen(true);
+    await loadAdminData(resolvedTab);
+  };
+
+  const closeAdminPanel = () => {
+    setIsAdminPanelOpen(false);
+    setAdminError('');
+    resetAdminUserForm();
+    resetAdminOrganizationForm();
+    setProjectPermissions([]);
+  };
+
+  const adminTabLabelMap = {
+    users: '사용자',
+    organizations: '조직',
+    permissions: '프로젝트 권한',
+  };
+  const adminCurrentTabLabel = adminTabLabelMap[adminTab] || '관리';
+
+  const handleAdminUserSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const email = adminUserForm.email?.trim();
+      const name = adminUserForm.name?.trim();
+      const organizationId = adminUserForm.organizationId || null;
+      const targetRole = normalizeAdminRoleForForm(adminUserForm.role);
+      const isEditing = Boolean(adminEditingUser);
+      const isInviteMode = !isEditing && Boolean(adminUserForm.inviteUser);
+      if (!adminEditingUser && !email) {
+        alert('이메일은 필수입니다.');
+        return;
+      }
+
+      const payload = {
+        role: targetRole,
+        organization_id: organizationId || null,
+      };
+      if (name) payload.name = name;
+
+      if (isEditing) {
+        const currentRole = normalizeAdminRoleForForm(adminEditingUser.role);
+        const currentOrgId = adminEditingUser.organization_id || '';
+        const nextOrgId = organizationId || '';
+
+        const updatePayload = {};
+        if (name !== (adminEditingUser.name || '')) {
+          updatePayload.name = name || '';
+        }
+
+        const transferPayload = {};
+        if (nextOrgId !== (currentOrgId || '')) {
+          transferPayload.organization_id = organizationId;
+        }
+        if (targetRole !== currentRole) {
+          transferPayload.role = targetRole;
+        }
+
+        if (Object.keys(updatePayload).length > 0) {
+          await api.updateUser(adminEditingUser.id, updatePayload);
+        }
+        if (Object.keys(transferPayload).length > 0) {
+          await api.transferUser(adminEditingUser.id, transferPayload);
+        }
+        if (
+          Object.keys(updatePayload).length === 0 &&
+          Object.keys(transferPayload).length === 0
+        ) {
+          alert('변경된 내용이 없습니다.');
+        } else {
+          alert('사용자 정보가 수정되었습니다.');
+        }
+      } else {
+        if (!isInviteMode && (!adminUserForm.password || adminUserForm.password.length < 8)) {
+          alert('비밀번호는 8자 이상이어야 합니다.');
+          return;
+        }
+
+        if (isInviteMode) {
+          const inviteResult = await api.inviteUser({
+            email,
+            ...payload,
+          });
+          if (inviteResult?.temporary_password) {
+            alert(`사용자가 초대되었습니다. 임시 비밀번호: ${inviteResult.temporary_password}`);
+          } else {
+            alert('기존 사용자 초대 처리(조직/권한 반영)가 완료되었습니다.');
+          }
+        } else {
+          await api.createUser({
+            ...payload,
+            email,
+            password: adminUserForm.password,
+          });
+          alert('사용자가 생성되었습니다.');
+        }
+      }
+
+      resetAdminUserForm();
+      await loadAdminData('users');
+    } catch (err) {
+      alert(`사용자 저장 실패: ${err.message}`);
+    }
+  };
+
+  const handleEditUser = (user) => {
+    setAdminEditingUser(user);
+    setAdminUserForm({
+      email: user.email || '',
+      password: '',
+      name: user.name || '',
+      role: normalizeAdminRoleForForm(user.role),
+      organizationId: user.organization_id || '',
+      inviteUser: false,
+    });
+  };
+
+  const handleDeactivateUser = async (userData) => {
+    if (userData.id === currentUser?.id) {
+      alert('현재 로그인한 사용자 계정은 비활성화할 수 없습니다.');
+      return;
+    }
+    if (!window.confirm(`"${userData.email}" 사용자를 비활성화 하시겠습니까?`)) return;
+    try {
+      await api.deactivateUser(userData.id);
+      await loadAdminData('users');
+      alert('사용자가 비활성화되었습니다.');
+    } catch (err) {
+      alert(`사용자 비활성화 실패: ${err.message}`);
+    }
+  };
+
+  const handleDeleteUser = async (userData) => {
+    if (userData.id === currentUser?.id) {
+      alert('현재 로그인한 사용자 계정은 삭제할 수 없습니다.');
+      return;
+    }
+    if (!window.confirm(`"${userData.email}" 사용자를 영구 삭제 하시겠습니까?`)) return;
+    try {
+      await api.deleteUser(userData.id);
+      await loadAdminData('users');
+      alert('사용자가 삭제되었습니다.');
+    } catch (err) {
+      alert(`사용자 삭제 실패: ${err.message}`);
+    }
+  };
+
+  const handleAdminOrganizationSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        name: adminOrganizationForm.name.trim(),
+        quota_storage_gb: Number(adminOrganizationForm.quota_storage_gb),
+        quota_projects: Number(adminOrganizationForm.quota_projects),
+      };
+
+      if (!payload.name) {
+        alert('조직명은 필수입니다.');
+        return;
+      }
+      if (Number.isNaN(payload.quota_storage_gb) || Number.isNaN(payload.quota_projects) || payload.quota_storage_gb < 0 || payload.quota_projects < 0) {
+        alert('스토리지/프로젝트 한도는 0 이상 정수여야 합니다.');
+        return;
+      }
+
+      if (adminEditingOrganization) {
+        await api.updateOrganization(adminEditingOrganization.id, payload);
+        alert('조직이 수정되었습니다.');
+      } else {
+        await api.createOrganization(payload);
+        alert('조직이 생성되었습니다.');
+      }
+
+      resetAdminOrganizationForm();
+      await loadAdminData('organizations');
+    } catch (err) {
+      alert(`조직 저장 실패: ${err.message}`);
+    }
+  };
+
+  const handleEditOrganization = (org) => {
+    setAdminEditingOrganization(org);
+    setAdminOrganizationForm({
+      name: org.name || '',
+      quota_storage_gb: org.quota_storage_gb ?? 1000,
+      quota_projects: org.quota_projects ?? 100,
+    });
+  };
+
+  const handleDeleteOrganization = async (org) => {
+    if (!window.confirm(`"${org.name}" 조직을 삭제하시겠습니까?`)) return;
+    try {
+      await api.deleteOrganization(org.id, false);
+      await loadAdminData('organizations');
+      alert('조직이 삭제되었습니다.');
+    } catch (err) {
+      if (err.status === 409) {
+        if (window.confirm('조직에 사용자/프로젝트가 연결되어 있습니다. 강제 삭제하시겠습니까?')) {
+          try {
+            await api.deleteOrganization(org.id, true);
+            await loadAdminData('organizations');
+            alert('조직이 강제 삭제되었습니다.');
+          } catch (forceErr) {
+            alert(`조직 삭제 실패: ${forceErr.message}`);
+          }
+        }
+        return;
+      }
+      alert(`조직 삭제 실패: ${err.message}`);
+    }
+  };
+
+  const loadProjectPermissions = async (projectId) => {
+    if (!projectId) {
+      setProjectPermissions([]);
+      return;
+    }
+    try {
+      const response = await api.getProjectPermissions(projectId);
+      setProjectPermissions(response.items || []);
+    } catch (err) {
+      alert(`권한 조회 실패: ${err.message}`);
+      setProjectPermissions([]);
+    }
+  };
+
+  const handlePermissionProjectChange = async (projectId) => {
+    setSelectedPermissionProjectId(projectId);
+    await loadProjectPermissions(projectId);
+  };
+
+  const handleSubmitPermission = async (e) => {
+    e.preventDefault();
+    if (!selectedPermissionProjectId || !selectedPermissionUserId) {
+      alert('프로젝트와 사용자를 선택해 주세요.');
+      return;
+    }
+    try {
+      await api.setProjectPermission(selectedPermissionProjectId, selectedPermissionUserId, {
+        permission: selectedPermissionLevel,
+      });
+      await loadProjectPermissions(selectedPermissionProjectId);
+      setSelectedPermissionUserId('');
+      setSelectedPermissionLevel('view');
+      alert('권한이 저장되었습니다.');
+    } catch (err) {
+      alert(`권한 저장 실패: ${err.message}`);
+    }
+  };
+
+  const handleDeletePermission = async (permissionRecord) => {
+    if (!window.confirm('해당 사용자 권한을 삭제하시겠습니까?')) return;
+    try {
+      await api.removeProjectPermission(permissionRecord.project_id, permissionRecord.user_id);
+      await loadProjectPermissions(selectedPermissionProjectId);
+      alert('권한이 삭제되었습니다.');
+    } catch (err) {
+      alert(`권한 삭제 실패: ${err.message}`);
+    }
   };
 
   return (
@@ -966,7 +1746,8 @@ function Dashboard() {
           animation: slideInFromRight 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
         }
       `}</style>
-      <Header onLogoClick={() => {
+      <Header
+        onLogoClick={() => {
         // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
         // 상태 기반 네비게이션으로 대시보드 복귀
         setViewMode('dashboard');
@@ -982,7 +1763,12 @@ function Dashboard() {
         // 업로드는 유지 (글로벌 업로드)
         refreshProjects();
         window.history.pushState({}, '', window.location.pathname);
-      }} />
+      }}
+        onOpenAdminMenu={openAdminPanel}
+        canManageUsers={canManageUsers}
+        canManageOrganizations={canManageOrganizations}
+        canManagePermissions={canManagePermissions}
+      />
       <div className="flex flex-1 overflow-hidden relative">
         {viewMode === 'processing' ? (
           <ProcessingSidebar
@@ -997,6 +1783,8 @@ function Dashboard() {
               refreshProjects();
             }}
             onStartProcessing={handleStartProcessing}
+            availableEngines={processingEngines}
+            defaultEngine={defaultProcessingEngine}
             onEoReloaded={async () => {
               await refreshProjects();
               setImageRefreshKey(prev => prev + 1);
@@ -1031,9 +1819,13 @@ function Dashboard() {
             onOpenInspector={(id) => { setSelectedProjectId(id); setShowInspector(true); }}
             onToggleCheck={handleToggleCheck}
             onSelectMultiple={handleSelectMultiple}
-            onOpenUpload={() => setIsUploadOpen(true)}
-            onBulkExport={() => openExportDialog(Array.from(checkedProjectIds))}
-            onDeleteProject={async (id) => {
+            onOpenUpload={canCreateProject ? () => setIsUploadOpen(true) : null}
+            onBulkExport={canExportProject ? () => openExportDialog(Array.from(checkedProjectIds)) : null}
+            onDeleteProject={canDeleteAnyProject ? async (id) => {
+              if (!canDeleteProjectById(id)) {
+                alert('프로젝트 삭제 권한이 없습니다.');
+                return;
+              }
               try {
                 await deleteProject(id);
                 if (selectedProjectId === id) setSelectedProjectId(null);
@@ -1041,28 +1833,93 @@ function Dashboard() {
               } catch (err) {
                 alert('삭제 실패: ' + err.message);
               }
-            }}
-            onRenameProject={handleRenameProject}
+            } : null}
+            onRenameProject={canEditAnyProject ? handleRenameProject : null}
             onBulkDelete={async () => {
-              const count = checkedProjectIds.size;
-              if (!window.confirm(`선택한 ${count}개의 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.`)) return;
-
-              let successCount = 0;
-              let failCount = 0;
-              for (const id of checkedProjectIds) {
-                try {
-                  await deleteProject(id);
-                  successCount++;
-                  if (selectedProjectId === id) setSelectedProjectId(null);
-                } catch (err) {
-                  failCount++;
-                  console.error(`Failed to delete ${id}:`, err);
-                }
+              if (!canDeleteAnyProject) {
+                alert('프로젝트 삭제 권한이 없습니다.');
+                return;
               }
-              setCheckedProjectIds(new Set());
-              alert(`${successCount}개 삭제 완료${failCount > 0 ? `, ${failCount}개 실패` : ''}`);
+              const targetProjectIds = Array.from(checkedProjectIds);
+              const { allowed: authorizedProjectIds, denied: deniedProjectIds } = filterAuthorizedProjectIds(
+                targetProjectIds,
+                canDeleteProjectById
+              );
+
+              if (authorizedProjectIds.length === 0) {
+                alert('삭제 권한이 있는 프로젝트가 없습니다.');
+                return;
+              }
+
+              const deniedNotice = deniedProjectIds.length > 0
+                ? `\n권한이 없는 ${deniedProjectIds.length}개 항목은 제외됩니다.`
+                : '';
+              if (!window.confirm(`선택한 ${authorizedProjectIds.length}개의 프로젝트를 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 모든 이미지 및 관련 데이터가 삭제됩니다.${deniedNotice}`)) return;
+
+              try {
+                const result = await batchDeleteProjects(authorizedProjectIds);
+                const successIds = new Set(result.succeeded || []);
+
+                if (successIds.size > 0 && result.failed.length === 0) {
+                  setCheckedProjectIds(new Set());
+                } else {
+                  setCheckedProjectIds(prev => {
+                    const next = new Set(prev);
+                    successIds.forEach(id => next.delete(id));
+                    return next;
+                  });
+                }
+
+                if (result.succeeded.length > 0 && selectedProjectId) {
+                  if (successIds.has(selectedProjectId)) {
+                    setSelectedProjectId(null);
+                  }
+                }
+
+                if (result.failed && result.failed.length > 0) {
+                  const failDetails = result.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
+                  alert(`삭제가 부분적으로 완료되었습니다.\n성공 ${result.succeeded.length}개, 실패 ${result.failed.length}개\n${failDetails}`);
+
+                  const retryProjectIds = result.failed.map(item => item.project_id).filter(Boolean);
+                  if (retryProjectIds.length > 0 && window.confirm(`삭제 실패 ${retryProjectIds.length}개 항목을 다시 시도하시겠습니까?`)) {
+                    const retryResult = await batchDeleteProjects(retryProjectIds);
+                    const retrySuccessIds = new Set(retryResult.succeeded || []);
+
+                    setCheckedProjectIds(prev => {
+                      const next = new Set(prev);
+                      retrySuccessIds.forEach(id => next.delete(id));
+                      return next;
+                    });
+
+                    if (retryResult.succeeded.length > 0) {
+                      await refreshProjects();
+                    }
+
+                    if (retryResult.failed && retryResult.failed.length > 0) {
+                      const retryFailDetails = retryResult.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
+                      alert(`재시도 결과: 성공 ${retryResult.succeeded.length}개, 실패 ${retryResult.failed.length}개\n${retryFailDetails}`);
+                    } else {
+                      alert(`재시도에서 ${retryResult.succeeded.length}개 항목이 추가로 삭제되었습니다.`);
+                    }
+                  }
+                } else {
+                  alert(`${result.succeeded.length}개 삭제 완료`);
+                }
+
+                if (result.succeeded.length > 0) {
+                  await refreshProjects();
+                }
+              } catch (err) {
+                alert('삭제 실패: ' + err.message);
+              }
             }}
+            onBulkUpdateStatus={canEditAnyProject ? handleBulkUpdateProjectStatus : null}
+            bulkStatusOptions={PROJECT_STATUS_OPTIONS}
             onOpenProcessing={async (projectId) => {
+              if (!canEditProjectById(projectId)) {
+                alert('프로젝트 처리 권한이 없습니다.');
+                return;
+              }
               const proj = projects.find(p => p.id === projectId);
               if (proj) {
                 // If projectId differs from current selectedProjectId, we need to fetch images first
@@ -1107,9 +1964,9 @@ function Dashboard() {
                 window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${projectId}`);
               }
             }}
-            onOpenExport={(projectId) => {
+            onOpenExport={canExportProject ? (projectId) => {
               openExportDialog([projectId]);
-            }}
+            } : null}
             searchTerm={searchTerm}
             onSearchTermChange={setSearchTerm}
             regionFilter={regionFilter}
@@ -1117,10 +1974,23 @@ function Dashboard() {
             groups={groups}
             expandedGroupIds={expandedGroupIds}
             onToggleGroupExpand={toggleGroupExpand}
-            onMoveProjectToGroup={handleMoveProjectToGroup}
-            onCreateGroup={() => setIsGroupModalOpen(true)}
+            onMoveProjectToGroup={canEditAnyProject ? handleMoveProjectToGroup : null}
+            onCreateGroup={canCreateProject ? () => setIsGroupModalOpen(true) : null}
             onEditGroup={setEditingGroup}
-            onDeleteGroup={handleDeleteGroup}
+            onDeleteGroup={canDeleteProject ? handleDeleteGroup : null}
+            onExportGroupProjects={canExportProject ? handleExportGroupProjects : null}
+            onBulkDeleteGroupProjects={canDeleteAnyProject ? handleDeleteGroupProjects : null}
+            canCreateProject={canCreateProject}
+            canCreateGroup={canCreateProject}
+            canEditProject={canEditAnyProject}
+            canDeleteProject={canDeleteAnyProject}
+            canEditGroup={canEditProject}
+            canDeleteGroup={canDeleteProject}
+            canEditProjectItem={(project) => canEditProjectById(project.id)}
+            canDeleteProjectItem={(project) => canDeleteProjectById(project.id)}
+            canStartProcessingItem={(project) => canEditProjectById(project.id)}
+            canStartProcessing={canEditAnyProject}
+            canExportProject={canExportProject}
             activeGroupId={activeGroupId}
             onFilterGroup={(groupId) => setActiveGroupId(prev => prev === groupId ? null : groupId)}
           />
@@ -1242,6 +2112,299 @@ function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Admin Management Modal */}
+      {isAdminPanelOpen && hasAdminMenuAccess && (
+        <div className="fixed inset-0 z-[1000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={closeAdminPanel}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[88vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="h-14 border-b border-slate-200 bg-slate-50 flex items-center justify-between px-6">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                관리 메뉴
+                <span className="text-slate-500 font-medium">- {adminCurrentTabLabel}</span>
+              </h3>
+              <button onClick={closeAdminPanel}><X size={20} className="text-slate-400 hover:text-slate-600" /></button>
+            </div>
+            <div className="px-6 py-3 border-b border-slate-200 flex gap-2 flex-wrap">
+              <button
+                onClick={() => openAdminPanel('users')}
+                title={!canManageUsers ? '권한이 없어 접근 가능한 첫 탭으로 이동합니다.' : '사용자 탭'}
+                className={`px-3 py-2 rounded-md text-sm font-medium ${adminTab === 'users' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'} ${!canManageUsers ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                사용자
+              </button>
+              <button
+                onClick={() => openAdminPanel('organizations')}
+                title={!canManageOrganizations ? '권한이 없어 접근 가능한 첫 탭으로 이동합니다.' : '조직 탭'}
+                className={`px-3 py-2 rounded-md text-sm font-medium ${adminTab === 'organizations' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'} ${!canManageOrganizations ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                조직
+              </button>
+              <button
+                onClick={() => openAdminPanel('permissions')}
+                title={!canManagePermissions ? '권한이 없어 접근 가능한 첫 탭으로 이동합니다.' : '프로젝트 권한 탭'}
+                className={`px-3 py-2 rounded-md text-sm font-medium ${adminTab === 'permissions' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'} ${!canManagePermissions ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                프로젝트 권한
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[calc(88vh-3.5rem-3.75rem)] space-y-4">
+              {adminError && (
+                <div className="bg-red-50 text-red-600 text-sm p-3 rounded-md border border-red-200">
+                  {adminError}
+                </div>
+              )}
+              {adminLoading && <div className="text-sm text-slate-500">데이터를 불러오는 중입니다.</div>}
+
+              {adminTab === 'users' && canManageUsers && (
+                <div className="space-y-5">
+                    <form onSubmit={handleAdminUserSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <input
+                        required
+                        type="email"
+                        value={adminUserForm.email}
+                        onChange={(e) => setAdminUserForm(prev => ({ ...prev, email: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                      placeholder="이메일"
+                    />
+                      <input
+                      required={!adminEditingUser && !adminUserForm.inviteUser}
+                      minLength={8}
+                      type="password"
+                      value={adminUserForm.password}
+                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, password: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                      placeholder={adminEditingUser ? '변경 시 입력(선택)' : adminUserForm.inviteUser ? '초대 모드: 임시 비밀번호 자동 생성' : '비밀번호(필수 8자 이상)'}
+                    />
+                    {!adminEditingUser && (
+                      <label className="flex items-center gap-2 text-xs text-slate-600 md:col-span-1">
+                        <input
+                          type="checkbox"
+                          checked={adminUserForm.inviteUser}
+                          onChange={(e) => setAdminUserForm(prev => ({
+                            ...prev,
+                            inviteUser: e.target.checked,
+                          }))}
+                          className="w-4 h-4"
+                        />
+                        초대 모드(임시 비밀번호 자동 생성)
+                      </label>
+                    )}
+                    <input
+                      type="text"
+                      value={adminUserForm.name}
+                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, name: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                      placeholder="이름"
+                    />
+                    <select
+                      value={adminUserForm.role}
+                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, role: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                    >
+                      {(adminPermissionCatalog.roles.length > 0 ? adminPermissionCatalog.roles : ADMIN_ROLE_OPTIONS).map(role => (
+                        <option key={role.value} value={role.value}>{role.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={adminUserForm.organizationId}
+                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, organizationId: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm md:col-span-2"
+                    >
+                      <option value="">소속 조직 없음</option>
+                      {adminOrganizations.map((org) => (
+                        <option key={org.id} value={org.id}>{org.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      className="h-10 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-bold md:col-span-2"
+                    >
+                      {adminEditingUser
+                        ? '사용자 수정'
+                        : (adminUserForm.inviteUser ? '사용자 초대' : '사용자 생성')}
+                    </button>
+                  </form>
+                  <div className="border rounded-xl overflow-hidden">
+                    <div className="max-h-72 overflow-y-auto">
+                      {adminUsers.map((userItem) => (
+                        <div key={userItem.id} className="grid grid-cols-12 gap-2 items-center px-3 py-2 border-b text-sm last:border-b-0">
+                          <div className="col-span-3 truncate">{userItem.email}</div>
+                          <div className="col-span-3 truncate">{userItem.name || '-'}</div>
+                          <div className="col-span-2">{getAdminRoleLabel(userItem.role)}</div>
+                          <div className="col-span-2">{adminOrganizations.find(org => org.id === userItem.organization_id)?.name || '미배정'}</div>
+                          <div className="col-span-2">
+                            {userItem.is_active ? (
+                              <span className="text-emerald-600 text-[11px] px-2 py-0.5 rounded bg-emerald-50">활성</span>
+                            ) : (
+                              <span className="text-slate-600 text-[11px] px-2 py-0.5 rounded bg-slate-100">비활성</span>
+                            )}
+                          </div>
+                          <div className="col-span-2 flex gap-2 justify-end">
+                            <button onClick={() => handleEditUser(userItem)} className="px-2 py-1 bg-slate-100 rounded text-slate-700">수정</button>
+                            {userItem.is_active
+                              ? <button onClick={() => handleDeactivateUser(userItem)} className="px-2 py-1 bg-amber-100 rounded text-amber-700">비활성</button>
+                              : <button onClick={() => handleDeleteUser(userItem)} className="px-2 py-1 bg-red-100 rounded text-red-700">삭제</button>}
+                          </div>
+                        </div>
+                      ))}
+                      {adminUsers.length === 0 && <div className="p-3 text-sm text-slate-500">사용자 데이터가 없습니다.</div>}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {adminTab === 'users' && !canManageUsers && (
+                <div className="text-sm text-slate-500">
+                  사용자 관리 권한이 없어 사용자 탭을 표시할 수 없습니다.
+                </div>
+              )}
+
+              {adminTab === 'organizations' && canManageOrganizations && (
+                <div className="space-y-5">
+                  <form onSubmit={handleAdminOrganizationSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <input
+                      required
+                      type="text"
+                      value={adminOrganizationForm.name}
+                      onChange={(e) => setAdminOrganizationForm(prev => ({ ...prev, name: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                      placeholder="조직명"
+                    />
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      value={adminOrganizationForm.quota_storage_gb}
+                      onChange={(e) => setAdminOrganizationForm(prev => ({ ...prev, quota_storage_gb: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                      placeholder="스토리지(GB)"
+                    />
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      value={adminOrganizationForm.quota_projects}
+                      onChange={(e) => setAdminOrganizationForm(prev => ({ ...prev, quota_projects: e.target.value }))}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                      placeholder="프로젝트 한도"
+                    />
+                    <button
+                      type="submit"
+                      className="h-10 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-bold"
+                    >
+                      {adminEditingOrganization ? '조직 수정' : '조직 생성'}
+                    </button>
+                  </form>
+                  <div className="border rounded-xl overflow-hidden">
+                    <div className="max-h-72 overflow-y-auto">
+                      {adminOrganizations.map((org) => (
+                        <div key={org.id} className="grid grid-cols-12 gap-2 items-center px-3 py-2 border-b text-sm last:border-b-0">
+                          <div className="col-span-4 truncate">{org.name}</div>
+                          <div className="col-span-3">스토리지: {org.quota_storage_gb}GB</div>
+                          <div className="col-span-3">프로젝트: {org.quota_projects}</div>
+                          <div className="col-span-2 flex gap-2 justify-end">
+                            <button onClick={() => handleEditOrganization(org)} className="px-2 py-1 bg-slate-100 rounded text-slate-700">수정</button>
+                            <button onClick={() => handleDeleteOrganization(org)} className="px-2 py-1 bg-red-100 rounded text-red-700">삭제</button>
+                          </div>
+                        </div>
+                      ))}
+                      {adminOrganizations.length === 0 && <div className="p-3 text-sm text-slate-500">조직 데이터가 없습니다.</div>}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {adminTab === 'organizations' && !canManageOrganizations && (
+                <div className="text-sm text-slate-500">
+                  조직 관리 권한이 없어 조직 탭을 표시할 수 없습니다.
+                </div>
+              )}
+
+              {adminTab === 'permissions' && canManagePermissions && (
+                <div className="space-y-5">
+                  <form onSubmit={handleSubmitPermission} className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                    <select
+                      value={selectedPermissionProjectId}
+                      onChange={(e) => handlePermissionProjectChange(e.target.value)}
+                      disabled={projects.length === 0}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm md:col-span-2"
+                    >
+                      <option value="">프로젝트 선택</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>{project.title}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={selectedPermissionUserId}
+                      onChange={(e) => setSelectedPermissionUserId(e.target.value)}
+                      disabled={adminUsers.length === 0}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm md:col-span-2"
+                    >
+                      <option value="">사용자 선택</option>
+                      {adminUsers.map((userData) => (
+                        <option key={userData.id} value={userData.id}>{userData.email}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={selectedPermissionLevel}
+                      onChange={(e) => setSelectedPermissionLevel(e.target.value)}
+                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
+                    >
+                      {(adminPermissionCatalog.project_permissions.length > 0 ? adminPermissionCatalog.project_permissions : [
+                        { value: 'view', label: 'View' },
+                        { value: 'edit', label: 'Edit' },
+                        { value: 'admin', label: 'Admin' },
+                      ]).map((permission) => (
+                        <option key={permission.value} value={permission.value}>{permission.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      disabled={!selectedPermissionProjectId || !selectedPermissionUserId}
+                      className="h-10 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white rounded-md text-sm font-bold"
+                    >
+                      권한 저장
+                    </button>
+                  </form>
+                  {projects.length === 0 && (
+                    <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+                      권한을 부여할 프로젝트가 없습니다.
+                    </div>
+                  )}
+                  {adminUsers.length === 0 && (
+                    <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+                      권한을 부여할 사용자가 없습니다.
+                    </div>
+                  )}
+                  <div className="border rounded-xl overflow-hidden">
+                    <div className="max-h-72 overflow-y-auto">
+                      {projectPermissions.map((permission) => (
+                        <div key={permission.id} className="grid grid-cols-12 gap-2 items-center px-3 py-2 border-b text-sm last:border-b-0">
+                          <div className="col-span-4 truncate">{permission.user_email || permission.user_id}</div>
+                          <div className="col-span-3 uppercase">{permission.permission}</div>
+                          <div className="col-span-2 text-slate-500">{new Date(permission.granted_at).toLocaleDateString()}</div>
+                          <div className="col-span-3 flex gap-2 justify-end">
+                            <button onClick={() => handleDeletePermission(permission)} className="px-2 py-1 bg-red-100 rounded text-red-700">권한 삭제</button>
+                          </div>
+                        </div>
+                      ))}
+                      {projectPermissions.length === 0 && (
+                        <div className="p-3 text-sm text-slate-500">
+                          {selectedPermissionProjectId ? '해당 프로젝트에 등록된 권한이 없습니다.' : '프로젝트를 먼저 선택하세요.'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {adminTab === 'permissions' && !canManagePermissions && (
+                <div className="text-sm text-slate-500">
+                  프로젝트 권한 관리 권한이 없어 권한 탭을 표시할 수 없습니다.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Upload Progress Overlay - 멀티 프로젝트 업로드 지원 */}
       {/* 대시보드: 모든 프로젝트 업로드 표시 / 처리 화면: 현재 프로젝트만 표시 */}
       {allUploads.length > 0 && (

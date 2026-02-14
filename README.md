@@ -109,10 +109,13 @@ PROCESSING_DATA_PATH=/path/to/processing
 
 | 문서 | 설명 |
 |------|------|
-| [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 배포 패키지 설치 가이드 |
-| [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | 시스템 운영 가이드 |
+| [DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md) | 문서 역할/갱신 규칙(우선순위) |
+| [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 배포/초기 구성/버전 업그레이드 |
+| [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | 운영·운영자용 유지보수 가이드 |
 | [ROADMAP.md](docs/ROADMAP.md) | 개발 로드맵 및 변경 이력 |
+| [SPRINT_COMPLETION.md](docs/SPRINT_COMPLETION.md) | 1~4차 스프린트 핵심 목적 달성 상태 |
 | [engines/README.md](engines/README.md) | 처리 엔진 가이드 |
+| [OPERATIONS_MONITORING.md](docs/OPERATIONS_MONITORING.md) | 처리 큐/로그/임계치 모니터링 |
 
 ## Development
 

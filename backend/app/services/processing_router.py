@@ -12,7 +12,10 @@ from datetime import datetime
 
 import httpx
 
+from datetime import timedelta
+
 from app.config import get_settings
+from app.auth.jwt import create_internal_token
 
 settings = get_settings()
 logger = logging.getLogger("app.processing.router")
@@ -45,6 +48,9 @@ class ProcessingEngine(ABC):
 
 class ODMEngine(ProcessingEngine):
     """OpenDroneMap processing engine."""
+
+    # Deprecated in current policy (4차 스프린트 기준 비활성)
+    # Kept for emergency re-enable path with configuration work if needed.
     
     def __init__(self):
         self.docker_image = settings.ODM_DOCKER_IMAGE
@@ -211,6 +217,9 @@ class ODMEngine(ProcessingEngine):
 
 class ExternalAPIEngine(ProcessingEngine):
     """External processing engine via REST API."""
+
+    # Deprecated in current policy (4차 스프린트 기준 비활성)
+    # Kept for emergency re-enable path with external engine integration.
     
     def __init__(self):
         self.base_url = settings.EXTERNAL_ENGINE_URL
@@ -236,7 +245,12 @@ class ExternalAPIEngine(ProcessingEngine):
         # Determine internal callback URL for Webhook
         # Default to internal docker host if not specified
         callback_base = os.environ.get("WEBHOOK_URL_BASE", "http://api:8000")
-        callback_url = f"{callback_base}/api/v1/processing/webhook"
+        webhook_token = create_internal_token(
+            "processing_webhook",
+            subject="external-engine",
+            expires_delta=timedelta(hours=1),
+        )
+        callback_url = f"{callback_base}/api/v1/processing/webhook?internal_token={webhook_token}"
         
         self.logger.info(f"Submitting job for project {project_id} to {self.base_url}")
         
@@ -607,16 +621,30 @@ class ProcessingRouter:
     """Router to select and use appropriate processing engine."""
     
     def __init__(self):
-        self._engines = {
-            "odm": ODMEngine(),
-            "external": ExternalAPIEngine(),
-            "metashape": MetashapeEngine(),
-        }
-    
+        self._engines: dict[str, ProcessingEngine] = {}
+
+        if settings.ENABLE_METASHAPE_ENGINE:
+            self._engines["metashape"] = MetashapeEngine()
+
+        if settings.ENABLE_ODM_ENGINE:
+            self._engines["odm"] = ODMEngine()
+
+        if settings.ENABLE_EXTERNAL_ENGINE:
+            self._engines["external"] = ExternalAPIEngine()
+
+        if not self._engines:
+            logger.warning(
+                "No processing engines enabled. Check ENABLE_*_ENGINE env vars."
+            )
+
     def get_engine(self, engine_name: str) -> ProcessingEngine:
         """Get processing engine by name."""
         if engine_name not in self._engines:
-            raise ValueError(f"Unknown engine: {engine_name}")
+            enabled_engines = ", ".join(sorted(self._engines.keys()))
+            raise ValueError(
+                f"지원되지 않는 처리 엔진입니다: {engine_name}. "
+                f"현재 사용 가능한 엔진: {enabled_engines or '없음'}"
+            )
         return self._engines[engine_name]
     
     async def process(

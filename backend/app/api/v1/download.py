@@ -1,23 +1,144 @@
 """Download API endpoints with resumable download support."""
 import os
 import re
+import time
+import logging
 from urllib.parse import quote
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import Any
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import aiofiles
+from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, ProcessingJob
-from app.auth.jwt import get_current_user, PermissionChecker
+from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role, verify_token
 from app.services.storage import get_storage
+from app.services.download_tokens import create_download_token, consume_download_token
 from app.utils.checksum import calculate_file_checksum_async as calculate_file_checksum
 from app.utils.gdal import extract_gsd_and_crs as get_source_gsd_and_crs
 
 router = APIRouter(prefix="/download", tags=["Download"])
+logger = logging.getLogger(__name__)
+COG_LOOKUP_WARN_MS = float(os.getenv("COG_LOOKUP_WARN_MS", "1000"))
+
+
+async def _get_scoped_project(
+    project_id: UUID,
+    current_user: User,
+    db: AsyncSession,
+):
+    query = select(Project).where(Project.id == project_id)
+    if not is_admin_role(current_user.role):
+        query = query.where(Project.organization_id == current_user.organization_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def _validate_download_token_access(
+    db: AsyncSession,
+    token_payload: dict[str, Any],
+    authorization: str | None = None,
+) -> None:
+    """Validate optional bearer token against download token scope.
+
+    - If token has user_id, authenticated user must match same user.
+    - If token has organization_id, authenticated non-admin user must be in same org.
+    - If no Authorization header is provided, download remains allowed for public one-time links.
+    """
+    token_user_id = token_payload.get("user_id")
+    token_org_id = token_payload.get("organization_id")
+
+    if not token_user_id and not token_org_id:
+        return
+
+    if not authorization or not authorization.startswith("Bearer "):
+        return
+
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = verify_token(token, "access")
+    except HTTPException:
+        return
+
+    user_id = payload.get("sub")
+    if not user_id:
+        return
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    current_user = result.scalar_one_or_none()
+    if not current_user or not current_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or inactive user",
+        )
+
+    # If token was issued for a specific user, enforce exact match.
+    if token_user_id and str(current_user.id) != str(token_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Download token user mismatch",
+        )
+
+    # Enforce org boundary when token is scoped to organization.
+    if token_org_id and not is_admin_role(current_user.role):
+        if not current_user.organization_id or str(current_user.organization_id) != str(token_org_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Download token organization mismatch",
+            )
+
+
+def _build_cache_key(base_key: str, file_size: int, mtime: int | None = None) -> str:
+    if mtime is None:
+        return f"{base_key}:{file_size}"
+    return f"{base_key}:{file_size}:{mtime}"
+
+
+def _extract_bounds_from_wkt(bounds_wkt: str) -> list[float] | None:
+    """Extract envelope from WKT polygon/point as [west, south, east, north]."""
+    if not bounds_wkt:
+        return None
+
+    try:
+        polygon_match = re.search(
+            r"POLYGON\s*\(\(\s*(.+?)\s*\)\)",
+            str(bounds_wkt),
+            re.IGNORECASE | re.DOTALL,
+        )
+        if polygon_match:
+            coords_str = polygon_match.group(1)
+            lons = []
+            lats = []
+            for point in coords_str.split(","):
+                parts = point.strip().split()
+                if len(parts) < 2:
+                    continue
+                lon = float(parts[0])
+                lat = float(parts[1])
+                lons.append(lon)
+                lats.append(lat)
+            if lons and lats:
+                return [min(lons), min(lats), max(lons), max(lats)]
+
+        point_match = re.search(
+            r"POINT\s*\(\s*([\d.+-]+)\s+([\d.+-]+)\s*\)",
+            str(bounds_wkt),
+            re.IGNORECASE,
+        )
+        if point_match:
+            lon = float(point_match.group(1))
+            lat = float(point_match.group(2))
+            return [lon, lat, lon, lat]
+
+    except Exception:
+        pass
+
+    return None
 
 
 @router.get("/projects/{project_id}/ortho")
@@ -39,6 +160,13 @@ async def download_orthophoto(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
         )
     
     # Get the latest completed processing job
@@ -66,14 +194,11 @@ async def download_orthophoto(
         file_size = os.path.getsize(file_path)
     else:
         # Fallback: try Project.ortho_path in storage, then job.result_path as key
-        project_result = await db.execute(select(Project).where(Project.id == project_id))
-        proj = project_result.scalar_one()
-
         storage = get_storage()
         storage_key = None
 
-        if proj.ortho_path and storage.object_exists(proj.ortho_path):
-            storage_key = proj.ortho_path
+        if scoped_project.ortho_path and storage.object_exists(scoped_project.ortho_path):
+            storage_key = scoped_project.ortho_path
         elif file_path and storage.object_exists(file_path):
             storage_key = file_path
 
@@ -120,8 +245,7 @@ async def download_orthophoto(
     range_header = request.headers.get("Range")
     
     # Get project title for filename
-    project_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = project_result.scalar_one()
+    project = scoped_project
     # Use URL encoding for non-ASCII filenames (RFC 5987)
     base_filename = f"{project.title}_ortho.tif".replace(" ", "_")
     # Create ASCII-safe fallback and UTF-8 encoded version
@@ -225,6 +349,13 @@ async def get_download_info(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
     
     # Get the latest completed processing job
     result = await db.execute(
@@ -250,12 +381,10 @@ async def get_download_info(
         file_size = os.path.getsize(file_path)
     else:
         # Fallback to storage backend
-        project_result = await db.execute(select(Project).where(Project.id == project_id))
-        proj = project_result.scalar_one()
         storage = get_storage()
         storage_key = None
-        if proj.ortho_path and storage.object_exists(proj.ortho_path):
-            storage_key = proj.ortho_path
+        if scoped_project.ortho_path and storage.object_exists(scoped_project.ortho_path):
+            storage_key = scoped_project.ortho_path
         elif file_path and storage.object_exists(file_path):
             storage_key = file_path
         if storage_key:
@@ -291,6 +420,7 @@ async def get_download_info(
 @router.get("/projects/{project_id}/cog-url")
 async def get_cog_url(
     project_id: UUID,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -305,6 +435,27 @@ async def get_cog_url(
         bounds: Geographic bounds [west, south, east, north]
         file_size: Size of the file in bytes
     """
+    start_time = time.perf_counter()
+
+    def _build_response(url: str, file_size: int, local: bool, cache_key: str) -> dict:
+        latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        if latency_ms > COG_LOOKUP_WARN_MS:
+            logger.warning(
+                "cog_lookup_slow project_id=%s lookup_ms=%.2f threshold_ms=%.2f",
+                project_id,
+                latency_ms,
+                COG_LOOKUP_WARN_MS,
+            )
+        return {
+            "url": url,
+            "local": local,
+            "file_size": file_size,
+            "bounds": _extract_bounds_from_wkt(bounds_wkt),
+            "project_id": str(project_id),
+            "lookup_ms": latency_ms,
+            "cache_key": cache_key,
+        }
+
     # Check permission
     permission_checker = PermissionChecker("view")
     if not await permission_checker.check(str(project_id), current_user, db):
@@ -312,9 +463,20 @@ async def get_cog_url(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
-    
-    project_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = project_result.scalar_one()
+
+    result = await db.execute(
+        select(Project, ST_AsText(Project.bounds).label("bounds_wkt")).where(
+            Project.id == project_id
+        )
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+    project = row[0]
+    bounds_wkt = row[1]
 
     storage = get_storage()
 
@@ -343,33 +505,30 @@ async def get_cog_url(
     local_path = storage.get_local_path(ortho_path)
     if local_path and os.path.exists(local_path):
         file_size = os.path.getsize(local_path)
-        return {
-            "url": f"file://{local_path}",
-            "local": True,
-            "file_size": file_size,
-            "project_id": str(project_id),
-        }
+        cache_key = _build_cache_key(ortho_path, file_size, int(os.path.getmtime(local_path)))
+        cog_response = _build_response(f"file://{local_path}", file_size, True, cache_key)
+        response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+        response.headers["X-COG-Cache-Key"] = cache_key
+        return cog_response
 
     # MinIO mode: check if object exists in storage
     if storage.object_exists(ortho_path):
         file_size = storage.get_object_size(ortho_path)
         s3_url = f"s3://{storage.bucket}/{ortho_path}"
-        return {
-            "url": s3_url,
-            "local": False,
-            "file_size": file_size,
-            "project_id": str(project_id),
-        }
+        cache_key = _build_cache_key(ortho_path, file_size)
+        cog_response = _build_response(s3_url, file_size, False, cache_key)
+        response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+        response.headers["X-COG-Cache-Key"] = cache_key
+        return cog_response
 
     # Check if it's a local file path (legacy processing jobs)
     if os.path.exists(ortho_path):
         file_size = os.path.getsize(ortho_path)
-        return {
-            "url": f"file://{ortho_path}",
-            "local": True,
-            "file_size": file_size,
-            "project_id": str(project_id),
-        }
+        cache_key = _build_cache_key(ortho_path, file_size, int(os.path.getmtime(ortho_path)))
+        cog_response = _build_response(f"file://{ortho_path}", file_size, True, cache_key)
+        response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+        response.headers["X-COG-Cache-Key"] = cache_key
+        return cog_response
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -378,11 +537,9 @@ async def get_cog_url(
 
 
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List
 import zipfile
-import io
 import tempfile
-import uuid
 import time
 from datetime import datetime
 
@@ -395,24 +552,6 @@ class BatchExportRequest(BaseModel):
     gsd: float | None = None  # Planned GSD in cm/pixel (None = use original)
     custom_filename: str | None = None  # Optional custom filename for ZIP
 
-
-
-# 임시 다운로드 저장소 (download_id -> file_info)
-# 실제 운영에서는 Redis 등을 사용하는 것이 좋음
-_pending_downloads: Dict[str, dict] = {}
-
-
-def cleanup_old_downloads():
-    """5분 이상 지난 다운로드 정리"""
-    now = time.time()
-    expired = [k for k, v in _pending_downloads.items() if now - v.get("created_at", 0) > 300]
-    for k in expired:
-        info = _pending_downloads.pop(k, None)
-        if info and info.get("file_path") and os.path.exists(info["file_path"]):
-            try:
-                os.unlink(info["file_path"])
-            except Exception:
-                pass
 
 
 def _warp_if_needed(source_path: str, target_crs: str, target_gsd_cm: float | None) -> str:
@@ -498,8 +637,7 @@ async def _collect_export_files(
         if not await permission_checker.check(str(project_id), current_user, db):
             continue
 
-        project_result = await db.execute(select(Project).where(Project.id == project_id))
-        project = project_result.scalar_one_or_none()
+        project = await _get_scoped_project(project_id, current_user, db)
         if not project:
             continue
 
@@ -661,8 +799,6 @@ async def prepare_batch_download(
     실제 다운로드는 GET /batch/{download_id}로 수행합니다.
     이 방식은 브라우저 메모리 문제를 방지합니다.
     """
-    cleanup_old_downloads()
-
     if not request.project_ids:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No project IDs provided")
     if len(request.project_ids) > 20:
@@ -675,8 +811,6 @@ async def prepare_batch_download(
     if not projects_with_files:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completed orthoimages found for the selected projects")
 
-    download_id = str(uuid.uuid4())
-
     # Single project: TIF
     if len(projects_with_files) == 1:
         item = projects_with_files[0]
@@ -684,14 +818,20 @@ async def prepare_batch_download(
         target_filename = _make_export_filename(item["project"], request.custom_filename)
         file_size = os.path.getsize(file_path)
 
-        _pending_downloads[download_id] = {
-            "file_path": file_path,
+        token = await create_download_token(
+            file_path=file_path,
+            filename=target_filename,
+            media_type="image/tiff",
+            file_size=file_size,
+            organization_id=str(current_user.organization_id) if current_user.organization_id else None,
+            project_ids=[str(item["project"].id)],
+            user_id=str(current_user.id),
+        )
+        return {
+            "download_id": token,
             "filename": target_filename,
-            "media_type": "image/tiff",
             "file_size": file_size,
-            "created_at": time.time(),
         }
-        return {"download_id": download_id, "filename": target_filename, "file_size": file_size}
 
     # Multi-project: ZIP
     temp_zip_path = tempfile.NamedTemporaryFile(delete=False, suffix='.zip').name
@@ -708,14 +848,16 @@ async def prepare_batch_download(
         zip_size = os.path.getsize(temp_zip_path)
         zip_filename = _make_export_filename(None, request.custom_filename, ".zip") if request.custom_filename else f"batch_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
 
-        _pending_downloads[download_id] = {
-            "file_path": temp_zip_path,
-            "filename": zip_filename,
-            "media_type": "application/zip",
-            "file_size": zip_size,
-            "created_at": time.time(),
-        }
-        return {"download_id": download_id, "filename": zip_filename, "file_size": zip_size}
+        token = await create_download_token(
+            file_path=temp_zip_path,
+            filename=zip_filename,
+            media_type="application/zip",
+            file_size=zip_size,
+            organization_id=str(current_user.organization_id) if current_user.organization_id else None,
+            project_ids=[str(item["project"].id) for item in projects_with_files],
+            user_id=str(current_user.id),
+        )
+        return {"download_id": token, "filename": zip_filename, "file_size": zip_size}
 
     except Exception as e:
         try: os.unlink(temp_zip_path)
@@ -726,14 +868,20 @@ async def prepare_batch_download(
 @router.get("/batch/{download_id}")
 async def get_prepared_download(
     download_id: str,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    db: AsyncSession = Depends(get_db),
 ):
-    # 인증 불필요 - download_id 자체가 임시 토큰 역할
-    # (prepare 단계에서 이미 권한 확인됨)
     """
     준비된 파일을 직접 다운로드합니다.
     브라우저가 직접 파일을 다운로드하므로 메모리 문제가 없습니다.
     """
-    info = _pending_downloads.get(download_id)
+    info = await consume_download_token(download_id)
+    if info:
+        await _validate_download_token_access(
+            db,
+            info,
+            authorization=authorization,
+        )
 
     if not info:
         raise HTTPException(
@@ -744,7 +892,6 @@ async def get_prepared_download(
     file_path = info["file_path"]
 
     if not os.path.exists(file_path):
-        _pending_downloads.pop(download_id, None)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found",
@@ -758,8 +905,6 @@ async def get_prepared_download(
                 while chunk := await f.read(8 * 1024 * 1024):  # 8MB chunks
                     yield chunk
         finally:
-            # 다운로드 완료 후 정리
-            _pending_downloads.pop(download_id, None)
             if file_path.startswith(tempfile.gettempdir()):
                 try:
                     os.unlink(file_path)

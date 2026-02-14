@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     MINIO_PUBLIC_ENDPOINT: Optional[str] = "localhost:9002"
     
     # Processing Engines
+    ENABLE_METASHAPE_ENGINE: bool = True
+    ENABLE_ODM_ENGINE: bool = False
+    ENABLE_EXTERNAL_ENGINE: bool = False
     EXTERNAL_ENGINE_URL: str = ""
     EXTERNAL_ENGINE_API_KEY: str = ""
     ODM_DOCKER_IMAGE: str = "opendronemap/odm:latest"
@@ -45,6 +48,7 @@ class Settings(BaseSettings):
     
     # Upload / Data
     TUS_ENDPOINT: str = "http://localhost:1080/files/"
+    TUS_WEBHOOK_TOKEN: str = ""
     MAX_UPLOAD_SIZE_GB: int = 500
     LOCAL_DATA_PATH: str = "/data"
     

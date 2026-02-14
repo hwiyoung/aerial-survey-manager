@@ -22,11 +22,63 @@ const STATUS_COLORS = {
     highlight: { fill: '#f59e0b', stroke: '#d97706', label: '하이라이트' },
 };
 
+const COG_INFO_CACHE_TTL_MS = 10 * 60 * 1000; // 10m
+const COG_INFO_CACHE = new Map();
+
+const TILER_TILE_ENDPOINT = '/titiler/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
+
+function buildTiTilerTileUrl(sourceUrl) {
+    return `${TILER_TILE_ENDPOINT}?url=${encodeURIComponent(sourceUrl)}`;
+}
+
+function normalizeProjectBounds(projectBounds) {
+    if (!Array.isArray(projectBounds) || projectBounds.length !== 2) {
+        return null;
+    }
+
+    const sw = projectBounds[0];
+    const ne = projectBounds[1];
+
+    if (
+        !Array.isArray(sw) ||
+        !Array.isArray(ne) ||
+        sw.length !== 2 ||
+        ne.length !== 2
+    ) {
+        return null;
+    }
+
+    const southWest = [Number(sw[0]), Number(sw[1])];
+    const northEast = [Number(ne[0]), Number(ne[1])];
+
+    if (southWest.some(v => Number.isNaN(v)) || northEast.some(v => Number.isNaN(v))) {
+        return null;
+    }
+
+    return [southWest, northEast];
+}
+
+function normalizeCogBounds(bounds) {
+    if (!Array.isArray(bounds) || bounds.length !== 4) return null;
+    const [west, south, east, north] = bounds;
+    if ([west, south, east, north].some(v => typeof v !== 'number' || Number.isNaN(v))) {
+        return null;
+    }
+    return [[south, west], [north, east]];
+}
+
 /**
  * TiTiler-based Orthophoto Tile Layer
  * Streams COG files efficiently using XYZ tiles
  */
-export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, onLoadComplete, onLoadError }) {
+export function TiTilerOrthoLayer({
+    projectId,
+    visible = true,
+    opacity = 0.8,
+    onLoadComplete,
+    onLoadError,
+    projectBounds = null,
+}) {
     const map = useMap();
     const layerRef = useRef(null);
     const currentProjectIdRef = useRef(null);
@@ -34,6 +86,7 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
     const [error, setError] = useState(null);
     const [tileUrl, setTileUrl] = useState(null);
     const [bounds, setBounds] = useState(null);
+    const fittedBoundsRef = useRef(null);
 
     useEffect(() => {
         // 이전 레이어 정리
@@ -49,53 +102,92 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
             return;
         }
 
+        const overrideBounds = normalizeProjectBounds(projectBounds);
+
         // 현재 요청 ID 저장 (경쟁 조건 방지)
         currentProjectIdRef.current = projectId;
         console.log('[TiTiler] Starting load for project:', projectId);
 
+        const readFromCache = () => {
+            const cached = COG_INFO_CACHE.get(projectId);
+            if (!cached) return null;
+            if (Date.now() - cached.fetchedAt > COG_INFO_CACHE_TTL_MS) {
+                COG_INFO_CACHE.delete(projectId);
+                return null;
+            }
+            if (cached.projectId !== projectId) return null;
+            return cached;
+        };
+
+        const applyCachedInfo = (cached) => {
+            const boundsFromCache = overrideBounds || normalizeCogBounds(cached.bounds);
+            setTileUrl(cached.tileUrl || buildTiTilerTileUrl(cached.url));
+            setError(null);
+            setLoading(false);
+            setBounds(boundsFromCache);
+            onLoadComplete?.();
+        };
+
         const initTiTiler = async () => {
+            const cached = readFromCache();
+            if (cached) {
+                applyCachedInfo(cached);
+                return;
+            }
+
             setLoading(true);
             setError(null);
             setTileUrl(null);
-            setBounds(null);
+            setBounds(overrideBounds);
 
+            let cogInfo;
             try {
                 // Get COG info from backend
-                const cogInfo = await api.getCogUrl(projectId);
-
-                // 요청 중 projectId가 변경되었으면 무시
+                cogInfo = await api.getCogUrl(projectId);
                 if (currentProjectIdRef.current !== projectId) {
-                    console.log('[TiTiler] Project changed, ignoring response for:', projectId);
                     return;
                 }
 
-                console.log('[TiTiler] COG info for project:', projectId, cogInfo);
-
-                // Build TiTiler tile URL
-                // URL is absolute (s3:// or file://) — pass directly to TiTiler
-                let cogUrl = cogInfo.url;
-
-                // TiTiler XYZ tile endpoint
-                const tiTilerUrl = `/titiler/cog/tiles/WebMercatorQuad/{z}/{x}/{y}@2x.png?url=${encodeURIComponent(cogUrl)}`;
-                console.log('[TiTiler] Tile URL template:', tiTilerUrl);
-
-                setTileUrl(tiTilerUrl);
-
-                // Get bounds info from TiTiler
-                try {
-                    const boundsResponse = await fetch(`/titiler/cog/bounds?url=${encodeURIComponent(cogUrl)}`);
-                    if (boundsResponse.ok && currentProjectIdRef.current === projectId) {
-                        const boundsData = await boundsResponse.json();
-                        console.log('[TiTiler] Bounds:', boundsData);
-                        if (boundsData.bounds) {
-                            const [west, south, east, north] = boundsData.bounds;
-                            setBounds([[south, west], [north, east]]);
-                        }
-                    }
-                } catch (e) {
-                    console.warn('[TiTiler] Could not get bounds:', e);
+                const tileSourceUrl = cogInfo?.url;
+                if (!tileSourceUrl) {
+                    throw new Error('COG URL 응답이 비어 있습니다.');
                 }
 
+                const tiTilerUrl = buildTiTilerTileUrl(tileSourceUrl);
+                let nextBounds = overrideBounds || normalizeCogBounds(cogInfo.bounds);
+
+                // Get bounds info from TiTiler only when project bounds are not known
+                if (!overrideBounds && !nextBounds) {
+                    try {
+                        const boundsResponse = await fetch(`/titiler/cog/bounds?url=${encodeURIComponent(tileSourceUrl)}`);
+                        if (boundsResponse.ok && currentProjectIdRef.current === projectId) {
+                            const boundsData = await boundsResponse.json();
+                            if (boundsData?.bounds) {
+                                const backendBounds = normalizeCogBounds(boundsData.bounds);
+                                if (backendBounds) {
+                                    console.log('[TiTiler] Bounds from service:', boundsData);
+                                    nextBounds = backendBounds;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[TiTiler] Could not get bounds:', e);
+                    }
+                }
+
+                COG_INFO_CACHE.set(projectId, {
+                    projectId,
+                    cacheKey: cogInfo.cache_key,
+                    tileUrl: tiTilerUrl,
+                    url: tileSourceUrl,
+                    local: cogInfo.local,
+                    fileSize: cogInfo.file_size,
+                    bounds: cogInfo.bounds,
+                    fetchedAt: Date.now(),
+                });
+
+                setTileUrl(tiTilerUrl);
+                setBounds(nextBounds);
                 setLoading(false);
                 onLoadComplete?.();
 
@@ -117,14 +209,24 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
                 layerRef.current = null;
             }
         };
-    }, [map, projectId, visible]);
+    }, [map, projectId, visible, projectBounds]);
 
     // Fit to bounds when available
     useEffect(() => {
-        if (bounds && map) {
-            map.fitBounds(bounds, { padding: [50, 50], maxZoom: getTileConfig().maxZoom });
-        }
+        if (!bounds || !map) return;
+
+        const boundsKey = JSON.stringify(bounds);
+        if (fittedBoundsRef.current === boundsKey) return;
+
+        fittedBoundsRef.current = boundsKey;
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: getTileConfig().maxZoom });
     }, [bounds, map]);
+
+    useEffect(() => {
+        if (!visible) {
+            fittedBoundsRef.current = null;
+        }
+    }, [visible]);
 
     if (!tileUrl || !visible) return null;
 
@@ -134,9 +236,14 @@ export function TiTilerOrthoLayer({ projectId, visible = true, opacity = 0.8, on
             ref={layerRef}
             url={tileUrl}
             opacity={opacity}
-            tileSize={512}
-            zoomOffset={-1}
+            tileSize={256}
+            zoomOffset={0}
+            maxNativeZoom={getTileConfig().maxZoom}
+            minNativeZoom={MAP_CONFIG.minZoom}
             maxZoom={getTileConfig().maxZoom}
+            updateWhenZooming={false}
+            updateWhenIdle={true}
+            keepBuffer={2}
             attribution="&copy; TiTiler"
         />
     );
@@ -164,6 +271,7 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
             setLoading(true);
             setError(null);
             setLoadProgress('COG URL 가져오는 중...');
+            let cogUrl = null;
 
             try {
                 // Get COG URL from backend
@@ -183,7 +291,7 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
 
                 // Build full URL for georaster
                 // URL is absolute (s3:// or file://) — pass directly to TiTiler
-                let cogUrl = cogInfo.url;
+                cogUrl = cogInfo.url;
                 console.log('[COG] Loading from URL:', cogUrl);
 
                 setLoadProgress('정사영상 스트리밍 중... (Range Requests)');
@@ -191,28 +299,24 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
                 // Use URL-based parsing with Range Requests (streaming)
                 // This only downloads the tiles needed for current view
                 const georaster = await parseGeoraster(cogUrl, {
-                    useWebWorker: false,  // Use main thread with window.proj4
+                    useWebWorker: true,  // Offload CPU intensive parse/render setup
                 });
-
-                console.log('[COG] Parsed georaster:', {
-                    width: georaster.width,
-                    height: georaster.height,
-                    xmin: georaster.xmin,
-                    ymin: georaster.ymin,
-                    xmax: georaster.xmax,
-                    ymax: georaster.ymax,
-                    projection: georaster.projection
-                });
-
                 setLoadProgress('레이어 생성 중...');
 
-                // Create layer with optimized settings
-                const layer = new GeoRasterLayer({
-                    georaster,
+                const createLayer = (source) => new GeoRasterLayer({
+                    georaster: source,
                     opacity,
-                    resolution: 512,  // Higher resolution for better quality
+                    resolution: 256,
                     debugLevel: 0,
                 });
+
+                const layer = createLayer(georaster);
+
+                // Fallback: if worker-based parse fails, retry on main thread.
+                // This keeps rendering available even on browsers/environments with restricted workers.
+                if (!layer) {
+                    throw new Error('GeoRaster 레이어 생성 실패');
+                }
 
                 // Remove old layer if exists
                 if (layerRef.current) {
@@ -238,10 +342,54 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
                 onLoadComplete?.();
 
             } catch (err) {
+                const message = String(err?.message || err);
+                // Worker fallback for environments where web workers are blocked/limited.
+                try {
+                    if (!cogUrl) {
+                        throw new Error('Cog URL is missing for fallback parsing');
+                    }
+                    console.warn('[COG] Retrying without worker');
+                    const [GeoRasterModule, GeoRasterLayerModule] = await Promise.all([
+                        import('georaster'),
+                        import('georaster-layer-for-leaflet')
+                    ]);
+
+                    const parseGeoraster = GeoRasterModule.default;
+                    const GeoRasterLayer = GeoRasterLayerModule.default;
+                    const georaster = await parseGeoraster(cogUrl, {
+                        useWebWorker: false,
+                    });
+
+                    const fallbackLayer = new GeoRasterLayer({
+                        georaster,
+                        opacity,
+                        resolution: 256,
+                        debugLevel: 0,
+                    });
+
+                    if (layerRef.current) {
+                        map.removeLayer(layerRef.current);
+                    }
+                    fallbackLayer.addTo(map);
+                    layerRef.current = fallbackLayer;
+
+                    const bounds = fallbackLayer.getBounds();
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds, { padding: [50, 50], maxZoom: getTileConfig().maxZoom });
+                    }
+                    setTimeout(() => map.invalidateSize(), 100);
+                    setLoadProgress(null);
+                    onLoadComplete?.();
+                    setError(null);
+                    return;
+                } catch (fallbackErr) {
+                    console.error('[COG] Fallback parsing also failed:', fallbackErr);
+                }
+
                 console.error('[COG] Failed to load:', err);
-                setError(err.message);
+                setError(message);
                 setLoadProgress(null);
-                onLoadError?.(err.message);
+                onLoadError?.(message);
             } finally {
                 setLoading(false);
             }
@@ -842,12 +990,13 @@ export function FootprintMap({
 
                     {/* Orthophoto Tile Layer - TiTiler-based for efficient streaming */}
                     {selectedCogProject && (
-                        <TiTilerOrthoLayer
+                            <TiTilerOrthoLayer
                             projectId={selectedCogProject.id}
                             visible={true}
                             opacity={cogOpacity}
                             onLoadComplete={handleCogLoadComplete}
                             onLoadError={handleCogLoadError}
+                            projectBounds={selectedCogProject.bounds}
                         />
                     )}
 

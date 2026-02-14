@@ -13,13 +13,16 @@ from sqlalchemy import select, func, delete, extract
 from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
-from app.models.user import User
+from app.models.user import User, ProjectPermission
 from app.models.project import Project, Image, ExteriorOrientation, ProcessingJob
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
     ProjectResponse,
     ProjectListResponse,
+    ProjectBatchAction,
+    ProjectBatchResponse,
+    ProjectBatchFailure,
     EOConfig,
     EOUploadResponse,
     MonthlyStats,
@@ -28,10 +31,17 @@ from app.schemas.project import (
     RegionalStatsResponse,
     StorageStatsResponse,
 )
-from app.auth.jwt import get_current_user, PermissionChecker
+from app.auth.jwt import (
+    get_current_user,
+    get_current_active_manager,
+    PermissionChecker,
+    is_admin_role,
+)
 from app.config import get_settings
 from app.services.eo_parser import EOParserService
+from app.services.quota import ensure_organization_quota
 from app.utils.geo import get_region_for_point, get_region_for_point_db
+from app.utils.audit import log_audit_event
 from pyproj import Transformer
 import json
 
@@ -82,6 +92,121 @@ def serialize_geometry(geom):
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
+async def _get_scoped_project(
+    project_id: UUID,
+    current_user: User,
+    db: AsyncSession,
+):
+    query = select(Project).where(Project.id == project_id)
+    if not is_admin_role(current_user.role):
+        query = query.where(Project.organization_id == current_user.organization_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+def _apply_project_access_scope(query, current_user: User):
+    """Apply organization-first access scope for non-admin users."""
+    if is_admin_role(current_user.role):
+        return query
+
+    if current_user.organization_id is not None:
+        return query.where(Project.organization_id == current_user.organization_id)
+
+    return query.where(Project.owner_id == current_user.id)
+
+
+def _resolve_project_permission(
+    project: Project,
+    current_user: User,
+    explicit_permission: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve effective permission for current user on a project."""
+    if is_admin_role(current_user.role):
+        return "admin"
+
+    if project.owner_id == current_user.id:
+        return "admin"
+
+    if explicit_permission in {"view", "edit", "admin"}:
+        return explicit_permission
+
+    if project.organization_id == current_user.organization_id:
+        return "view"
+
+    return None
+
+
+def _build_project_access_fields(
+    project: Project,
+    current_user: User,
+    explicit_permission: Optional[str] = None,
+) -> dict:
+    permission = _resolve_project_permission(project, current_user, explicit_permission)
+    return {
+        "current_user_permission": permission,
+        "can_edit": permission in {"edit", "admin"},
+        "can_delete": permission == "admin",
+    }
+
+
+async def _get_explicit_permission_map(
+    db: AsyncSession,
+    current_user: User,
+    project_ids: list[UUID],
+) -> dict[UUID, str]:
+    if is_admin_role(current_user.role) or not project_ids:
+        return {}
+
+    unique_project_ids = list(dict.fromkeys(project_ids))
+    result = await db.execute(
+        select(ProjectPermission.project_id, ProjectPermission.permission).where(
+            ProjectPermission.user_id == current_user.id,
+            ProjectPermission.project_id.in_(unique_project_ids),
+        )
+    )
+    return {project_id: permission for project_id, permission in result.all()}
+
+
+async def _collect_project_image_paths(
+    project_id: UUID,
+    db: AsyncSession,
+) -> list[str]:
+    """Collect original image paths for cleanup before deleting a project."""
+    image_result = await db.execute(
+        select(Image.original_path).where(
+            Image.project_id == project_id,
+            Image.original_path.isnot(None),
+        )
+    )
+    return [row[0] for row in image_result.fetchall()]
+
+
+def _cleanup_project_storage(project_id: UUID, original_paths: list[str]) -> None:
+    """Delete project files from object storage."""
+    try:
+        from app.services.storage import get_storage
+        storage = get_storage()
+
+        for path in original_paths:
+            try:
+                storage.delete_recursive(f"{path}/")
+                try:
+                    storage.delete_object(path)
+                except Exception:
+                    pass
+                storage.delete_recursive(f"{path}.info/")
+                try:
+                    storage.delete_object(f"{path}.info")
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"Failed to delete uploaded file {path}: {e}")
+
+        storage.delete_recursive(f"projects/{project_id}/")
+    except Exception as e:
+        print(f"Failed to delete MinIO project data for {project_id}: {e}")
+
+
 def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) -> ProjectResponse:
     """Build a ProjectResponse dict from ORM model and optional extras.
 
@@ -129,12 +254,7 @@ async def list_projects(
         ST_AsText(Project.bounds).label('bounds_wkt')
     )
     
-    # Filter by ownership or organization
-    if current_user.role != "admin":
-        query = query.where(
-            (Project.owner_id == current_user.id) |
-            (Project.organization_id == current_user.organization_id)
-        )
+    query = _apply_project_access_scope(query, current_user)
     
     # Apply filters
     if status_filter:
@@ -146,11 +266,7 @@ async def list_projects(
     
     # Count total (need separate count query)
     count_subquery = select(Project.id)
-    if current_user.role != "admin":
-        count_subquery = count_subquery.where(
-            (Project.owner_id == current_user.id) |
-            (Project.organization_id == current_user.organization_id)
-        )
+    count_subquery = _apply_project_access_scope(count_subquery, current_user)
     if status_filter:
         count_subquery = count_subquery.where(Project.status == status_filter)
     if region:
@@ -168,6 +284,12 @@ async def list_projects(
     
     result = await db.execute(query)
     rows = result.all()
+
+    explicit_permission_map = await _get_explicit_permission_map(
+        db,
+        current_user,
+        [row[0].id for row in rows],
+    )
     
     # Add image count to each project
     project_responses = []
@@ -223,6 +345,11 @@ async def list_projects(
             upload_completed_count=upload_completed_count,
             upload_in_progress=upload_uploading_count > 0,
             result_gsd=result_gsd, process_mode=process_mode,
+            **_build_project_access_fields(
+                project,
+                current_user,
+                explicit_permission_map.get(project.id),
+            ),
         )
         project_responses.append(response)
     
@@ -237,10 +364,22 @@ async def list_projects(
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     data: ProjectCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_manager),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new project."""
+    if current_user.organization_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no organization assigned.",
+        )
+
+    await ensure_organization_quota(
+        db,
+        current_user.organization_id,
+        additional_projects=1,
+    )
+
     project = Project(
         title=data.title,
         region=data.region or "미지정",
@@ -251,8 +390,24 @@ async def create_project(
     db.add(project)
     await db.flush()
     await db.refresh(project)
+
+    log_audit_event(
+        "project_created",
+        actor=current_user,
+        details={
+            "project_id": str(project.id),
+            "project_title": project.title,
+            "owner_id": str(project.owner_id),
+            "organization_id": str(project.organization_id),
+            "region": project.region,
+            "company": project.company,
+        },
+    )
     
-    return _build_project_response(project)
+    return _build_project_response(
+        project,
+        **_build_project_access_fields(project, current_user),
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -268,6 +423,13 @@ async def get_project(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
         )
     
     # Fetch with ST_AsText for bounds
@@ -285,6 +447,12 @@ async def get_project(
 
     project = row[0]
     bounds_wkt = row[1]
+
+    explicit_permission_map = await _get_explicit_permission_map(
+        db,
+        current_user,
+        [project.id],
+    )
 
     # Get image count
     count_result = await db.execute(
@@ -318,6 +486,11 @@ async def get_project(
     return _build_project_response(
         project, bounds_wkt=bounds_wkt, image_count=image_count,
         result_gsd=result_gsd, process_mode=process_mode,
+        **_build_project_access_fields(
+            project,
+            current_user,
+            explicit_permission_map.get(project.id),
+        ),
     )
 
 
@@ -337,18 +510,21 @@ async def update_project(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
-    
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    
-    if not project:
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
+    project = scoped_project
     
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
+    previous_values = {
+        field: getattr(project, field)
+        for field in update_data
+    }
     for field, value in update_data.items():
         setattr(project, field, value)
     
@@ -362,6 +538,12 @@ async def update_project(
     row = result.first()
     project = row[0]
     bounds_wkt = row[1]
+
+    explicit_permission_map = await _get_explicit_permission_map(
+        db,
+        current_user,
+        [project.id],
+    )
     
     # Get image count and upload status
     count_result = await db.execute(
@@ -403,88 +585,161 @@ async def update_project(
     result_gsd = latest_job.result_gsd if latest_job else None
     process_mode = latest_job.process_mode if latest_job else None
 
+    if update_data:
+        change_log = {
+            "project_id": str(project.id),
+            "project_title": project.title,
+            "updated_fields": sorted(update_data.keys()),
+            "changes": [
+                {
+                    "field": field,
+                    "previous": previous_values.get(field),
+                    "new": update_data[field],
+                }
+                for field in sorted(update_data.keys())
+            ],
+        }
+        log_audit_event(
+            "project_updated",
+            actor=current_user,
+            details=change_log,
+        )
+
     return _build_project_response(
         project, bounds_wkt=bounds_wkt, image_count=image_count,
         upload_completed_count=upload_completed_count,
         upload_in_progress=upload_uploading_count > 0,
         result_gsd=result_gsd, process_mode=process_mode,
+        **_build_project_access_fields(
+            project,
+            current_user,
+            explicit_permission_map.get(project.id),
+        ),
     )
 
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT, deprecated=True)
 async def delete_project(
     project_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete project and all related data."""
-    # Check permission (only owner or admin can delete)
-    permission_checker = PermissionChecker("admin")
-    if not await permission_checker.check(str(project_id), current_user, db):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only project owner or admin can delete projects",
-        )
-    
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-    
-    # Get all image original_paths before deletion (for MinIO cleanup)
-    image_result = await db.execute(
-        select(Image.original_path).where(
-            Image.project_id == project_id,
-            Image.original_path.isnot(None)
-        )
+    """Deprecated. Use POST /projects/batch with action='delete'."""
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail={
+            "type": "deprecated_endpoint",
+            "message": "This endpoint is deprecated. Use POST /projects/batch with action='delete'.",
+            "project_id": str(project_id),
+        },
     )
-    original_paths = [row[0] for row in image_result.fetchall()]
 
-    await db.delete(project)
 
-    # Clean up local processing data via Celery task
-    from app.workers.tasks import delete_project_data
-    try:
-        delete_project_data.delay(str(project_id))
-    except Exception as e:
-        print(f"Failed to queue delete task for {project_id}: {e}")
+@router.post("/batch", response_model=ProjectBatchResponse)
+async def batch_projects(
+    payload: ProjectBatchAction,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch operation for projects."""
+    if payload.action == "update_status" and not payload.status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="status is required when action is update_status",
+        )
 
-    # Clean up storage (images, thumbnails, ortho)
-    try:
-        from app.services.storage import get_storage
-        storage = get_storage()
+    unique_ids = list(dict.fromkeys(payload.project_ids))
+    permission_checker = PermissionChecker("admin" if payload.action == "delete" else "edit")
 
-        # Delete original uploaded images (stored in uploads/ by TUS)
-        # TUS stores files as folders with chunks, so use delete_recursive
-        for path in original_paths:
-            try:
-                # Delete the upload folder/file (TUS may create folder structure)
-                storage.delete_recursive(f"{path}/")
-                # Also try direct object deletion for single-file uploads
+    succeeded = []
+    failed = []
+
+    for project_id in unique_ids:
+        project_id_str = str(project_id)
+        if not await permission_checker.check(project_id_str, current_user, db):
+            failed.append(
+                ProjectBatchFailure(
+                    project_id=project_id,
+                    reason="Permission denied",
+                )
+            )
+            continue
+
+        project = await _get_scoped_project(project_id, current_user, db)
+        if not project:
+            failed.append(
+                ProjectBatchFailure(
+                    project_id=project_id,
+                    reason="Project not found",
+                )
+            )
+            continue
+
+        try:
+            project_title = project.title
+            if payload.action == "delete":
+                original_paths = await _collect_project_image_paths(project_id, db)
+
+                async with db.begin_nested():
+                    await db.delete(project)
+                await db.commit()
+
+                from app.workers.tasks import delete_project_data
                 try:
-                    storage.delete_object(path)
-                except Exception:
-                    pass
-                # Delete .info metadata folder/file created by TUS
-                storage.delete_recursive(f"{path}.info/")
-                try:
-                    storage.delete_object(f"{path}.info")
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"Failed to delete uploaded file {path}: {e}")
+                    delete_project_data.delay(str(project_id))
+                except Exception as e:
+                    print(f"Failed to queue delete task for {project_id}: {e}")
+                _cleanup_project_storage(project_id, original_paths)
+                log_audit_event(
+                    "project_batch_deleted",
+                    actor=current_user,
+                    details={
+                        "project_id": project_id_str,
+                        "project_title": project_title,
+                    },
+                )
+                succeeded.append(project_id)
 
-        # Delete project folder (thumbnails, ortho results, etc.)
-        storage.delete_recursive(f"projects/{project_id}/")
-    except Exception as e:
-        print(f"Failed to delete MinIO project data for {project_id}: {e}")
-    
-    # Note: Related images, jobs, etc. will be deleted via CASCADE
+            elif payload.action == "update_status":
+                previous_status = project.status
+                project.status = payload.status
+                await db.commit()
+                log_audit_event(
+                    "project_batch_status_updated",
+                    actor=current_user,
+                    details={
+                        "project_id": project_id_str,
+                        "project_title": project_title,
+                        "previous_status": previous_status,
+                        "new_status": payload.status,
+                    },
+                )
+                succeeded.append(project_id)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            await db.rollback()
+            failed.append(ProjectBatchFailure(project_id=project_id, reason=str(e)))
+
+    log_audit_event(
+        "project_batch_completed",
+        actor=current_user,
+        details={
+            "action": payload.action,
+            "requested": len(unique_ids),
+            "succeeded": len(succeeded),
+            "failed": len(failed),
+        },
+    )
+
+    return ProjectBatchResponse(
+        action=payload.action,
+        requested=len(unique_ids),
+        succeeded=succeeded,
+        failed=failed,
+    )
 
 
 @router.delete("/{project_id}/source-images", status_code=status.HTTP_202_ACCEPTED)
@@ -505,11 +760,10 @@ async def delete_source_images(
             detail="Access denied",
         )
 
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-
-    if not project:
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = scoped_project
 
     if project.status != "completed":
         raise HTTPException(
@@ -666,6 +920,12 @@ async def upload_eo_data(
     if not await permission_checker.check(str(project_id), current_user, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = scoped_project
+
     eo_config = _parse_eo_config(config)
 
     content = (await file.read()).decode("utf-8")
@@ -674,11 +934,6 @@ async def upload_eo_data(
         delimiter = " "
     elif delimiter == "tab":
         delimiter = "\t"
-
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
 
     try:
         parsed_rows = EOParserService.parse_eo_file(
@@ -786,11 +1041,7 @@ async def get_monthly_stats(
     
     # Build base query with user access filter
     base_query = select(Project)
-    if current_user.role != "admin":
-        base_query = base_query.where(
-            (Project.owner_id == current_user.id) |
-            (Project.organization_id == current_user.organization_id)
-        )
+    base_query = _apply_project_access_scope(base_query, current_user)
     
     # Filter by year
     base_query = base_query.where(
@@ -837,11 +1088,7 @@ async def get_regional_stats(
     """Get regional project distribution statistics."""
     # Build base query with user access filter
     base_query = select(Project)
-    if current_user.role != "admin":
-        base_query = base_query.where(
-            (Project.owner_id == current_user.id) |
-            (Project.organization_id == current_user.organization_id)
-        )
+    base_query = _apply_project_access_scope(base_query, current_user)
     
     result = await db.execute(base_query)
     projects = result.scalars().all()

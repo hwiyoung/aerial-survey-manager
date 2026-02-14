@@ -23,7 +23,7 @@ class ProcessingPreset(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     # Processing options stored as JSON
-    # Structure: {"engine": "odm", "gsd": 5.0, "output_crs": "EPSG:5186", "output_format": "GeoTiff"}
+    # Structure: {"engine": "metashape", "gsd": 5.0, "output_crs": "EPSG:5186", "output_format": "GeoTiff"}
     options: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)

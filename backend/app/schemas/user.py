@@ -1,6 +1,6 @@
 """Pydantic schemas for User and Auth."""
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field
 
@@ -52,6 +52,7 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    organization_id: Optional[UUID] = None
 
 
 class UserResponse(UserBase):
@@ -69,6 +70,38 @@ class UserResponse(UserBase):
 class UserWithOrg(UserResponse):
     """User response with organization details."""
     organization_name: Optional[str] = None
+
+
+class UserListResponse(BaseModel):
+    """List response wrapper for users."""
+    items: List[UserResponse]
+    total: int
+
+
+class UserAdminUpdate(UserUpdate):
+    """Admin update schema for user profile."""
+    role: Optional[str] = None
+    organization_id: Optional[UUID] = None
+
+
+class UserInviteRequest(BaseModel):
+    """Request payload for inviting existing/new users."""
+    email: EmailStr
+    name: Optional[str] = None
+    role: Optional[str] = None
+    organization_id: Optional[UUID] = None
+
+
+class UserInviteResponse(UserResponse):
+    """Response payload for user invite."""
+    created: bool
+    temporary_password: Optional[str] = None
+
+
+class UserTransferRequest(BaseModel):
+    """Request payload for explicitly moving a user to another organization."""
+    organization_id: Optional[UUID] = None
+    role: Optional[str] = None
 
 
 # --- Organization Schemas ---
@@ -92,3 +125,51 @@ class OrganizationResponse(OrganizationBase):
     
     class Config:
         from_attributes = True
+
+
+class OrganizationListResponse(BaseModel):
+    """List response wrapper for organizations."""
+    items: List[OrganizationResponse]
+    total: int
+
+
+class OrganizationUpdate(BaseModel):
+    """Organization update schema."""
+    name: Optional[str] = None
+    quota_storage_gb: Optional[int] = None
+    quota_projects: Optional[int] = None
+
+
+class PermissionDescriptor(BaseModel):
+    """Permission descriptor used by the catalog API."""
+    value: str
+    label: str
+    description: Optional[str] = None
+
+
+class PermissionCatalogResponse(BaseModel):
+    """Available platform roles and project permissions."""
+    roles: List[PermissionDescriptor]
+    project_permissions: List[PermissionDescriptor]
+
+
+class ProjectPermissionRequest(BaseModel):
+    """Request body for setting project permission."""
+    permission: str
+
+
+class ProjectPermissionResponse(BaseModel):
+    """Project permission response."""
+    id: UUID
+    project_id: UUID
+    user_id: UUID
+    permission: str
+    user_email: Optional[str] = None
+    granted_at: datetime
+
+
+class ProjectPermissionListResponse(BaseModel):
+    """List response wrapper for project permissions."""
+    project_id: UUID
+    items: List[ProjectPermissionResponse]
+    total: int

@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye } from 'lucide-react';
+import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye, Activity } from 'lucide-react';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
 import { api } from '../../api/client';
@@ -7,6 +7,24 @@ import { formatBytesValue as formatBytes, formatBytesUnit } from '../../utils/fo
 
 // Month names for chart display
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatMetricSeconds(value) {
+    const numeric = Number(value);
+    if (value === null || value === undefined || !Number.isFinite(numeric)) {
+        return '-';
+    }
+
+    if (numeric < 60) return `${numeric.toFixed(1)}초`;
+    const minutes = Math.floor(numeric / 60);
+    const seconds = Math.round(numeric % 60);
+    return `${minutes}분 ${seconds}초`;
+}
+
+function formatMetricRate(value) {
+    const numeric = Number(value);
+    if (value === null || value === undefined || !Number.isFinite(numeric)) return '-';
+    return `${numeric.toFixed(1)}%`;
+}
 
 /**
  * Enhanced Stats Card for dashboard - larger with more details
@@ -54,7 +72,7 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
 /**
  * Stats summary section with 4 key metrics
  */
-function StatsSummary({ stats, storageStats, isCompact = false }) {
+function StatsSummary({ stats, storageStats, processingMetrics, isCompact = false }) {
     const completedCount = stats.completed;
     const totalCount = stats.total || (stats.completed + stats.processing);
 
@@ -63,6 +81,7 @@ function StatsSummary({ stats, storageStats, isCompact = false }) {
         ? storageStats.storage_size + storageStats.processing_size + storageStats.tiles_size
         : 0;
     const storageLabel = '영상 데이터';
+    const metricSummary = processingMetrics?.summary;
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -136,6 +155,39 @@ function StatsSummary({ stats, storageStats, isCompact = false }) {
                     label="총 원본 사진"
                     subLabel={stats.total > 0 ? `평균 ${stats.avgPhotos}장 / 블록` : '프로젝트 없음'}
                 />
+
+                {metricSummary && (
+                    <DashboardStatsCard
+                        icon={<Activity size={18} />}
+                        value={metricSummary.total_elapsed_avg_seconds || '-'}
+                        unit={metricSummary.total_elapsed_avg_seconds ? '초' : ''}
+                        label="처리 성능 지표(SLO)"
+                        subLabel={`최근 ${metricSummary.total_elapsed_sample_count}개 작업 기준`}
+                    >
+                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">큐 대기 P95</span>
+                                <span className="font-medium text-slate-700">{formatMetricSeconds(metricSummary.queue_wait_p95_seconds)}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">처리시간 P95</span>
+                                <span className="font-medium text-slate-700">{formatMetricSeconds(metricSummary.total_elapsed_p95_seconds)}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">메모리 P95</span>
+                                <span className="font-medium text-slate-700">{metricSummary.memory_usage_p95_mb ? `${metricSummary.memory_usage_p95_mb.toFixed(1)}MB` : '-'}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">SLO 위반율</span>
+                                <span className="font-medium text-slate-700">{formatMetricRate(Math.max(
+                                    metricSummary.queue_wait_violation_rate || 0,
+                                    metricSummary.total_elapsed_violation_rate || 0,
+                                    metricSummary.memory_violation_rate || 0
+                                ))}</span>
+                            </div>
+                        </div>
+                    </DashboardStatsCard>
+                )}
             </div>
         </div>
     );
@@ -290,6 +342,7 @@ export default function DashboardView({
     const [monthlyData, setMonthlyData] = useState([]);
     const [regionalData, setRegionalData] = useState([]);
     const [storageStats, setStorageStats] = useState(null);
+    const [processingMetrics, setProcessingMetrics] = useState(null);
     const [statsLoading, setStatsLoading] = useState(true);
 
     // Track source_deleted count for delayed storage refresh
@@ -316,10 +369,11 @@ export default function DashboardView({
     useEffect(() => {
         const fetchStats = async () => {
             setStatsLoading(true);
-            const [monthlyRes, regionalRes, storageRes] = await Promise.allSettled([
+            const [monthlyRes, regionalRes, storageRes, processingMetricsRes] = await Promise.allSettled([
                 api.getMonthlyStats(),
                 api.getRegionalStats(),
                 api.getStorageStats(),
+                api.getProcessingMetrics(),
             ]);
 
             // Monthly stats
@@ -345,6 +399,12 @@ export default function DashboardView({
             // Storage stats
             if (storageRes.status === 'fulfilled' && storageRes.value?.storage_size !== undefined) {
                 setStorageStats(storageRes.value);
+            }
+
+            if (processingMetricsRes.status === 'fulfilled' && processingMetricsRes.value?.total_jobs !== undefined) {
+                setProcessingMetrics(processingMetricsRes.value);
+            } else {
+                setProcessingMetrics(null);
             }
 
             setStatsLoading(false);
@@ -473,7 +533,7 @@ export default function DashboardView({
                         ) : (
                             <>
                                 {/* Stats Summary (4 cards in 2x2 grid) */}
-                                <StatsSummary stats={stats} storageStats={storageStats} isCompact={true} />
+                                <StatsSummary stats={stats} storageStats={storageStats} processingMetrics={processingMetrics} isCompact={true} />
 
                                 {/* Additional Charts */}
                                 <TrendLineChart data={monthlyData} height={180} />
@@ -548,7 +608,7 @@ export default function DashboardView({
                     ) : (
                         <>
                             {/* Stats Summary (4 cards in a row) */}
-                            <StatsSummary stats={stats} storageStats={storageStats} isCompact={false} />
+                            <StatsSummary stats={stats} storageStats={storageStats} processingMetrics={processingMetrics} isCompact={false} />
 
                             {/* Additional Charts */}
                             <TrendLineChart data={monthlyData} height={200} />

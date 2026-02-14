@@ -1,18 +1,92 @@
 """Processing API endpoints."""
+import math
+from collections import Counter
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
+from datetime import datetime
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Header,
+    Query,
+    status,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import json
 from pathlib import Path
 
+from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, ProcessingJob
-from app.schemas.project import ProcessingOptions, ProcessingJobResponse
-from app.auth.jwt import get_current_user, PermissionChecker
+from app.schemas.project import (
+    ProcessingEnginesResponse,
+    ProcessingEnginePolicy,
+    ProcessingOptions,
+    ProcessingJobResponse,
+    ProcessingMetricsResponse,
+    ProcessingMetricJobSummary,
+    ProcessingMetricsSummary,
+)
+from app.auth.jwt import (
+    get_current_user,
+    PermissionChecker,
+    is_admin_role,
+    verify_internal_token,
+    verify_token,
+)
 
 router = APIRouter(prefix="/processing", tags=["Processing"])
+DEFAULT_PROCESSING_ENGINE = "metashape"
+PROCESSING_QUEUE = "metashape"
+
+
+def _get_processing_engine_policies():
+    settings = get_settings()
+    return {
+        "metashape": {
+            "enabled": settings.ENABLE_METASHAPE_ENGINE,
+            "reason": "활성화됨" if settings.ENABLE_METASHAPE_ENGINE else "ENABLE_METASHAPE_ENGINE=false",
+            "queue_name": "metashape",
+        },
+        "odm": {
+            "enabled": settings.ENABLE_ODM_ENGINE,
+            "reason": "활성화됨 (ODM)" if settings.ENABLE_ODM_ENGINE else "4차 스프린트 정책상 비활성",
+            "queue_name": "odm",
+        },
+        "external": {
+            "enabled": settings.ENABLE_EXTERNAL_ENGINE,
+            "reason": "활성화됨 (External API)" if settings.ENABLE_EXTERNAL_ENGINE else "4차 스프린트 정책상 비활성",
+            "queue_name": "external",
+        },
+    }
+
+
+def _get_supported_processing_engines() -> set[str]:
+    return {
+        name
+        for name, policy in _get_processing_engine_policies().items()
+        if policy.get("enabled")
+    }
+
+
+def _get_default_processing_engine() -> str | None:
+    policies = _get_processing_engine_policies()
+    for name in [DEFAULT_PROCESSING_ENGINE, "odm", "external"]:
+        if policies.get(name, {}).get("enabled"):
+            return name
+    return None
+
+
+def _get_queue_name(engine_name: str) -> str:
+    policies = _get_processing_engine_policies()
+    queue_name = policies.get(engine_name, {}).get("queue_name")
+    if queue_name:
+        return queue_name
+    return PROCESSING_QUEUE
 
 
 def _read_processing_status_file(project_id: str) -> dict:
@@ -26,6 +100,44 @@ def _read_processing_status_file(project_id: str) -> dict:
     except Exception:
         pass
     return {}
+
+
+def _to_float(value):
+    """Parse numeric values safely to float."""
+    if isinstance(value, int | float):
+        if math.isfinite(value):
+            return float(value)
+    return None
+
+
+def _percentile(values, ratio: float) -> float | None:
+    """Return percentile for a list of numeric values."""
+    if not values:
+        return None
+
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+
+    if n == 1:
+        return round(sorted_values[0], 2)
+
+    position = (n - 1) * ratio
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+
+    if lower == upper:
+        return round(sorted_values[int(position)], 2)
+
+    weight = position - lower
+    interpolated = sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+    return round(interpolated, 2)
+
+
+def _safe_rate(count: int, total: int) -> float | None:
+    """Return ratio as percentage, safely."""
+    if total <= 0:
+        return None
+    return round((count / total) * 100, 2)
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -53,6 +165,70 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _require_internal_token(
+    internal_token: str,
+    query_token: str,
+    *,
+    expected_scope: str,
+) -> None:
+    token = internal_token or query_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing internal processing token",
+        )
+    verify_internal_token(token, required_scope=expected_scope)
+
+
+def _safe_uuid(value: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid project UUID",
+        )
+
+
+async def _get_scoped_project(
+    project_id: UUID,
+    current_user: User,
+    db: AsyncSession,
+):
+    query = select(Project).where(Project.id == project_id)
+    if not is_admin_role(current_user.role):
+        query = query.where(Project.organization_id == current_user.organization_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+def _apply_project_access_scope(query, current_user: User):
+    if is_admin_role(current_user.role):
+        return query
+
+    if current_user.organization_id is not None:
+        return query.where(Project.organization_id == current_user.organization_id)
+
+    return query.where(Project.owner_id == current_user.id)
+
+
+@router.get("/engines", response_model=ProcessingEnginesResponse)
+async def get_processing_engines(current_user: User = Depends(get_current_user)):
+    policies = _get_processing_engine_policies()
+    return ProcessingEnginesResponse(
+        engines=[
+            ProcessingEnginePolicy(
+                name=name,
+                enabled=policy["enabled"],
+                reason=policy["reason"],
+                queue_name=policy.get("queue_name"),
+            )
+            for name, policy in sorted(policies.items())
+        ],
+        default_engine=_get_default_processing_engine() or DEFAULT_PROCESSING_ENGINE,
+    )
+
+
 @router.post("/projects/{project_id}/start", response_model=ProcessingJobResponse)
 async def start_processing(
     project_id: UUID,
@@ -65,7 +241,7 @@ async def start_processing(
     """
     Start orthophoto generation processing.
 
-    Submits a job to the selected processing engine (ODM or external).
+    Submits a job to the selected processing engine.
 
     Args:
         force: If True, proceed with only completed images even if some uploads are incomplete/failed.
@@ -79,13 +255,29 @@ async def start_processing(
             detail="Access denied",
         )
     
-    # Check project exists
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
+    project = await _get_scoped_project(project_id, current_user, db)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
+        )
+
+    supported_engines = _get_supported_processing_engines()
+    if not supported_engines:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="현재 사용할 수 있는 처리 엔진이 없습니다. 서버 환경 변수를 확인하세요.",
+        )
+
+    if options.engine not in supported_engines:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "type": "unsupported_engine",
+                "message": "지원되지 않는 처리 엔진입니다.",
+                "engine": options.engine,
+                "supported_engines": sorted(supported_engines),
+            },
         )
 
     # Check image upload status before processing
@@ -239,16 +431,10 @@ async def start_processing(
     project.status = "queued"
     project.progress = 0
     
-    # Submit to Celery
-    # The queue is selected based on the engine
+    # Submit to Celery based on selected engine's dedicated queue
     from app.workers.tasks import process_orthophoto
-    
-    if options.engine == "metashape":
-        queue_name = "metashape"
-    elif options.engine == "odm":
-        queue_name = "odm"
-    else:
-        queue_name = "external"
+
+    queue_name = _get_queue_name(options.engine)
     
     task = process_orthophoto.apply_async(
         args=[str(job.id), str(project_id), options.model_dump()],
@@ -276,6 +462,13 @@ async def get_processing_status(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
     
     result = await db.execute(
         select(ProcessingJob)
@@ -294,6 +487,8 @@ async def get_processing_status(
     response = ProcessingJobResponse.model_validate(job)
     if status_payload.get("message"):
         response.message = status_payload.get("message")
+    if isinstance(status_payload.get("metrics"), dict):
+        response.metrics = status_payload.get("metrics")
     return response
 
 
@@ -310,6 +505,13 @@ async def cancel_processing(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
         )
     
     result = await db.execute(
@@ -334,9 +536,7 @@ async def cancel_processing(
     job.status = "cancelled"
     
     # Update project status
-    project_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = project_result.scalar_one()
-    project.status = "cancelled"
+    scoped_project.status = "cancelled"
     
     await db.commit()
     
@@ -356,11 +556,7 @@ async def list_processing_jobs(
         .order_by(ProcessingJob.started_at.desc().nullsfirst())
     )
     
-    if current_user.role != "admin":
-        query = query.where(
-            (Project.owner_id == current_user.id) |
-            (Project.organization_id == current_user.organization_id)
-        )
+    query = _apply_project_access_scope(query, current_user)
     
     result = await db.execute(query.limit(50))
     jobs = result.scalars().all()
@@ -371,8 +567,129 @@ async def list_processing_jobs(
         response = ProcessingJobResponse.model_validate(job)
         if status_payload.get("message"):
             response.message = status_payload.get("message")
+        if isinstance(status_payload.get("metrics"), dict):
+            response.metrics = status_payload.get("metrics")
         responses.append(response)
     return responses
+
+
+@router.get("/metrics", response_model=ProcessingMetricsResponse)
+async def get_processing_metrics(
+    limit: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get processing queue/throughput metrics for the scoped user."""
+    query = (
+        select(ProcessingJob, Project.title)
+        .join(Project)
+        .order_by(ProcessingJob.started_at.desc().nullsfirst())
+    )
+    query = _apply_project_access_scope(query, current_user)
+
+    result = await db.execute(query.limit(limit))
+    rows = result.all()
+
+    jobs = [row[0] for row in rows]
+    project_titles = {row[0].project_id: row[1] for row in rows}
+
+    status_counts = Counter({status: 0 for status in ["queued", "processing", "completed", "error", "failed", "cancelled"]})
+
+    queue_wait_values = []
+    total_elapsed_values = []
+    memory_usage_values = []
+    queue_wait_violation_count = 0
+    total_elapsed_violation_count = 0
+    memory_violation_count = 0
+
+    recent_jobs = []
+    for job in jobs:
+        status_counts[job.status] = status_counts.get(job.status, 0) + 1
+        status_payload = _read_processing_status_file(job.project_id)
+        metrics = status_payload.get("metrics") if isinstance(status_payload.get("metrics"), dict) else {}
+
+        queue_wait_seconds = _to_float(metrics.get("queue_wait_seconds"))
+        total_elapsed_seconds = _to_float(metrics.get("total_elapsed_seconds"))
+        memory_usage_mb = _to_float(metrics.get("memory_usage_mb"))
+
+        slo = metrics.get("slo") if isinstance(metrics.get("slo"), dict) else {}
+        queue_wait_warn_seconds = _to_float(slo.get("queue_wait_warn_seconds"))
+        total_elapsed_warn_seconds = _to_float(slo.get("total_elapsed_warn_seconds"))
+        memory_warn_mb = _to_float(slo.get("memory_warn_mb"))
+
+        queue_wait_exceeded = bool(queue_wait_seconds is not None and queue_wait_warn_seconds is not None and queue_wait_seconds > queue_wait_warn_seconds)
+        total_elapsed_exceeded = bool(total_elapsed_seconds is not None and total_elapsed_warn_seconds is not None and total_elapsed_seconds > total_elapsed_warn_seconds)
+        memory_exceeded = bool(memory_usage_mb is not None and memory_warn_mb is not None and memory_usage_mb > memory_warn_mb)
+
+        if metrics.get("slo", {}).get("queue_wait_exceeded", False):
+            queue_wait_exceeded = True
+        if metrics.get("slo", {}).get("total_elapsed_exceeded", False):
+            total_elapsed_exceeded = True
+        if metrics.get("slo", {}).get("memory_exceeded", False):
+            memory_exceeded = True
+
+        if queue_wait_exceeded:
+            queue_wait_violation_count += 1
+        if total_elapsed_exceeded:
+            total_elapsed_violation_count += 1
+        if memory_exceeded:
+            memory_violation_count += 1
+
+        if queue_wait_seconds is not None:
+            queue_wait_values.append(queue_wait_seconds)
+        if total_elapsed_seconds is not None:
+            total_elapsed_values.append(total_elapsed_seconds)
+        if memory_usage_mb is not None:
+            memory_usage_values.append(memory_usage_mb)
+
+        recent_jobs.append(
+            ProcessingMetricJobSummary(
+                project_id=job.project_id,
+                project_title=project_titles.get(job.project_id),
+                engine=job.engine,
+                status=job.status,
+                progress=job.progress or 0,
+                queue_wait_seconds=queue_wait_seconds,
+                total_elapsed_seconds=total_elapsed_seconds,
+                memory_usage_mb=memory_usage_mb,
+                queue_wait_warn_seconds=queue_wait_warn_seconds,
+                total_elapsed_warn_seconds=total_elapsed_warn_seconds,
+                memory_warn_mb=memory_warn_mb,
+                queue_wait_exceeded=queue_wait_exceeded,
+                total_elapsed_exceeded=total_elapsed_exceeded,
+                memory_exceeded=memory_exceeded,
+            )
+        )
+
+    queue_wait_sample_count = len(queue_wait_values)
+    total_elapsed_sample_count = len(total_elapsed_values)
+    memory_usage_sample_count = len(memory_usage_values)
+
+    return ProcessingMetricsResponse(
+        generated_at=datetime.utcnow(),
+        scope="admin" if is_admin_role(current_user.role) else "organization",
+        organization_id=current_user.organization_id if not is_admin_role(current_user.role) else None,
+        total_jobs=len(jobs),
+        status_counts=dict(status_counts),
+        summary=ProcessingMetricsSummary(
+            queue_wait_sample_count=queue_wait_sample_count,
+            queue_wait_avg_seconds=round(sum(queue_wait_values) / queue_wait_sample_count, 2) if queue_wait_sample_count else None,
+            queue_wait_p95_seconds=_percentile(queue_wait_values, 0.95),
+            queue_wait_violation_count=queue_wait_violation_count,
+            queue_wait_violation_rate=_safe_rate(queue_wait_violation_count, queue_wait_sample_count),
+            total_elapsed_sample_count=total_elapsed_sample_count,
+            total_elapsed_avg_seconds=round(sum(total_elapsed_values) / total_elapsed_sample_count, 2) if total_elapsed_sample_count else None,
+            total_elapsed_p95_seconds=_percentile(total_elapsed_values, 0.95),
+            total_elapsed_violation_count=total_elapsed_violation_count,
+            total_elapsed_violation_rate=_safe_rate(total_elapsed_violation_count, total_elapsed_sample_count),
+            memory_usage_sample_count=memory_usage_sample_count,
+            memory_usage_avg_mb=round(sum(memory_usage_values) / memory_usage_sample_count, 2) if memory_usage_sample_count else None,
+            memory_usage_p95_mb=_percentile(memory_usage_values, 0.95),
+            memory_violation_count=memory_violation_count,
+            memory_violation_rate=_safe_rate(memory_violation_count, memory_usage_sample_count),
+        ),
+        recent_jobs=recent_jobs,
+    )
 
 
 # WebSocket endpoint for real-time status updates
@@ -386,7 +703,43 @@ async def websocket_status(
     WebSocket endpoint for real-time processing status updates.
     
     Clients connect to this endpoint to receive live progress updates.
+    Requires a valid JWT token via:
+      - query parameter `token`
+      - or Authorization header in the websocket handshake.
     """
+    token = websocket.query_params.get("token")
+    if not token:
+        auth_header = websocket.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+
+    if not token:
+        await websocket.close(code=1008)
+        return
+
+    try:
+        payload = verify_token(token, "access")
+        user_id = payload.get("sub")
+        if not user_id:
+            raise ValueError("Missing user id")
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise ValueError("User not found")
+
+        scoped_project = await _get_scoped_project(_safe_uuid(project_id), current_user, db)
+        if not scoped_project:
+            await websocket.close(code=1008)
+            return
+
+        permission_checker = PermissionChecker("view")
+        if not await permission_checker.check(project_id, current_user, db):
+            await websocket.close(code=1008)
+            return
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(project_id, websocket)
     # Send latest known status immediately on connect
     try:
@@ -428,10 +781,18 @@ class BroadcastRequest(BaseModel):
     message: str = None
 
 @router.post("/broadcast")
-async def broadcast_update(request: BroadcastRequest):
-    """
-    Internal endpoint for Celery workers or External Engines to trigger WebSocket broadcasts.
-    """
+async def broadcast_update(
+    request: BroadcastRequest,
+    x_internal_token: str = Header(default=None, alias="X-Internal-Token"),
+    token: str = Query(default=None),
+):
+    """Internal endpoint for Celery workers or external engines to trigger WebSocket broadcasts."""
+    _require_internal_token(
+        internal_token=x_internal_token,
+        query_token=token,
+        expected_scope="processing_broadcast",
+    )
+
     await manager.broadcast(request.project_id, {
         "project_id": request.project_id,
         "status": request.status,
@@ -445,15 +806,25 @@ async def broadcast_update(request: BroadcastRequest):
 @router.post("/webhook")
 async def external_processing_webhook(
     request: BroadcastRequest,
+    x_internal_token: str = Header(default=None, alias="X-Internal-Token"),
+    token: str = Query(default=None, alias="internal_token"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Webhook endpoint for external processing engines to report status.
     """
+    _require_internal_token(
+        internal_token=x_internal_token,
+        query_token=token,
+        expected_scope="processing_webhook",
+    )
+
+    project_uuid = _safe_uuid(request.project_id)
+
     # 1. Update Job and Project status in DB
     result = await db.execute(
         select(ProcessingJob)
-        .where(ProcessingJob.project_id == request.project_id)
+        .where(ProcessingJob.project_id == project_uuid)
         .order_by(ProcessingJob.started_at.desc().nullsfirst())
     )
     job = result.scalar_one_or_none()
@@ -469,7 +840,7 @@ async def external_processing_webhook(
         job.error_message = request.message
         
     # Update project
-    proj_result = await db.execute(select(Project).where(Project.id == request.project_id))
+    proj_result = await db.execute(select(Project).where(Project.id == project_uuid))
     project = proj_result.scalar_one_or_none()
     if project:
         project.status = request.status

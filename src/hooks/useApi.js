@@ -76,8 +76,40 @@ export function useProjects(options = {}) {
 
     const deleteProject = useCallback(async (projectId) => {
         try {
-            await api.deleteProject(projectId);
+            const result = await api.batchDeleteProjects([projectId]);
+            if (result.failed && result.failed.length > 0) {
+                const failed = result.failed.find((item) => item.project_id === projectId);
+                const reason = failed?.reason || '프로젝트 삭제에 실패했습니다.';
+                const err = new Error(reason);
+                setError(err.message);
+                throw err;
+            }
             setProjects(prev => prev.filter(p => p.id !== projectId));
+            return result;
+        } catch (err) {
+            setError(err.message);
+            throw err;
+        }
+    }, []);
+
+    const batchDeleteProjects = useCallback(async (projectIds) => {
+        try {
+            const result = await api.batchDeleteProjects(projectIds);
+            const successSet = new Set(result.succeeded || []);
+            setProjects(prev => prev.filter(p => !successSet.has(p.id)));
+            return result;
+        } catch (err) {
+            setError(err.message);
+            throw err;
+        }
+    }, []);
+
+    const batchUpdateProjectStatus = useCallback(async (projectIds, status) => {
+        try {
+            const result = await api.batchUpdateProjectStatus(projectIds, status);
+            const successSet = new Set(result.succeeded || []);
+            setProjects(prev => prev.map(p => successSet.has(p.id) ? { ...p, status: result.action === 'update_status' ? status : p.status } : p));
+            return result;
         } catch (err) {
             setError(err.message);
             throw err;
@@ -97,6 +129,8 @@ export function useProjects(options = {}) {
         createProject,
         updateProject,
         deleteProject,
+        batchDeleteProjects,
+        batchUpdateProjectStatus,
     };
 }
 
