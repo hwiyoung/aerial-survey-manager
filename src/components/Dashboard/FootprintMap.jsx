@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON } f
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
-import { Layers, Eye, EyeOff, ChevronRight } from 'lucide-react';
+import { Layers, Eye, EyeOff, ChevronRight, X } from 'lucide-react';
 import proj4 from 'proj4';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 
@@ -675,23 +675,7 @@ function FootprintMapHeader({
             </div>
 
             <div className="flex items-center gap-4">
-                {selectedCogProject && (
-                    <div className="flex items-center gap-2">
-                        {cogLoadStatus === 'loading' && (
-                            <span className="text-xs text-blue-600 font-medium flex items-center gap-1">
-                                <span className="animate-pulse">●</span> 정사영상 로딩중...
-                            </span>
-                        )}
-                        {cogLoadStatus === 'loaded' && (
-                            <span className="text-xs text-emerald-600 font-medium">✓ 정사영상 표시됨</span>
-                        )}
-                        {cogLoadStatus === 'error' && (
-                            <span className="text-xs text-red-500 font-medium" title={cogError}>
-                                ✕ 로딩 실패
-                            </span>
-                        )}
-                    </div>
-                )}
+
 
                 {showFootprints && (
                     <div className="flex items-center gap-1.5">
@@ -876,6 +860,7 @@ export function FootprintMap({
     // COG overlay - show for highlighted OR selected completed project
     const [cogLoadStatus, setCogLoadStatus] = useState(null); // 'loading' | 'loaded' | 'error'
     const [cogError, setCogError] = useState(null);
+    const [cogDismissedProjectId, setCogDismissedProjectId] = useState(null); // user explicitly closed overlay
 
     // Region layer visibility
     const [showRegions, setShowRegions] = useState(true);
@@ -889,7 +874,7 @@ export function FootprintMap({
 
     // Selected project for COG overlay (highlighted or selected, if completed)
     const activeProjectId = highlightProjectId || selectedProjectId;
-    const selectedCogProject = activeProjectId
+    const selectedCogProject = (activeProjectId && activeProjectId !== cogDismissedProjectId)
         ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
 
@@ -910,6 +895,11 @@ export function FootprintMap({
             setCogError(null);
         }
     }, [selectedCogProject?.id]);
+
+    // Reset COG dismissal when the active project changes
+    useEffect(() => {
+        setCogDismissedProjectId(null);
+    }, [activeProjectId]);
 
     // COG load handlers
     const handleCogLoadComplete = useCallback(() => {
@@ -959,6 +949,8 @@ export function FootprintMap({
                         </div>
                     )}
 
+
+
                     {/* 베이스맵 타일 레이어 - 오프라인/온라인 설정 기반 */}
                     {(() => {
                         const tileConfig = getTileConfig();
@@ -990,7 +982,7 @@ export function FootprintMap({
 
                     {/* Orthophoto Tile Layer - TiTiler-based for efficient streaming */}
                     {selectedCogProject && (
-                            <TiTilerOrthoLayer
+                        <TiTilerOrthoLayer
                             projectId={selectedCogProject.id}
                             visible={true}
                             opacity={cogOpacity}
@@ -1106,6 +1098,7 @@ export function FootprintMap({
                         onClose={() => setOverlapProjects(null)}
                     />
                 </MapContainer>
+
             </div >
         </div >
     );

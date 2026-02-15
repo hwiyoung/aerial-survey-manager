@@ -10,12 +10,14 @@ import {
 
 // API & Auth imports
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { useProjects, useProcessingStatus } from './hooks/useApi';
+import { useProjects } from './hooks/useApi';
 import LoginPage from './components/LoginPage';
 import api from './api/client';
 import S3MultipartUploader from './services/s3Upload';
 import { formatSpeed } from './utils/formatting';
 import { useProcessingProgress } from './hooks/useProcessingProgress';
+import { useAdminPanel } from './hooks/useAdminPanel';
+import { useGroupState } from './hooks/useGroupState';
 
 // Modularized Components
 import Header from './components/Dashboard/Header';
@@ -26,6 +28,7 @@ import ProcessingSidebar from './components/Processing/ProcessingSidebar';
 import UploadWizard from './components/Upload/UploadWizard';
 import InspectorPanel from './components/Project/InspectorPanel';
 import ProjectMap from './components/Project/ProjectMap';
+import AdminPanel from './components/Admin/AdminPanel';
 
 // Leaflet
 import 'leaflet/dist/leaflet.css';
@@ -36,68 +39,6 @@ import DashboardView from './components/Dashboard/DashboardView';
 // --- 1. CONSTANTS ---
 const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역', '제주 권역'];
 const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
-const ADMIN_PANEL_TAB_STORAGE_KEY = 'aerial_admin_last_tab';
-const ADMIN_PANEL_TABS = ['users', 'organizations', 'permissions'];
-const ADMIN_ROLE_OPTIONS = [
-  { value: 'admin', label: '관리자' },
-  { value: 'manager', label: '편집자' },
-  { value: 'user', label: '뷰어' },
-];
-
-const normalizeAdminRoleForForm = (role) => {
-  const normalized = typeof role === 'string' ? role.trim().toLowerCase() : 'user';
-
-  if (normalized === 'editor') {
-    return 'manager';
-  }
-
-  if (normalized === 'viewer') {
-    return 'user';
-  }
-
-  if (['admin', 'manager', 'user'].includes(normalized)) {
-    return normalized;
-  }
-
-  return 'user';
-};
-
-const getAdminRoleLabel = (role) => {
-  const normalized = normalizeAdminRoleForForm(role);
-  const roleMap = { admin: '관리자', manager: '편집자', user: '뷰어' };
-  return roleMap[normalized] || '뷰어';
-};
-
-const normalizePermissionRoleOption = (role) => {
-  if (!role || typeof role !== 'object') {
-    return null;
-  }
-
-  const rawValue = typeof role.value === 'string' ? role.value.trim().toLowerCase() : '';
-  const normalizedValue =
-    rawValue === 'editor' ? 'manager' : rawValue === 'viewer' ? 'user' : rawValue;
-
-  const roleMap = {
-    admin: '관리자',
-    manager: '편집자',
-    user: '뷰어',
-  };
-
-  return {
-    value: normalizedValue || 'user',
-    label: roleMap[normalizedValue] || role.label || roleMap[rawValue] || '뷰어',
-    description: role.description || '',
-  };
-};
-
-const getInitialAdminTab = () => {
-  if (typeof window === 'undefined') {
-    return 'users';
-  }
-
-  const saved = window.localStorage.getItem(ADMIN_PANEL_TAB_STORAGE_KEY);
-  return ADMIN_PANEL_TABS.includes(saved) ? saved : 'users';
-};
 
 // Status mapping for display
 const STATUS_MAP = {
@@ -164,18 +105,18 @@ class ErrorBoundary extends React.Component {
 
 // --- 3. MAIN DASHBOARD ---
 function Dashboard() {
-    const {
-        role,
-        canCreateProject,
-        canEditProject,
-        canDeleteProject,
-        canManageUsers,
-        canManageOrganizations,
-        canManagePermissions,
-        user: currentUser,
-    } = useAuth();
-    const canExportProject = canCreateProject || canEditProject;
-    const hasAdminMenuAccess = canManageUsers || canManageOrganizations || canManagePermissions;
+  const {
+    role,
+    canCreateProject,
+    canEditProject,
+    canDeleteProject,
+    canManageUsers,
+    canManageOrganizations,
+    canManagePermissions,
+    user: currentUser,
+  } = useAuth();
+  const canExportProject = canCreateProject || canEditProject;
+  const hasAdminMenuAccess = canManageUsers || canManageOrganizations || canManagePermissions;
   // Use API hook for projects
   const {
     projects: apiProjects,
@@ -183,14 +124,18 @@ function Dashboard() {
     error: projectsError,
     refresh: refreshProjects,
     createProject,
+    updateProject,
     deleteProject,
     batchDeleteProjects,
-    batchUpdateProjectStatus
+    batchUpdateProjectStatus,
+    fetchImages
   } = useProjects();
 
   // 멀티 프로젝트 업로드 지원: 프로젝트별로 업로드 상태 관리 (projects useMemo보다 먼저 선언)
   const [uploadsByProject, setUploadsByProject] = useState({}); // { projectId: [uploads...] }
   const [uploaderControllers, setUploaderControllers] = useState({}); // { projectId: controller }
+
+
 
   // Transform API projects to match UI expectations
   const projects = useMemo(() => {
@@ -273,72 +218,20 @@ function Dashboard() {
     return { allowed, denied };
   }, []);
 
-  // Groups state for folder organization
-  const [groups, setGroups] = useState([]);
-  const [expandedGroupIds, setExpandedGroupIds] = useState(new Set());
-  const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
-  const [editingGroup, setEditingGroup] = useState(null);
-  const [activeGroupId, setActiveGroupId] = useState(null); // For group filtering
+  // Groups state via hook
+  const groupState = useGroupState({ refreshProjects, canEditProjectById });
+  const {
+    groups, expandedGroupIds, isGroupModalOpen, editingGroup, activeGroupId,
+    setEditingGroup, handleCreateGroup, handleUpdateGroup, handleDeleteGroup,
+    handleMoveProjectToGroup, toggleGroupExpand, openGroupModal, closeGroupModal,
+    toggleGroupFilter, clearGroupFilter,
+  } = groupState;
 
   // Filter projects by active group
   const filteredProjects = useMemo(() => {
     if (!activeGroupId) return projects;
     return projects.filter(p => p.group_id === activeGroupId);
   }, [projects, activeGroupId]);
-
-  // Fetch groups on mount
-  useEffect(() => {
-    api.getGroups().then(data => {
-      setGroups(Array.isArray(data) ? data : (data.items || []));
-    }).catch(err => console.error('Failed to fetch groups:', err));
-  }, []);
-
-  // Group handlers
-  const handleCreateGroup = async (name, color) => {
-    try {
-      const created = await api.createGroup({ name, color: color || '#94a3b8' });
-      setGroups(prev => [...prev, created]);
-      setExpandedGroupIds(prev => new Set([...prev, created.id]));
-      return created;
-    } catch (err) {
-      console.error('Failed to create group:', err);
-      throw err;
-    }
-  };
-
-  const handleUpdateGroup = async (groupId, data) => {
-    try {
-      const updated = await api.updateGroup(groupId, data);
-      setGroups(prev => prev.map(g => g.id === groupId ? { ...g, ...updated } : g));
-    } catch (err) {
-      console.error('Failed to update group:', err);
-    }
-  };
-
-  const handleDeleteGroup = async (groupId) => {
-    if (!window.confirm('이 그룹을 삭제하시겠습니까? 그룹 내 프로젝트는 유지됩니다.')) return;
-    try {
-      await api.deleteGroup(groupId);
-      setGroups(prev => prev.filter(g => g.id !== groupId));
-      refreshProjects(); // 프로젝트 목록 갱신하여 미분류로 표시
-    } catch (err) {
-      console.error('Failed to delete group:', err);
-    }
-  };
-
-  const handleMoveProjectToGroup = async (projectId, groupId) => {
-    if (!canEditProjectById(projectId)) {
-      alert('프로젝트 이동 권한이 없습니다.');
-      return;
-    }
-
-    try {
-      await api.moveProjectToGroup(projectId, groupId);
-      refreshProjects();
-    } catch (err) {
-      console.error('Failed to move project:', err);
-    }
-  };
 
   const handleRenameProject = async (projectId, newTitle) => {
     if (!canEditProjectById(projectId)) {
@@ -347,21 +240,11 @@ function Dashboard() {
     }
 
     try {
-      await api.updateProject(projectId, { title: newTitle });
-      refreshProjects();
+      await updateProject(projectId, { title: newTitle });
     } catch (err) {
       console.error('Failed to rename project:', err);
       alert('이름 변경 실패: ' + err.message);
     }
-  };
-
-  const toggleGroupExpand = (groupId) => {
-    setExpandedGroupIds(prev => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
   };
 
   // Read project ID from URL query parameter on initial load
@@ -405,6 +288,20 @@ function Dashboard() {
 
   const [loadingImages, setLoadingImages] = useState(false);
   const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
+
+  const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
+  const [selectedImageId, setSelectedImageId] = useState(null);
+
+  // Reset selected image when project changes or when leaving processing mode
+  useEffect(() => {
+    setSelectedImageId(null);
+  }, [selectedProjectId, viewMode]);
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [regionFilter, setRegionFilter] = useState('ALL');
+
+
+
   const [processingEngines, setProcessingEngines] = useState([
     { name: 'metashape', enabled: true, reason: '기본 엔진' },
   ]);
@@ -495,7 +392,7 @@ function Dashboard() {
     if (!currentProject?.upload_in_progress) return;
 
     // 백엔드 데이터로 synthetic uploads 생성
-    api.getProjectImages(currentProjectId)
+    fetchImages(currentProjectId)
       .then(images => {
         if (images.length === 0) return;
 
@@ -504,7 +401,7 @@ function Dashboard() {
           projectId: currentProjectId,
           projectTitle: currentProject.title,
           status: img.upload_status === 'completed' ? 'completed' :
-                  img.upload_status === 'uploading' ? 'uploading' : 'waiting',
+            img.upload_status === 'uploading' ? 'uploading' : 'waiting',
           progress: img.upload_status === 'completed' ? 100 : 0,
         }));
 
@@ -521,87 +418,10 @@ function Dashboard() {
       });
   }, [viewMode, processingProject, selectedProjectId, projects, uploadsByProject, uploaderControllers]);
 
-  // Fetch images when project is selected
-  useEffect(() => {
-    if (!activeProjectId) {
-      setProjectImages([]);
-      return;
-    }
 
-    setLoadingImages(true);
-    api.getProjectImages(activeProjectId)
-      .then(images => {
-        // Normalize logic
-        if (images.length === 0) {
-          setProjectImages([]);
-          return;
-        }
 
-        const points = images.map(img => {
-          const eo = img.exterior_orientation;
-          return {
-            id: img.id,
-            name: img.filename,
-            // If EO exists, use it. Otherwise 0
-            wx: eo ? eo.x : 0,
-            wy: eo ? eo.y : 0,
-            z: eo ? eo.z : null,
-            omega: eo ? eo.omega : null,
-            phi: eo ? eo.phi : null,
-            kappa: eo ? eo.kappa : null,
-            hasEo: !!eo,
-            thumbnail_url: img.thumbnail_url || null,
-            file_size: img.file_size || null,
-            thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
-          };
-        });
 
-        const validPoints = points.filter(p => p.hasEo);
 
-        if (validPoints.length > 0) {
-          // Calculate bounds
-          const xs = validPoints.map(p => p.wx);
-          const ys = validPoints.map(p => p.wy);
-          const minX = Math.min(...xs);
-          const maxX = Math.max(...xs);
-          const minY = Math.min(...ys);
-          const maxY = Math.max(...ys);
-
-          const rangeX = maxX - minX || 1;
-          const rangeY = maxY - minY || 1;
-
-          // Normalize to 0-100%
-          const normalized = points.map(p => {
-            if (!p.hasEo) return { ...p, x: 50, y: 50 }; // Center if no EO
-            return {
-              ...p,
-              // Map world coords to 5-95% of container
-              x: 5 + ((p.wx - minX) / rangeX) * 90,
-              y: 95 - ((p.wy - minY) / rangeY) * 90 // Invert Y for screen coords
-            };
-          });
-          setProjectImages(normalized);
-        } else {
-          // Fallback to placeholder if no EO data at all
-          setProjectImages(generatePlaceholderImages(selectedProjectId, images.length));
-        }
-      })
-      .catch(err => {
-        console.error("Failed to fetch images:", err);
-        setProjectImages([]);
-      })
-      .finally(() => setLoadingImages(false));
-  }, [activeProjectId, imageRefreshKey]); // Add imageRefreshKey to force refresh
-  const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
-  const [selectedImageId, setSelectedImageId] = useState(null);
-
-  // Reset selected image when project changes or when leaving processing mode
-  useEffect(() => {
-    setSelectedImageId(null);
-  }, [selectedProjectId, viewMode]);
-
-  const [searchTerm, setSearchTerm] = useState('');
-  const [regionFilter, setRegionFilter] = useState('ALL');
   const [sidebarWidth, setSidebarWidth] = useState(800);
   const [isResizing, setIsResizing] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -698,37 +518,19 @@ function Dashboard() {
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
 
-  // Highlight state for post-processing animation
-  const [highlightProjectId, setHighlightProjectId] = useState(null);
+
 
   // Map reset key - increment to reset map to default view
   const [mapResetKey, setMapResetKey] = useState(0);
-  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
-  const [adminTab, setAdminTab] = useState(() => getInitialAdminTab());
-  const [adminUsers, setAdminUsers] = useState([]);
-  const [adminOrganizations, setAdminOrganizations] = useState([]);
-  const [adminPermissionCatalog, setAdminPermissionCatalog] = useState({ roles: [], project_permissions: [] });
-  const [adminLoading, setAdminLoading] = useState(false);
-  const [adminError, setAdminError] = useState('');
-  const [adminEditingUser, setAdminEditingUser] = useState(null);
-  const [adminUserForm, setAdminUserForm] = useState({
-    email: '',
-    password: '',
-    name: '',
-    role: 'user',
-    organizationId: '',
-    inviteUser: false,
+  // Admin panel (extracted to useAdminPanel hook + AdminPanel component)
+  const adminPanel = useAdminPanel({
+    currentUser,
+    canManageUsers,
+    canManageOrganizations,
+    canManagePermissions,
+    hasAdminMenuAccess,
+    projects,
   });
-  const [adminEditingOrganization, setAdminEditingOrganization] = useState(null);
-  const [adminOrganizationForm, setAdminOrganizationForm] = useState({
-    name: '',
-    quota_storage_gb: 1000,
-    quota_projects: 100,
-  });
-  const [selectedPermissionProjectId, setSelectedPermissionProjectId] = useState('');
-  const [projectPermissions, setProjectPermissions] = useState([]);
-  const [selectedPermissionUserId, setSelectedPermissionUserId] = useState('');
-  const [selectedPermissionLevel, setSelectedPermissionLevel] = useState('view');
 
   const selectedProject = useMemo(() => {
     // Try to find in projects list first
@@ -829,7 +631,7 @@ function Dashboard() {
     };
   }, [isResizing]);
 
-  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel }) => {
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, autoProcess, processingOptions }) => {
     try {
       // 1. Create Project via API
       console.log('Creating project:', projectData);
@@ -868,7 +670,7 @@ function Dashboard() {
             console.log(`Fetching images (attempt ${attempt}/${maxRetries}) after ${delay}ms...`);
             await new Promise(resolve => setTimeout(resolve, delay));
 
-            const fetchedImages = await api.getProjectImages(created.id);
+            const fetchedImages = await fetchImages(created.id);
             if (fetchedImages && fetchedImages.length > 0) {
               const points = fetchedImages.map(img => {
                 const eo = img.exterior_orientation;
@@ -1073,6 +875,18 @@ function Dashboard() {
       // Ensure project list is refreshed with new data including EO
       await refreshProjects();
       setImageRefreshKey(prev => prev + 1);
+
+      // 6. Schedule processing if auto-process is enabled
+      if (autoProcess && processingOptions) {
+        try {
+          const scheduleResult = await api.scheduleProcessing(created.id, processingOptions);
+          console.log('Processing scheduled:', scheduleResult);
+          setProcessingProject(prev => prev ? ({ ...prev, status: 'scheduled' }) : prev);
+        } catch (schedErr) {
+          console.error('Failed to schedule processing:', schedErr);
+          // Don't block — user can still manually start from ProcessingSidebar
+        }
+      }
 
     } catch (err) {
       console.error('Failed to create project:', err);
@@ -1335,390 +1149,7 @@ function Dashboard() {
     setExportModalState({ isOpen: true, projectIds: projectIds });
   };
 
-  const resetAdminUserForm = () => {
-    setAdminEditingUser(null);
-    setAdminUserForm({
-      email: '',
-      password: '',
-      name: '',
-      role: 'user',
-      organizationId: '',
-      inviteUser: false,
-    });
-  };
 
-  const resetAdminOrganizationForm = () => {
-    setAdminEditingOrganization(null);
-    setAdminOrganizationForm({
-      name: '',
-      quota_storage_gb: 1000,
-      quota_projects: 100,
-    });
-  };
-
-  const loadAdminData = async (nextTab = adminTab) => {
-    if (!hasAdminMenuAccess) return;
-
-    setAdminLoading(true);
-    setAdminError('');
-    const shouldLoadUsersForPermissions = canManageUsers || canManagePermissions;
-
-    try {
-      if (shouldLoadUsersForPermissions) {
-        const usersResponse = await api.getUsers();
-        setAdminUsers(Array.isArray(usersResponse) ? usersResponse : (usersResponse.items || []));
-      } else {
-        setAdminUsers([]);
-      }
-
-      if (canManageOrganizations) {
-        const orgResponse = await api.getOrganizations();
-        setAdminOrganizations(Array.isArray(orgResponse) ? orgResponse : (orgResponse.items || []));
-      } else {
-        setAdminOrganizations([]);
-      }
-
-      if (canManagePermissions) {
-        const catalogResponse = await api.getPermissionCatalog();
-        const normalizedRoles = (catalogResponse.roles || [])
-          .map(normalizePermissionRoleOption)
-          .filter(Boolean);
-
-        setAdminPermissionCatalog({
-          roles: normalizedRoles,
-          project_permissions: catalogResponse.project_permissions || [],
-        });
-
-        if (nextTab === 'permissions') {
-          const projectIds = new Set(projects.map(p => p.id));
-          const projectId = (projectIds.has(selectedPermissionProjectId) ? selectedPermissionProjectId : '') || projects[0]?.id || '';
-          setSelectedPermissionProjectId(projectId);
-          if (projectId) {
-            const permissionResponse = await api.getProjectPermissions(projectId);
-            setProjectPermissions(permissionResponse.items || []);
-          } else {
-            setProjectPermissions([]);
-          }
-        } else {
-          setProjectPermissions([]);
-        }
-      } else {
-        setAdminPermissionCatalog({ roles: [], project_permissions: [] });
-        setProjectPermissions([]);
-      }
-    } catch (err) {
-      setAdminError(err.message || '관리 데이터 조회 실패');
-    } finally {
-      setAdminLoading(false);
-    }
-  };
-
-  const resolveAdminTab = useCallback((requestedTab = 'users') => {
-    const allowed = {
-      users: canManageUsers,
-      organizations: canManageOrganizations,
-      permissions: canManagePermissions,
-    };
-
-    const normalizedRequestedTab = ADMIN_PANEL_TABS.includes(requestedTab) ? requestedTab : 'users';
-
-    if (allowed[normalizedRequestedTab]) {
-      return normalizedRequestedTab;
-    }
-
-    return ADMIN_PANEL_TABS.find((tab) => allowed[tab]) || null;
-  }, [canManageOrganizations, canManagePermissions, canManageUsers]);
-
-  const openAdminPanel = async (tab = adminTab) => {
-    if (!hasAdminMenuAccess) {
-      return;
-    }
-
-    const resolvedTab = resolveAdminTab(tab);
-
-    if (!resolvedTab) {
-      return;
-    }
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(ADMIN_PANEL_TAB_STORAGE_KEY, resolvedTab);
-    }
-
-    setAdminTab(resolvedTab);
-    if (resolvedTab === 'users') {
-      resetAdminUserForm();
-      setSelectedPermissionUserId('');
-      setSelectedPermissionProjectId('');
-      setProjectPermissions([]);
-    }
-    if (resolvedTab === 'organizations') {
-      resetAdminOrganizationForm();
-      setSelectedPermissionUserId('');
-      setSelectedPermissionProjectId('');
-      setProjectPermissions([]);
-    }
-    if (resolvedTab === 'permissions') {
-      setSelectedPermissionLevel('view');
-    }
-    setIsAdminPanelOpen(true);
-    await loadAdminData(resolvedTab);
-  };
-
-  const closeAdminPanel = () => {
-    setIsAdminPanelOpen(false);
-    setAdminError('');
-    resetAdminUserForm();
-    resetAdminOrganizationForm();
-    setProjectPermissions([]);
-  };
-
-  const adminTabLabelMap = {
-    users: '사용자',
-    organizations: '조직',
-    permissions: '프로젝트 권한',
-  };
-  const adminCurrentTabLabel = adminTabLabelMap[adminTab] || '관리';
-
-  const handleAdminUserSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      const email = adminUserForm.email?.trim();
-      const name = adminUserForm.name?.trim();
-      const organizationId = adminUserForm.organizationId || null;
-      const targetRole = normalizeAdminRoleForForm(adminUserForm.role);
-      const isEditing = Boolean(adminEditingUser);
-      const isInviteMode = !isEditing && Boolean(adminUserForm.inviteUser);
-      if (!adminEditingUser && !email) {
-        alert('이메일은 필수입니다.');
-        return;
-      }
-
-      const payload = {
-        role: targetRole,
-        organization_id: organizationId || null,
-      };
-      if (name) payload.name = name;
-
-      if (isEditing) {
-        const currentRole = normalizeAdminRoleForForm(adminEditingUser.role);
-        const currentOrgId = adminEditingUser.organization_id || '';
-        const nextOrgId = organizationId || '';
-
-        const updatePayload = {};
-        if (name !== (adminEditingUser.name || '')) {
-          updatePayload.name = name || '';
-        }
-
-        const transferPayload = {};
-        if (nextOrgId !== (currentOrgId || '')) {
-          transferPayload.organization_id = organizationId;
-        }
-        if (targetRole !== currentRole) {
-          transferPayload.role = targetRole;
-        }
-
-        if (Object.keys(updatePayload).length > 0) {
-          await api.updateUser(adminEditingUser.id, updatePayload);
-        }
-        if (Object.keys(transferPayload).length > 0) {
-          await api.transferUser(adminEditingUser.id, transferPayload);
-        }
-        if (
-          Object.keys(updatePayload).length === 0 &&
-          Object.keys(transferPayload).length === 0
-        ) {
-          alert('변경된 내용이 없습니다.');
-        } else {
-          alert('사용자 정보가 수정되었습니다.');
-        }
-      } else {
-        if (!isInviteMode && (!adminUserForm.password || adminUserForm.password.length < 8)) {
-          alert('비밀번호는 8자 이상이어야 합니다.');
-          return;
-        }
-
-        if (isInviteMode) {
-          const inviteResult = await api.inviteUser({
-            email,
-            ...payload,
-          });
-          if (inviteResult?.temporary_password) {
-            alert(`사용자가 초대되었습니다. 임시 비밀번호: ${inviteResult.temporary_password}`);
-          } else {
-            alert('기존 사용자 초대 처리(조직/권한 반영)가 완료되었습니다.');
-          }
-        } else {
-          await api.createUser({
-            ...payload,
-            email,
-            password: adminUserForm.password,
-          });
-          alert('사용자가 생성되었습니다.');
-        }
-      }
-
-      resetAdminUserForm();
-      await loadAdminData('users');
-    } catch (err) {
-      alert(`사용자 저장 실패: ${err.message}`);
-    }
-  };
-
-  const handleEditUser = (user) => {
-    setAdminEditingUser(user);
-    setAdminUserForm({
-      email: user.email || '',
-      password: '',
-      name: user.name || '',
-      role: normalizeAdminRoleForForm(user.role),
-      organizationId: user.organization_id || '',
-      inviteUser: false,
-    });
-  };
-
-  const handleDeactivateUser = async (userData) => {
-    if (userData.id === currentUser?.id) {
-      alert('현재 로그인한 사용자 계정은 비활성화할 수 없습니다.');
-      return;
-    }
-    if (!window.confirm(`"${userData.email}" 사용자를 비활성화 하시겠습니까?`)) return;
-    try {
-      await api.deactivateUser(userData.id);
-      await loadAdminData('users');
-      alert('사용자가 비활성화되었습니다.');
-    } catch (err) {
-      alert(`사용자 비활성화 실패: ${err.message}`);
-    }
-  };
-
-  const handleDeleteUser = async (userData) => {
-    if (userData.id === currentUser?.id) {
-      alert('현재 로그인한 사용자 계정은 삭제할 수 없습니다.');
-      return;
-    }
-    if (!window.confirm(`"${userData.email}" 사용자를 영구 삭제 하시겠습니까?`)) return;
-    try {
-      await api.deleteUser(userData.id);
-      await loadAdminData('users');
-      alert('사용자가 삭제되었습니다.');
-    } catch (err) {
-      alert(`사용자 삭제 실패: ${err.message}`);
-    }
-  };
-
-  const handleAdminOrganizationSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      const payload = {
-        name: adminOrganizationForm.name.trim(),
-        quota_storage_gb: Number(adminOrganizationForm.quota_storage_gb),
-        quota_projects: Number(adminOrganizationForm.quota_projects),
-      };
-
-      if (!payload.name) {
-        alert('조직명은 필수입니다.');
-        return;
-      }
-      if (Number.isNaN(payload.quota_storage_gb) || Number.isNaN(payload.quota_projects) || payload.quota_storage_gb < 0 || payload.quota_projects < 0) {
-        alert('스토리지/프로젝트 한도는 0 이상 정수여야 합니다.');
-        return;
-      }
-
-      if (adminEditingOrganization) {
-        await api.updateOrganization(adminEditingOrganization.id, payload);
-        alert('조직이 수정되었습니다.');
-      } else {
-        await api.createOrganization(payload);
-        alert('조직이 생성되었습니다.');
-      }
-
-      resetAdminOrganizationForm();
-      await loadAdminData('organizations');
-    } catch (err) {
-      alert(`조직 저장 실패: ${err.message}`);
-    }
-  };
-
-  const handleEditOrganization = (org) => {
-    setAdminEditingOrganization(org);
-    setAdminOrganizationForm({
-      name: org.name || '',
-      quota_storage_gb: org.quota_storage_gb ?? 1000,
-      quota_projects: org.quota_projects ?? 100,
-    });
-  };
-
-  const handleDeleteOrganization = async (org) => {
-    if (!window.confirm(`"${org.name}" 조직을 삭제하시겠습니까?`)) return;
-    try {
-      await api.deleteOrganization(org.id, false);
-      await loadAdminData('organizations');
-      alert('조직이 삭제되었습니다.');
-    } catch (err) {
-      if (err.status === 409) {
-        if (window.confirm('조직에 사용자/프로젝트가 연결되어 있습니다. 강제 삭제하시겠습니까?')) {
-          try {
-            await api.deleteOrganization(org.id, true);
-            await loadAdminData('organizations');
-            alert('조직이 강제 삭제되었습니다.');
-          } catch (forceErr) {
-            alert(`조직 삭제 실패: ${forceErr.message}`);
-          }
-        }
-        return;
-      }
-      alert(`조직 삭제 실패: ${err.message}`);
-    }
-  };
-
-  const loadProjectPermissions = async (projectId) => {
-    if (!projectId) {
-      setProjectPermissions([]);
-      return;
-    }
-    try {
-      const response = await api.getProjectPermissions(projectId);
-      setProjectPermissions(response.items || []);
-    } catch (err) {
-      alert(`권한 조회 실패: ${err.message}`);
-      setProjectPermissions([]);
-    }
-  };
-
-  const handlePermissionProjectChange = async (projectId) => {
-    setSelectedPermissionProjectId(projectId);
-    await loadProjectPermissions(projectId);
-  };
-
-  const handleSubmitPermission = async (e) => {
-    e.preventDefault();
-    if (!selectedPermissionProjectId || !selectedPermissionUserId) {
-      alert('프로젝트와 사용자를 선택해 주세요.');
-      return;
-    }
-    try {
-      await api.setProjectPermission(selectedPermissionProjectId, selectedPermissionUserId, {
-        permission: selectedPermissionLevel,
-      });
-      await loadProjectPermissions(selectedPermissionProjectId);
-      setSelectedPermissionUserId('');
-      setSelectedPermissionLevel('view');
-      alert('권한이 저장되었습니다.');
-    } catch (err) {
-      alert(`권한 저장 실패: ${err.message}`);
-    }
-  };
-
-  const handleDeletePermission = async (permissionRecord) => {
-    if (!window.confirm('해당 사용자 권한을 삭제하시겠습니까?')) return;
-    try {
-      await api.removeProjectPermission(permissionRecord.project_id, permissionRecord.user_id);
-      await loadProjectPermissions(selectedPermissionProjectId);
-      alert('권한이 삭제되었습니다.');
-    } catch (err) {
-      alert(`권한 삭제 실패: ${err.message}`);
-    }
-  };
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden font-sans">
@@ -1748,23 +1179,23 @@ function Dashboard() {
       `}</style>
       <Header
         onLogoClick={() => {
-        // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
-        // 상태 기반 네비게이션으로 대시보드 복귀
-        setViewMode('dashboard');
-        setProcessingProject(null);
-        setSelectedProjectId(null);
-        setShowInspector(false);
-        setHighlightProjectId(null);
-        setActiveGroupId(null);
-        setSearchTerm('');
-        setRegionFilter('ALL');
-        // 지도 초기화 (한국 전체 뷰로 리셋)
-        setMapResetKey(prev => prev + 1);
-        // 업로드는 유지 (글로벌 업로드)
-        refreshProjects();
-        window.history.pushState({}, '', window.location.pathname);
-      }}
-        onOpenAdminMenu={openAdminPanel}
+          // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
+          // 상태 기반 네비게이션으로 대시보드 복귀
+          setViewMode('dashboard');
+          setProcessingProject(null);
+          setSelectedProjectId(null);
+          setShowInspector(false);
+          setHighlightProjectId(null);
+          clearGroupFilter();
+          setSearchTerm('');
+          setRegionFilter('ALL');
+          // 지도 초기화 (한국 전체 뷰로 리셋)
+          setMapResetKey(prev => prev + 1);
+          // 업로드는 유지 (글로벌 업로드)
+          refreshProjects();
+          window.history.pushState({}, '', window.location.pathname);
+        }}
+        onOpenAdminMenu={adminPanel.openAdminPanel}
         canManageUsers={canManageUsers}
         canManageOrganizations={canManageOrganizations}
         canManagePermissions={canManagePermissions}
@@ -1927,7 +1358,7 @@ function Dashboard() {
                 if (projectId !== selectedProjectId) {
                   // Fetch images for this project
                   try {
-                    const images = await api.getProjectImages(projectId);
+                    const images = await fetchImages(projectId);
                     // Normalize like we do in the useEffect
                     const points = images.map(img => {
                       const eo = img.exterior_orientation;
@@ -1975,7 +1406,7 @@ function Dashboard() {
             expandedGroupIds={expandedGroupIds}
             onToggleGroupExpand={toggleGroupExpand}
             onMoveProjectToGroup={canEditAnyProject ? handleMoveProjectToGroup : null}
-            onCreateGroup={canCreateProject ? () => setIsGroupModalOpen(true) : null}
+            onCreateGroup={canCreateProject ? openGroupModal : null}
             onEditGroup={setEditingGroup}
             onDeleteGroup={canDeleteProject ? handleDeleteGroup : null}
             onExportGroupProjects={canExportProject ? handleExportGroupProjects : null}
@@ -1992,7 +1423,7 @@ function Dashboard() {
             canStartProcessing={canEditAnyProject}
             canExportProject={canExportProject}
             activeGroupId={activeGroupId}
-            onFilterGroup={(groupId) => setActiveGroupId(prev => prev === groupId ? null : groupId)}
+            onFilterGroup={toggleGroupFilter}
           />
         )}
         <div className="w-1.5 bg-slate-200 hover:bg-blue-400 cursor-col-resize z-20 flex items-center justify-center group" onMouseDown={startResizing}><div className="h-8 w-1 bg-slate-300 rounded-full group-hover:bg-white/50" /></div>
@@ -2063,14 +1494,14 @@ function Dashboard() {
 
       {/* Group Create/Edit Modal */}
       {(isGroupModalOpen || editingGroup) && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => { setIsGroupModalOpen(false); setEditingGroup(null); }}>
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={closeGroupModal}>
           <div className="bg-white rounded-xl shadow-2xl w-[400px] overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="h-14 border-b border-slate-200 bg-slate-50 flex items-center justify-between px-6">
               <h3 className="font-bold text-slate-800 flex items-center gap-2">
                 <Folder size={20} className="text-blue-600" />
                 {editingGroup ? '폴더 수정' : '새 폴더 만들기'}
               </h3>
-              <button onClick={() => { setIsGroupModalOpen(false); setEditingGroup(null); }}><X size={20} className="text-slate-400 hover:text-slate-600" /></button>
+              <button onClick={closeGroupModal}><X size={20} className="text-slate-400 hover:text-slate-600" /></button>
             </div>
             <form onSubmit={async (e) => {
               e.preventDefault();
@@ -2083,8 +1514,7 @@ function Dashboard() {
                 } else {
                   await handleCreateGroup(name, color);
                 }
-                setIsGroupModalOpen(false);
-                setEditingGroup(null);
+                closeGroupModal();
               } catch (err) {
                 alert('실패: ' + err.message);
               }
@@ -2105,7 +1535,7 @@ function Dashboard() {
                 </div>
               </div>
               <div className="flex gap-3 pt-4">
-                <button type="button" onClick={() => { setIsGroupModalOpen(false); setEditingGroup(null); }} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50">취소</button>
+                <button type="button" onClick={closeGroupModal} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50">취소</button>
                 <button type="submit" className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold">{editingGroup ? '수정' : '만들기'}</button>
               </div>
             </form>
@@ -2114,295 +1544,14 @@ function Dashboard() {
       )}
 
       {/* Admin Management Modal */}
-      {isAdminPanelOpen && hasAdminMenuAccess && (
-        <div className="fixed inset-0 z-[1000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={closeAdminPanel}>
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[88vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="h-14 border-b border-slate-200 bg-slate-50 flex items-center justify-between px-6">
-              <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                관리 메뉴
-                <span className="text-slate-500 font-medium">- {adminCurrentTabLabel}</span>
-              </h3>
-              <button onClick={closeAdminPanel}><X size={20} className="text-slate-400 hover:text-slate-600" /></button>
-            </div>
-            <div className="px-6 py-3 border-b border-slate-200 flex gap-2 flex-wrap">
-              <button
-                onClick={() => openAdminPanel('users')}
-                title={!canManageUsers ? '권한이 없어 접근 가능한 첫 탭으로 이동합니다.' : '사용자 탭'}
-                className={`px-3 py-2 rounded-md text-sm font-medium ${adminTab === 'users' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'} ${!canManageUsers ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                사용자
-              </button>
-              <button
-                onClick={() => openAdminPanel('organizations')}
-                title={!canManageOrganizations ? '권한이 없어 접근 가능한 첫 탭으로 이동합니다.' : '조직 탭'}
-                className={`px-3 py-2 rounded-md text-sm font-medium ${adminTab === 'organizations' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'} ${!canManageOrganizations ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                조직
-              </button>
-              <button
-                onClick={() => openAdminPanel('permissions')}
-                title={!canManagePermissions ? '권한이 없어 접근 가능한 첫 탭으로 이동합니다.' : '프로젝트 권한 탭'}
-                className={`px-3 py-2 rounded-md text-sm font-medium ${adminTab === 'permissions' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'} ${!canManagePermissions ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                프로젝트 권한
-              </button>
-            </div>
-            <div className="p-6 overflow-y-auto max-h-[calc(88vh-3.5rem-3.75rem)] space-y-4">
-              {adminError && (
-                <div className="bg-red-50 text-red-600 text-sm p-3 rounded-md border border-red-200">
-                  {adminError}
-                </div>
-              )}
-              {adminLoading && <div className="text-sm text-slate-500">데이터를 불러오는 중입니다.</div>}
-
-              {adminTab === 'users' && canManageUsers && (
-                <div className="space-y-5">
-                    <form onSubmit={handleAdminUserSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                      <input
-                        required
-                        type="email"
-                        value={adminUserForm.email}
-                        onChange={(e) => setAdminUserForm(prev => ({ ...prev, email: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                      placeholder="이메일"
-                    />
-                      <input
-                      required={!adminEditingUser && !adminUserForm.inviteUser}
-                      minLength={8}
-                      type="password"
-                      value={adminUserForm.password}
-                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, password: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                      placeholder={adminEditingUser ? '변경 시 입력(선택)' : adminUserForm.inviteUser ? '초대 모드: 임시 비밀번호 자동 생성' : '비밀번호(필수 8자 이상)'}
-                    />
-                    {!adminEditingUser && (
-                      <label className="flex items-center gap-2 text-xs text-slate-600 md:col-span-1">
-                        <input
-                          type="checkbox"
-                          checked={adminUserForm.inviteUser}
-                          onChange={(e) => setAdminUserForm(prev => ({
-                            ...prev,
-                            inviteUser: e.target.checked,
-                          }))}
-                          className="w-4 h-4"
-                        />
-                        초대 모드(임시 비밀번호 자동 생성)
-                      </label>
-                    )}
-                    <input
-                      type="text"
-                      value={adminUserForm.name}
-                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, name: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                      placeholder="이름"
-                    />
-                    <select
-                      value={adminUserForm.role}
-                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, role: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                    >
-                      {(adminPermissionCatalog.roles.length > 0 ? adminPermissionCatalog.roles : ADMIN_ROLE_OPTIONS).map(role => (
-                        <option key={role.value} value={role.value}>{role.label}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={adminUserForm.organizationId}
-                      onChange={(e) => setAdminUserForm(prev => ({ ...prev, organizationId: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm md:col-span-2"
-                    >
-                      <option value="">소속 조직 없음</option>
-                      {adminOrganizations.map((org) => (
-                        <option key={org.id} value={org.id}>{org.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="submit"
-                      className="h-10 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-bold md:col-span-2"
-                    >
-                      {adminEditingUser
-                        ? '사용자 수정'
-                        : (adminUserForm.inviteUser ? '사용자 초대' : '사용자 생성')}
-                    </button>
-                  </form>
-                  <div className="border rounded-xl overflow-hidden">
-                    <div className="max-h-72 overflow-y-auto">
-                      {adminUsers.map((userItem) => (
-                        <div key={userItem.id} className="grid grid-cols-12 gap-2 items-center px-3 py-2 border-b text-sm last:border-b-0">
-                          <div className="col-span-3 truncate">{userItem.email}</div>
-                          <div className="col-span-3 truncate">{userItem.name || '-'}</div>
-                          <div className="col-span-2">{getAdminRoleLabel(userItem.role)}</div>
-                          <div className="col-span-2">{adminOrganizations.find(org => org.id === userItem.organization_id)?.name || '미배정'}</div>
-                          <div className="col-span-2">
-                            {userItem.is_active ? (
-                              <span className="text-emerald-600 text-[11px] px-2 py-0.5 rounded bg-emerald-50">활성</span>
-                            ) : (
-                              <span className="text-slate-600 text-[11px] px-2 py-0.5 rounded bg-slate-100">비활성</span>
-                            )}
-                          </div>
-                          <div className="col-span-2 flex gap-2 justify-end">
-                            <button onClick={() => handleEditUser(userItem)} className="px-2 py-1 bg-slate-100 rounded text-slate-700">수정</button>
-                            {userItem.is_active
-                              ? <button onClick={() => handleDeactivateUser(userItem)} className="px-2 py-1 bg-amber-100 rounded text-amber-700">비활성</button>
-                              : <button onClick={() => handleDeleteUser(userItem)} className="px-2 py-1 bg-red-100 rounded text-red-700">삭제</button>}
-                          </div>
-                        </div>
-                      ))}
-                      {adminUsers.length === 0 && <div className="p-3 text-sm text-slate-500">사용자 데이터가 없습니다.</div>}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {adminTab === 'users' && !canManageUsers && (
-                <div className="text-sm text-slate-500">
-                  사용자 관리 권한이 없어 사용자 탭을 표시할 수 없습니다.
-                </div>
-              )}
-
-              {adminTab === 'organizations' && canManageOrganizations && (
-                <div className="space-y-5">
-                  <form onSubmit={handleAdminOrganizationSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                    <input
-                      required
-                      type="text"
-                      value={adminOrganizationForm.name}
-                      onChange={(e) => setAdminOrganizationForm(prev => ({ ...prev, name: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                      placeholder="조직명"
-                    />
-                    <input
-                      required
-                      type="number"
-                      min="0"
-                      value={adminOrganizationForm.quota_storage_gb}
-                      onChange={(e) => setAdminOrganizationForm(prev => ({ ...prev, quota_storage_gb: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                      placeholder="스토리지(GB)"
-                    />
-                    <input
-                      required
-                      type="number"
-                      min="0"
-                      value={adminOrganizationForm.quota_projects}
-                      onChange={(e) => setAdminOrganizationForm(prev => ({ ...prev, quota_projects: e.target.value }))}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                      placeholder="프로젝트 한도"
-                    />
-                    <button
-                      type="submit"
-                      className="h-10 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-bold"
-                    >
-                      {adminEditingOrganization ? '조직 수정' : '조직 생성'}
-                    </button>
-                  </form>
-                  <div className="border rounded-xl overflow-hidden">
-                    <div className="max-h-72 overflow-y-auto">
-                      {adminOrganizations.map((org) => (
-                        <div key={org.id} className="grid grid-cols-12 gap-2 items-center px-3 py-2 border-b text-sm last:border-b-0">
-                          <div className="col-span-4 truncate">{org.name}</div>
-                          <div className="col-span-3">스토리지: {org.quota_storage_gb}GB</div>
-                          <div className="col-span-3">프로젝트: {org.quota_projects}</div>
-                          <div className="col-span-2 flex gap-2 justify-end">
-                            <button onClick={() => handleEditOrganization(org)} className="px-2 py-1 bg-slate-100 rounded text-slate-700">수정</button>
-                            <button onClick={() => handleDeleteOrganization(org)} className="px-2 py-1 bg-red-100 rounded text-red-700">삭제</button>
-                          </div>
-                        </div>
-                      ))}
-                      {adminOrganizations.length === 0 && <div className="p-3 text-sm text-slate-500">조직 데이터가 없습니다.</div>}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {adminTab === 'organizations' && !canManageOrganizations && (
-                <div className="text-sm text-slate-500">
-                  조직 관리 권한이 없어 조직 탭을 표시할 수 없습니다.
-                </div>
-              )}
-
-              {adminTab === 'permissions' && canManagePermissions && (
-                <div className="space-y-5">
-                  <form onSubmit={handleSubmitPermission} className="grid grid-cols-1 md:grid-cols-5 gap-3">
-                    <select
-                      value={selectedPermissionProjectId}
-                      onChange={(e) => handlePermissionProjectChange(e.target.value)}
-                      disabled={projects.length === 0}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm md:col-span-2"
-                    >
-                      <option value="">프로젝트 선택</option>
-                      {projects.map((project) => (
-                        <option key={project.id} value={project.id}>{project.title}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={selectedPermissionUserId}
-                      onChange={(e) => setSelectedPermissionUserId(e.target.value)}
-                      disabled={adminUsers.length === 0}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm md:col-span-2"
-                    >
-                      <option value="">사용자 선택</option>
-                      {adminUsers.map((userData) => (
-                        <option key={userData.id} value={userData.id}>{userData.email}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={selectedPermissionLevel}
-                      onChange={(e) => setSelectedPermissionLevel(e.target.value)}
-                      className="h-10 border border-slate-200 rounded-md px-3 text-sm"
-                    >
-                      {(adminPermissionCatalog.project_permissions.length > 0 ? adminPermissionCatalog.project_permissions : [
-                        { value: 'view', label: 'View' },
-                        { value: 'edit', label: 'Edit' },
-                        { value: 'admin', label: 'Admin' },
-                      ]).map((permission) => (
-                        <option key={permission.value} value={permission.value}>{permission.label}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="submit"
-                      disabled={!selectedPermissionProjectId || !selectedPermissionUserId}
-                      className="h-10 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white rounded-md text-sm font-bold"
-                    >
-                      권한 저장
-                    </button>
-                  </form>
-                  {projects.length === 0 && (
-                    <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
-                      권한을 부여할 프로젝트가 없습니다.
-                    </div>
-                  )}
-                  {adminUsers.length === 0 && (
-                    <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
-                      권한을 부여할 사용자가 없습니다.
-                    </div>
-                  )}
-                  <div className="border rounded-xl overflow-hidden">
-                    <div className="max-h-72 overflow-y-auto">
-                      {projectPermissions.map((permission) => (
-                        <div key={permission.id} className="grid grid-cols-12 gap-2 items-center px-3 py-2 border-b text-sm last:border-b-0">
-                          <div className="col-span-4 truncate">{permission.user_email || permission.user_id}</div>
-                          <div className="col-span-3 uppercase">{permission.permission}</div>
-                          <div className="col-span-2 text-slate-500">{new Date(permission.granted_at).toLocaleDateString()}</div>
-                          <div className="col-span-3 flex gap-2 justify-end">
-                            <button onClick={() => handleDeletePermission(permission)} className="px-2 py-1 bg-red-100 rounded text-red-700">권한 삭제</button>
-                          </div>
-                        </div>
-                      ))}
-                      {projectPermissions.length === 0 && (
-                        <div className="p-3 text-sm text-slate-500">
-                          {selectedPermissionProjectId ? '해당 프로젝트에 등록된 권한이 없습니다.' : '프로젝트를 먼저 선택하세요.'}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {adminTab === 'permissions' && !canManagePermissions && (
-                <div className="text-sm text-slate-500">
-                  프로젝트 권한 관리 권한이 없어 권한 탭을 표시할 수 없습니다.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {adminPanel.isAdminPanelOpen && hasAdminMenuAccess && (
+        <AdminPanel
+          {...adminPanel}
+          canManageUsers={canManageUsers}
+          canManageOrganizations={canManageOrganizations}
+          canManagePermissions={canManagePermissions}
+          projects={projects}
+        />
       )}
 
       {/* Upload Progress Overlay - 멀티 프로젝트 업로드 지원 */}

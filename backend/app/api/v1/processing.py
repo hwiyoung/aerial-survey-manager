@@ -448,6 +448,94 @@ async def start_processing(
     return ProcessingJobResponse.model_validate(job)
 
 
+@router.post("/projects/{project_id}/schedule", response_model=ProcessingJobResponse)
+async def schedule_processing(
+    project_id: UUID,
+    options: ProcessingOptions,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Schedule processing to start automatically when all uploads complete.
+
+    Creates a ProcessingJob with status="scheduled". The actual processing
+    will be triggered by the upload completion hook when all images are uploaded.
+    """
+    # Check permission
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    project = await _get_scoped_project(project_id, current_user, db)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    # Validate engine
+    supported_engines = _get_supported_processing_engines()
+    if not supported_engines:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="현재 사용할 수 있는 처리 엔진이 없습니다.",
+        )
+
+    if options.engine not in supported_engines:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"지원되지 않는 처리 엔진: {options.engine}",
+        )
+
+    # Check for existing active/scheduled jobs
+    result = await db.execute(
+        select(ProcessingJob).where(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.status.in_(["queued", "processing", "scheduled"]),
+        )
+    )
+    existing_job = result.scalar_one_or_none()
+    if existing_job:
+        if existing_job.status == "scheduled":
+            # Update existing scheduled job with new options
+            existing_job.engine = options.engine
+            existing_job.gsd = options.gsd
+            existing_job.output_crs = options.output_crs
+            existing_job.output_format = options.output_format
+            existing_job.process_mode = options.process_mode
+            await db.commit()
+            await db.refresh(existing_job)
+            return ProcessingJobResponse.model_validate(existing_job)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="이 프로젝트에 이미 진행 중인 처리 작업이 있습니다.",
+            )
+
+    # Create scheduled processing job
+    job = ProcessingJob(
+        project_id=project_id,
+        engine=options.engine,
+        gsd=options.gsd,
+        output_crs=options.output_crs,
+        output_format=options.output_format,
+        status="scheduled",
+        process_mode=options.process_mode,
+    )
+    db.add(job)
+    await db.flush()
+    await db.refresh(job)
+
+    # Update project status
+    project.status = "scheduled"
+
+    await db.commit()
+
+    return ProcessingJobResponse.model_validate(job)
+
 @router.get("/projects/{project_id}/status", response_model=ProcessingJobResponse)
 async def get_processing_status(
     project_id: UUID,

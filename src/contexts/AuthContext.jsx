@@ -11,7 +11,7 @@ const ROLE_ALIASES = {
     viewer: 'viewer',
     editor: 'editor',
     admin: 'admin',
-    user: 'viewer',
+    user: 'editor',
     manager: 'editor',
 };
 

@@ -795,6 +795,75 @@ async def complete_multipart_upload(
 
     await db.commit()
 
+    # --- Scheduled processing trigger hook ---
+    # Check if this project has a scheduled processing job and all images are now uploaded
+    if completed:
+        try:
+            from app.models.project import ProcessingJob, Image
+            from sqlalchemy import func
+
+            # Check for a scheduled job
+            sched_result = await db.execute(
+                select(ProcessingJob).where(
+                    ProcessingJob.project_id == project_id,
+                    ProcessingJob.status == "scheduled",
+                )
+            )
+            scheduled_job = sched_result.scalar_one_or_none()
+
+            if scheduled_job:
+                # Count image upload statuses
+                status_result = await db.execute(
+                    select(
+                        Image.upload_status,
+                        func.count(Image.id).label("cnt"),
+                    )
+                    .where(Image.project_id == project_id)
+                    .group_by(Image.upload_status)
+                )
+                status_counts = {row.upload_status: row.cnt for row in status_result}
+                pending_or_uploading = status_counts.get("pending", 0) + status_counts.get("uploading", 0)
+                completed_images = status_counts.get("completed", 0)
+
+                if pending_or_uploading == 0 and completed_images > 0:
+                    # All images uploaded — update DB state first (atomic)
+                    scheduled_job.status = "queued"
+                    scoped_project.status = "queued"
+                    scoped_project.progress = 0
+
+                    options_dict = {
+                        "engine": scheduled_job.engine,
+                        "gsd": scheduled_job.gsd,
+                        "output_crs": scheduled_job.output_crs,
+                        "output_format": scheduled_job.output_format,
+                        "process_mode": scheduled_job.process_mode or "Normal",
+                    }
+                    queue_name = scheduled_job.engine or "metashape"
+
+                    # Commit DB changes BEFORE submitting to Celery
+                    await db.commit()
+
+                    # Now submit Celery task — DB is already consistent
+                    try:
+                        from app.workers.tasks import process_orthophoto
+                        task = process_orthophoto.apply_async(
+                            args=[str(scheduled_job.id), str(project_id), options_dict],
+                            queue=queue_name,
+                        )
+                        # Update celery_task_id (non-critical)
+                        scheduled_job.celery_task_id = task.id
+                        await db.commit()
+                        print(f"[Scheduled Processing] Auto-triggered for project {project_id}, job {scheduled_job.id}")
+                    except Exception as celery_err:
+                        # Celery submission failed — revert DB state
+                        print(f"[Scheduled Processing] Celery submission failed: {celery_err}")
+                        scheduled_job.status = "scheduled"
+                        scoped_project.status = "scheduled"
+                        await db.commit()
+        except Exception as e:
+            # Don't fail the upload completion if the trigger fails
+            print(f"[Scheduled Processing] Trigger check failed: {e}")
+
     return MultipartCompleteResponse(completed=completed, failed=failed)
 
 

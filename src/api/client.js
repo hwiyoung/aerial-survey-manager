@@ -337,6 +337,13 @@ class ApiClient {
         });
     }
 
+    async scheduleProcessing(projectId, options) {
+        return this.request(`/processing/projects/${projectId}/schedule`, {
+            method: 'POST',
+            body: JSON.stringify(options),
+        });
+    }
+
     async getProcessingJobs() {
         return this.request('/processing/jobs');
     }

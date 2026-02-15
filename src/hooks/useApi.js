@@ -116,6 +116,15 @@ export function useProjects(options = {}) {
         }
     }, []);
 
+    const fetchImages = useCallback(async (projectId) => {
+        try {
+            return await api.getProjectImages(projectId);
+        } catch (err) {
+            setError(err.message);
+            throw err;
+        }
+    }, []);
+
     useEffect(() => {
         fetchProjects(options);
     }, []);
@@ -131,6 +140,7 @@ export function useProjects(options = {}) {
         deleteProject,
         batchDeleteProjects,
         batchUpdateProjectStatus,
+        fetchImages,
     };
 }
 

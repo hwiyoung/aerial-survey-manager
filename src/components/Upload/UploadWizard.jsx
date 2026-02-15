@@ -30,6 +30,12 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     });
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
+    const [autoProcess, setAutoProcess] = useState(true);
+    const [procEngine, setProcEngine] = useState('metashape');
+    const [procGsd, setProcGsd] = useState(5.0);
+    const [procCrs, setProcCrs] = useState('EPSG:5186');
+    const [procFormat, setProcFormat] = useState('GeoTiff');
+    const [procMode, setProcMode] = useState('Normal');
 
     useEffect(() => {
         if (isOpen) {
@@ -107,6 +113,12 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setShowMismatchWarning(false);
             setSelectedFiles([]);
             setSelectedEoFile(null);
+            setAutoProcess(true);
+            setProcEngine('metashape');
+            setProcGsd(5.0);
+            setProcCrs('EPSG:5186');
+            setProcFormat('GeoTiff');
+            setProcMode('Normal');
         }
     }, [isOpen]);
 
@@ -222,7 +234,15 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             files: selectedFiles,
             eoFile: selectedEoFile,
             eoConfig,
-            cameraModel
+            cameraModel,
+            autoProcess,
+            processingOptions: autoProcess ? {
+                engine: procEngine,
+                gsd: procGsd,
+                output_crs: procCrs,
+                output_format: procFormat,
+                process_mode: procMode,
+            } : null,
         });
         onClose();
     };
@@ -434,6 +454,55 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{cameraModel}</span></div>
                                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
                             </div>
+                            <label className="flex items-center gap-3 p-4 bg-emerald-50 border border-emerald-200 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors">
+                                <input type="checkbox" checked={autoProcess} onChange={(e) => setAutoProcess(e.target.checked)} className="w-5 h-5 accent-emerald-600" />
+                                <div>
+                                    <div className="font-bold text-emerald-800">업로드 완료 시 자동 처리 시작</div>
+                                    <div className="text-xs text-emerald-600">모든 이미지 업로드가 완료되면 정사영상 처리가 자동으로 시작됩니다.</div>
+                                </div>
+                            </label>
+                            {autoProcess && (
+                                <div className="bg-white p-5 rounded-xl border border-slate-200 space-y-3">
+                                    <h5 className="text-sm font-bold text-slate-700">처리 옵션</h5>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-medium block mb-1">처리 엔진</label>
+                                            <select value={procEngine} onChange={(e) => setProcEngine(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="metashape">Metashape</option>
+                                                <option value="odm">OpenDroneMap</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-medium block mb-1">GSD (cm/px)</label>
+                                            <input type="number" value={procGsd} onChange={(e) => setProcGsd(parseFloat(e.target.value) || 5.0)} step="0.5" min="0.5" max="50" className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-medium block mb-1">좌표계</label>
+                                            <select value={procCrs} onChange={(e) => setProcCrs(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="EPSG:5186">EPSG:5186 (Korea 2000)</option>
+                                                <option value="EPSG:5187">EPSG:5187 (Korea 2000 East)</option>
+                                                <option value="EPSG:4326">EPSG:4326 (WGS84)</option>
+                                                <option value="EPSG:32652">EPSG:32652 (UTM 52N)</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-medium block mb-1">출력 형식</label>
+                                            <select value={procFormat} onChange={(e) => setProcFormat(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="GeoTiff">GeoTIFF</option>
+                                                <option value="COG">Cloud Optimized GeoTIFF</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-xs text-slate-500 font-medium block mb-1">처리 모드</label>
+                                            <select value={procMode} onChange={(e) => setProcMode(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="Normal">Normal (일반)</option>
+                                                <option value="High">High (고품질)</option>
+                                                <option value="Draft">Draft (미리보기)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                             <p className="text-center text-sm text-slate-500"><span className="font-bold text-slate-700">확인</span> 버튼을 누르면 프로젝트 처리 옵션 화면으로 이동합니다.</p>
                         </div>
                     )}

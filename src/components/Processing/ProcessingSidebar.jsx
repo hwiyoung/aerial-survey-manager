@@ -436,48 +436,59 @@ export default function ProcessingSidebar({
 
             {/* Processing Progress Bar (shown when job is running) */}
             {isProcessing && (
-                    <div className="px-5 py-3 bg-blue-50 border-b border-blue-100">
-                        <div className="flex justify-between items-center text-sm mb-2">
-                            <span className="font-medium text-blue-800 flex items-center gap-2">
-                                <Loader2 size={14} className="animate-spin" />
-                                {wsStatus === 'connecting' ? '연결 중...' : '처리 진행 중'}
-                            </span>
-                            <span className="font-bold text-blue-600">{fallbackProgress}%</span>
-                        </div>
-                        <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
-                            <div
-                                className="h-full bg-blue-600 transition-all duration-500 ease-out"
-                                style={{ width: `${fallbackProgress}%` }}
-                            />
-                        </div>
-                        {fallbackMessage && (
-                            <p className="text-xs text-blue-600 mt-1 truncate font-medium">{fallbackMessage}</p>
-                        )}
-
-                        {/* Stop Button - Moved here for visibility */}
-                        {(wsStatus === 'processing' || wsStatus === 'queued') && (
-                            <div className="mt-4 pt-4 border-t border-blue-100/50">
-                                <button
-                                    onClick={async () => {
-                                        if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
-                                        try {
-                                            await api.cancelProcessing(project.id);
-                                            setHasTriggeredCancel(true);
-                                            setIsStarting(false);
-                                            setIsCompletionModalOpen(false);
-                                            if (onCancelled) await onCancelled();
-                                        } catch (err) {
-                                            alert('중단 실패: ' + err.message);
-                                        }
-                                    }}
-                                    className="w-full flex items-center justify-center gap-2 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-all border border-red-200 shadow-sm"
-                                >
-                                    <X size={14} /> 처리 중단 (Stop Processing)
-                                </button>
-                            </div>
-                        )}
+                <div className="px-5 py-3 bg-blue-50 border-b border-blue-100">
+                    <div className="flex justify-between items-center text-sm mb-2">
+                        <span className="font-medium text-blue-800 flex items-center gap-2">
+                            <Loader2 size={14} className="animate-spin" />
+                            {wsStatus === 'connecting' ? '연결 중...' : '처리 진행 중'}
+                        </span>
+                        <span className="font-bold text-blue-600">{fallbackProgress}%</span>
                     </div>
-                )}
+                    <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-blue-600 transition-all duration-500 ease-out"
+                            style={{ width: `${fallbackProgress}%` }}
+                        />
+                    </div>
+                    {fallbackMessage && (
+                        <p className="text-xs text-blue-600 mt-1 truncate font-medium">{fallbackMessage}</p>
+                    )}
+
+                    {/* Stop Button - Moved here for visibility */}
+                    {(wsStatus === 'processing' || wsStatus === 'queued') && (
+                        <div className="mt-4 pt-4 border-t border-blue-100/50">
+                            <button
+                                onClick={async () => {
+                                    if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
+                                    try {
+                                        await api.cancelProcessing(project.id);
+                                        setHasTriggeredCancel(true);
+                                        setIsStarting(false);
+                                        setIsCompletionModalOpen(false);
+                                        if (onCancelled) await onCancelled();
+                                    } catch (err) {
+                                        alert('중단 실패: ' + err.message);
+                                    }
+                                }}
+                                className="w-full flex items-center justify-center gap-2 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-all border border-red-200 shadow-sm"
+                            >
+                                <X size={14} /> 처리 중단 (Stop Processing)
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Scheduled Status */}
+            {normalizedProjectStatus === 'scheduled' && !isProcessing && !isComplete && (
+                <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 flex items-center gap-2 animate-in slide-in-from-top duration-300">
+                    <Loader2 size={16} className="text-amber-600 animate-spin" />
+                    <div>
+                        <span className="text-sm font-bold text-amber-800 block">처리 예약됨</span>
+                        <p className="text-[10px] text-amber-600">모든 이미지 업로드가 완료되면 자동으로 처리가 시작됩니다.</p>
+                    </div>
+                </div>
+            )}
 
             {/* Complete Status */}
             {isComplete && (
