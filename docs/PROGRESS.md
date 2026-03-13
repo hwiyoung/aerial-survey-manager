@@ -1,12 +1,12 @@
 # 작업 진행 상황
 
-> 완료된 작업: [PROGRESS_F2.md](PROGRESS_F2.md) · [PROGRESS_F3.md](PROGRESS_F3.md)
+> 완료된 작업: [PROGRESS_F2.md](PROGRESS_F2.md) · [PROGRESS_F3.md](PROGRESS_F3.md) · [PROGRESS_F7.md](PROGRESS_F7.md)
 
-## F7. 대시보드/처리화면 베이스맵 on/off 토글 - 2026-03-13
+## F8. 처리화면 지도 뷰 자유 이동 및 원래 범위 복귀 버튼 - 2026-03-13
 
 ### 요구사항
-대시보드(FootprintMap)와 처리화면(ProjectMap)에 표출되는 베이스맵 레이어를 껐다 켤 수 있게 한다.
-정사영상 위에 베이스맵이 불필요하거나 방해되는 경우 끌 수 있다.
+처리화면에서 지도 뷰포인트가 정사영상 바운더리에 고정되어 주변 이동이 불가능한 문제 해결.
+사용자가 자유롭게 이동/축소확대 가능하게 하고, 버튼으로 원래 정사영상 범위로 복귀.
 
 ### 진행 체크리스트
 - [x] A1. 계획 수립
@@ -22,47 +22,34 @@
 - [x] C3. 사이드이펙트 확인
 - [x] C4. 불필요 코드 정리
 - [x] C5. 코드 품질 검토
-- [ ] 🚪 변경사항 보고
-- [ ] D1. UX 관점 검토
-- [ ] D2. 전체 변경사항 통합 검토
-- [ ] D3. 배포 가능성 판단
+- [x] 🚪 변경사항 보고
+- [x] D1. UX 관점 검토
+- [x] D2. 전체 변경사항 통합 검토
+- [x] D3. 배포 가능성 판단
 - [ ] 🚪 최종 승인
 - [ ] D4. 커밋 및 PR
 
 ### A1. 구현 계획
 
-#### 기존 코드 현황
-- **FootprintMap.jsx**: TileLayer 고정 렌더링 (955-966행). FootprintMapHeader에 "촬영 영역"/"권역" 토글 버튼 이미 존재 (696-711행)
-- **ProjectMap.jsx**: TileLayer 고정 렌더링 (71-77행). 레이어 컨트롤 UI 없음
-- **mapConfig.js**: `getTileConfig()`로 오프라인/온라인 설정 반환
+#### 원인 분석
+- `FitBounds` 컴포넌트: `images`, `projectBounds` 의존성으로 useEffect 실행
+- `project` 객체가 폴링/상태변경으로 재생성되면 `images` 참조도 변경 → fitBounds 반복 실행
+- `TiTilerOrthoLayer`도 로드 완료 시 `map.fitBounds()` 호출
+- 결과: 사용자가 패닝해도 다시 원래 범위로 되돌아감
 
-#### 변경 파일 (2개, FE만)
+#### 변경 파일 (1개, FE만)
 
-**1. `src/components/Dashboard/FootprintMap.jsx`**
-- `showBasemap` 상태 추가 (기본값: localStorage에서 읽거나 `true`)
-- FootprintMapHeader에 "배경지도" 토글 버튼 추가 (기존 "촬영 영역"/"권역" 버튼과 동일 패턴)
-- TileLayer를 `showBasemap` 조건부 렌더링
-
-**2. `src/components/Project/ProjectMap.jsx`**
-- `showBasemap` 상태 추가 (동일 localStorage 키 사용)
-- 지도 위 플로팅 토글 버튼 추가 (우상단)
-- TileLayer를 `showBasemap` 조건부 렌더링
-
-#### 공통 사항
-- localStorage 키: `basemap_visible` (두 화면 공유 → 새로고침 시 동기화)
-- 토글 방식: 조건부 렌더링 (`{showBasemap && <TileLayer .../>}`)
-- 아이콘: lucide-react의 `Map` / `MapOff` 또는 기존 `Eye`/`EyeOff` 패턴 활용
+**`src/components/Project/ProjectMap.jsx`**
+1. `FitBounds` 수정: `projectId`별 1회만 fitBounds 실행 (ref로 추적)
+2. `MapRefSetter` 헬퍼: MapContainer 내부 map 인스턴스를 외부 ref에 노출
+3. "원래 범위로" 플로팅 버튼 추가 (Crosshair 아이콘 40px, 배경지도 토글 아래)
 
 ### A2. 계획 검토 결과
-- 조건부 렌더링이 opacity 0보다 나음: 불필요한 타일 요청 방지
-- localStorage 동기화: 같은 키를 쓰므로 대시보드에서 끄면 처리화면 진입 시에도 꺼진 상태. 단, 같은 페이지에서 두 컴포넌트가 동시 마운트되진 않으므로 실시간 동기화 불필요
-- 백엔드 변경 없음 — 순수 프론트엔드 작업
-- 기존 토글 버튼 패턴을 그대로 따르므로 UI 일관성 유지
+- FitBounds를 projectId별 1회만 실행 → 프로젝트 전환 시 정상 fitBounds, 같은 프로젝트 내 패닝 시 재설정 안됨
+- TiTilerOrthoLayer의 fitBounds는 fittedBoundsRef로 이미 관리됨 → 추가 수정 불필요
 
 ### A3. 과도 설계 검토 결과
-- 별도 `BasemapToggle` 공통 컴포넌트 분리: 두 곳의 UI 배치가 다름 (헤더 바 vs 플로팅 버튼). 공통 컴포넌트로 묶으면 오히려 복잡해짐 → 각각 인라인 구현이 적절
-- React Context로 상태 공유: 두 맵이 동시 렌더링되지 않으므로 localStorage로 충분
-- 베이스맵 opacity 슬라이더: 요구사항은 on/off뿐. 슬라이더는 불필요
+- 변경 파일 1개, 최소 변경 — 과도하지 않음
 
 ### 회귀 기록
 (없음)

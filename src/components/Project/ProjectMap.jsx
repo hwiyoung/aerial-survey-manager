@@ -1,18 +1,24 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { Loader2, Camera, Layers, X, Map as MapIcon } from 'lucide-react';
+import { Loader2, Camera, Layers, X, Map as MapIcon, Crosshair } from 'lucide-react';
 import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 
 function FitBounds({ images, projectBounds, projectId, maxZoom }) {
     const map = useMap();
+    const fittedProjectRef = React.useRef(null);
+
     useEffect(() => {
+        // projectId별 1회만 fitBounds 실행 (사용자 패닝 보호)
+        if (fittedProjectRef.current === projectId) return;
+
         // 1순위: 이미지 EO 좌표로 줌인
         if (images && images.length > 0) {
             const bounds = L.latLngBounds(images.map(img => [img.wy, img.wx]));
             if (bounds.isValid()) {
                 map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 18 });
+                fittedProjectRef.current = projectId;
                 return;
             }
         }
@@ -21,14 +27,23 @@ function FitBounds({ images, projectBounds, projectId, maxZoom }) {
             const bounds = L.latLngBounds(projectBounds);
             if (bounds.isValid()) {
                 map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 18 });
+                fittedProjectRef.current = projectId;
             }
         }
     }, [images, projectBounds, map, projectId, maxZoom]);
     return null;
 }
 
+// MapContainer 내부에서 map 인스턴스를 ref에 저장
+function MapRefSetter({ mapRef }) {
+    const map = useMap();
+    React.useEffect(() => { mapRef.current = map; }, [map, mapRef]);
+    return null;
+}
+
 export default function ProjectMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
     const [isLoading, setIsLoading] = useState(false);
+    const mapRef = React.useRef(null);
 
     // Basemap visibility (persisted in localStorage, shared with FootprintMap)
     const [showBasemap, setShowBasemap] = useState(() => {
@@ -81,6 +96,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                 zoomControl={false}
             >
                 <MapPanes />
+                <MapRefSetter mapRef={mapRef} />
                 {showBasemap && (
                     <TileLayer
                         attribution={tileConfig.attribution}
@@ -196,14 +212,41 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                 ))}
             </MapContainer>
 
-            {/* 배경지도 토글 버튼 */}
-            <button
-                onClick={toggleBasemap}
-                className={`absolute top-3 right-3 z-[1000] p-2 rounded-lg shadow-md border transition-colors ${showBasemap ? 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50' : 'bg-slate-100 border-slate-300 text-slate-400 hover:bg-slate-200'}`}
-                title={showBasemap ? '배경지도 숨기기' : '배경지도 표시'}
-            >
-                <MapIcon size={40} />
-            </button>
+            {/* 우측 상단 플로팅 버튼 그룹 */}
+            <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-2">
+                {/* 배경지도 토글 버튼 */}
+                <button
+                    onClick={toggleBasemap}
+                    className={`p-2 rounded-lg shadow-md border transition-colors ${showBasemap ? 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50' : 'bg-slate-100 border-slate-300 text-slate-400 hover:bg-slate-200'}`}
+                    title={showBasemap ? '배경지도 숨기기' : '배경지도 표시'}
+                >
+                    <MapIcon size={40} />
+                </button>
+                {/* 원래 범위로 복귀 버튼 */}
+                <button
+                    onClick={() => {
+                        const map = mapRef.current;
+                        if (!map) return;
+                        if (images && images.length > 0) {
+                            const bounds = L.latLngBounds(images.map(img => [img.wy, img.wx]));
+                            if (bounds.isValid()) {
+                                map.fitBounds(bounds, { padding: [50, 50], maxZoom: tileConfig.maxZoom });
+                                return;
+                            }
+                        }
+                        if (project?.bounds && project.bounds.length > 0) {
+                            const bounds = L.latLngBounds(project.bounds);
+                            if (bounds.isValid()) {
+                                map.fitBounds(bounds, { padding: [50, 50], maxZoom: tileConfig.maxZoom });
+                            }
+                        }
+                    }}
+                    className="p-2 rounded-lg shadow-md border bg-white border-slate-200 text-blue-600 hover:bg-blue-50 transition-colors"
+                    title="원래 범위로 돌아가기"
+                >
+                    <Crosshair size={40} />
+                </button>
+            </div>
 
             {isLoading && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/40 backdrop-blur-[1px] z-[1001] pointer-events-none">
