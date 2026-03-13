@@ -25,6 +25,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
     const [autoProcess, setAutoProcess] = useState(true);
+    const [processMode, setProcessMode] = useState('Normal');
 
     useEffect(() => {
         if (isOpen) {
@@ -210,6 +211,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             eoConfig,
             cameraModel,
             autoProcess: autoProcess && !!eoFileName,
+            processMode,
         });
         onClose();
     };
@@ -418,6 +420,20 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                         <p className="text-xs text-slate-400 mt-0.5">{eoFileName ? '프로젝트 생성 즉시 처리를 시작합니다' : 'EO 파일을 먼저 선택해주세요'}</p>
                                     </div>
                                 </label>
+                                {autoProcess && !!eoFileName && (
+                                    <div className="ml-8 mt-2 flex items-center gap-3">
+                                        <span className="text-sm text-slate-500">처리 모드</span>
+                                        <select
+                                            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white font-bold"
+                                            value={processMode}
+                                            onChange={(e) => setProcessMode(e.target.value)}
+                                        >
+                                            <option value="Normal">정밀 처리</option>
+                                            <option value="Fast">고속 처리</option>
+                                        </select>
+                                        <span className="text-xs text-slate-400">{processMode === 'Normal' ? '품질 우선 (느림)' : '속도 우선 (빠름)'}</span>
+                                    </div>
+                                )}
                             </div>
                             <p className="text-center text-sm text-slate-500">{autoProcess && eoFileName ? <><span className="font-bold text-blue-600">확인</span> 버튼을 누르면 프로젝트가 생성되고 <span className="font-bold">즉시 처리가 시작</span>됩니다.</> : <><span className="font-bold text-slate-700">확인</span> 버튼을 누르면 프로젝트 처리 옵션 화면으로 이동합니다.</>}</p>
                         </div>

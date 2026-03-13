@@ -638,7 +638,7 @@ function Dashboard() {
     };
   }, [isResizing]);
 
-  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess }) => {
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess, processMode }) => {
     try {
       // 1. Create Project via API
       console.log('Creating project:', projectData);
@@ -737,7 +737,7 @@ function Dashboard() {
                 gsd: 5.0,
                 output_crs: 'EPSG:5186',
                 output_format: 'GeoTiff',
-                process_mode: 'Normal',
+                process_mode: processMode || 'Normal',
               });
               projectStatus = '진행중';
               console.log('Processing auto-scheduled successfully');

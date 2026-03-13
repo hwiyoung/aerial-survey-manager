@@ -7,7 +7,7 @@ const DEFAULT_GSD = 5;
 
 export default function ExportDialog({ isOpen, onClose, targetProjectIds, allProjects }) {
     const [format, setFormat] = useState('GeoTiff');
-    const [crs, setCrs] = useState('GRS80 (EPSG:5186)');
+    const [crs, setCrs] = useState('TM중부 (EPSG:5186)');
     const [gsd, setGsd] = useState(DEFAULT_GSD);
     const [filename, setFilename] = useState('');
     const [isExporting, setIsExporting] = useState(false);
@@ -77,7 +77,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             // 1. 파일 준비 (서버에서 변환 및 임시 저장)
             const result = await api.prepareBatchExport(targetProjectIds, {
                 format: format,
-                crs: crs.includes('5186') ? 'EPSG:5186' : crs.includes('4326') ? 'EPSG:4326' : 'EPSG:32652',
+                crs: crs.match(/EPSG:(\d+)/)?.[0] || 'EPSG:5186',
                 gsd: gsd,
                 custom_filename: filename || null,
             });
@@ -134,9 +134,11 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                             <div className="space-y-1">
                                 <label className="text-xs font-bold text-slate-500">좌표계 (CRS)</label>
                                 <select className="w-full border p-2 rounded text-sm bg-white" value={crs} onChange={e => setCrs(e.target.value)}>
-                                    <option>GRS80 (EPSG:5186)</option>
-                                    <option>WGS84 (EPSG:4326)</option>
-                                    <option>UTM52N (EPSG:32652)</option>
+                                    <option value="TM중부 (EPSG:5186)">TM 중부 (EPSG:5186)</option>
+                                    <option value="TM서부 (EPSG:5185)">TM 서부 (EPSG:5185)</option>
+                                    <option value="TM동부 (EPSG:5187)">TM 동부 (EPSG:5187)</option>
+                                    <option value="UTM-K (EPSG:5179)">UTM-K (EPSG:5179)</option>
+                                    <option value="WGS84 (EPSG:4326)">WGS84 (EPSG:4326)</option>
                                 </select>
                             </div>
                         </div>
