@@ -542,8 +542,55 @@ async def schedule_processing(
     # Update project status
     project.status = "scheduled"
 
-    await db.commit()
+    # Check if all images are already uploaded — if so, transition immediately
+    from app.models.project import Image
+    from sqlalchemy import func
 
+    status_result = await db.execute(
+        select(
+            Image.upload_status,
+            func.count(Image.id).label("cnt"),
+        )
+        .where(Image.project_id == project_id)
+        .group_by(Image.upload_status)
+    )
+    status_counts = {row.upload_status: row.cnt for row in status_result}
+    pending_or_uploading = status_counts.get("pending", 0) + status_counts.get("uploading", 0)
+    completed_images = status_counts.get("completed", 0)
+
+    if pending_or_uploading == 0 and completed_images > 0:
+        # All images already uploaded — transition to queued and submit task
+        job.status = "queued"
+        project.status = "queued"
+        project.progress = 0
+
+        await db.commit()
+
+        try:
+            from app.workers.tasks import process_orthophoto
+            options_dict = {
+                "engine": job.engine,
+                "gsd": job.gsd,
+                "output_crs": job.output_crs,
+                "output_format": job.output_format,
+                "process_mode": job.process_mode or "Normal",
+            }
+            queue_name = job.engine or "metashape"
+            task = process_orthophoto.apply_async(
+                args=[str(job.id), str(project_id), options_dict],
+                queue=queue_name,
+            )
+            job.celery_task_id = task.id
+            await db.commit()
+        except Exception as celery_err:
+            # Celery submission failed — revert to scheduled
+            job.status = "scheduled"
+            project.status = "scheduled"
+            await db.commit()
+    else:
+        await db.commit()
+
+    await db.refresh(job)
     return ProcessingJobResponse.model_validate(job)
 
 @router.get("/projects/{project_id}/status", response_model=ProcessingJobResponse)

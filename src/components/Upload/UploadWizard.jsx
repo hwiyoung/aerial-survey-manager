@@ -24,6 +24,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     });
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
+    const [autoProcess, setAutoProcess] = useState(true);
 
     useEffect(() => {
         if (isOpen) {
@@ -107,6 +108,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setShowFileBrowser(false);
             setShowEoFileBrowser(false);
             setEoFilePath(null);
+            setAutoProcess(true);
         }
     }, [isOpen]);
 
@@ -207,6 +209,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             eoFile: selectedEoFile,
             eoConfig,
             cameraModel,
+            autoProcess: autoProcess && !!eoFileName,
         });
         onClose();
     };
@@ -402,8 +405,21 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoConfig.crs} · {eoLineCount}줄</div></div></div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{cameraModel}</span></div>
                                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
+                                <label className={`flex items-center gap-3 pt-4 border-t border-slate-100 cursor-pointer ${!eoFileName ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                    <input
+                                        type="checkbox"
+                                        checked={autoProcess && !!eoFileName}
+                                        onChange={(e) => setAutoProcess(e.target.checked)}
+                                        disabled={!eoFileName}
+                                        className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    <div>
+                                        <span className="font-bold text-slate-700">완료 후 자동 처리</span>
+                                        <p className="text-xs text-slate-400 mt-0.5">{eoFileName ? '프로젝트 생성 즉시 처리를 시작합니다' : 'EO 파일을 먼저 선택해주세요'}</p>
+                                    </div>
+                                </label>
                             </div>
-                            <p className="text-center text-sm text-slate-500"><span className="font-bold text-slate-700">확인</span> 버튼을 누르면 프로젝트 처리 옵션 화면으로 이동합니다.</p>
+                            <p className="text-center text-sm text-slate-500">{autoProcess && eoFileName ? <><span className="font-bold text-blue-600">확인</span> 버튼을 누르면 프로젝트가 생성되고 <span className="font-bold">즉시 처리가 시작</span>됩니다.</> : <><span className="font-bold text-slate-700">확인</span> 버튼을 누르면 프로젝트 처리 옵션 화면으로 이동합니다.</>}</p>
                         </div>
                     )}
                 </div>

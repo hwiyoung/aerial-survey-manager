@@ -638,7 +638,7 @@ function Dashboard() {
     };
   }, [isResizing]);
 
-  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths }) => {
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess }) => {
     try {
       // 1. Create Project via API
       console.log('Creating project:', projectData);
@@ -727,10 +727,30 @@ function Dashboard() {
             alert(`프로젝트 생성 완료. ${localImageCount}개 이미지 등록됨.`);
           }
 
-          // 5. Update UI State for local-import (no upload needed)
+          // 5. Auto-schedule processing if requested
+          let projectStatus = '대기';
+          if (autoProcess && eoFile) {
+            try {
+              console.log('Auto-scheduling processing for project:', created.id);
+              await api.scheduleProcessing(created.id, {
+                engine: 'metashape',
+                gsd: 5.0,
+                output_crs: 'EPSG:5186',
+                output_format: 'GeoTiff',
+                process_mode: 'Normal',
+              });
+              projectStatus = '진행중';
+              console.log('Processing auto-scheduled successfully');
+            } catch (schedErr) {
+              console.error('Auto-schedule failed:', schedErr);
+              // Non-fatal: project is created, user can manually start processing
+            }
+          }
+
+          // 6. Update UI State for local-import (no upload needed)
           const projectForProcessing = {
             ...created,
-            status: '대기',
+            status: projectStatus,
             imageCount: localImageCount,
             image_count: localImageCount,
             images: imagesToUse,
