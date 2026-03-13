@@ -78,12 +78,20 @@ export function TiTilerOrthoLayer({
     onLoadComplete,
     onLoadError,
     projectBounds = null,
+    showBasemap,
 }) {
     const map = useMap();
     const layerRef = useRef(null);
     const currentProjectIdRef = useRef(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+
+    // 베이스맵 토글 시 정사영상을 항상 최상단으로
+    useEffect(() => {
+        if (layerRef.current) {
+            layerRef.current.bringToFront();
+        }
+    }, [showBasemap]);
     const [tileUrl, setTileUrl] = useState(null);
     const [bounds, setBounds] = useState(null);
     const fittedBoundsRef = useRef(null);
@@ -934,7 +942,7 @@ export function FootprintMap({
                 cogLoadStatus={cogLoadStatus} cogError={cogError}
             />
 
-            <div className={`${isFlexHeight ? 'flex-1' : ''} ${hoveredProjectId ? 'project-hovered' : ''}`} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0 }}>
+            <div className={`${isFlexHeight ? 'flex-1' : ''} ${hoveredProjectId ? 'project-hovered' : ''}`} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0, overflow: 'hidden' }}>
                 <MapContainer
                     center={MAP_CONFIG.defaultCenter}
                     zoom={MAP_CONFIG.defaultZoom}
@@ -946,21 +954,6 @@ export function FootprintMap({
                 >
                     <MapPanes />
                     <MapResetController resetKey={resetKey} />
-                    {/* Central Loading Spinner */}
-                    {cogLoadStatus === 'loading' && (
-                        <div className="absolute inset-0 z-[1001] flex flex-col items-center justify-center bg-slate-900/10 backdrop-blur-[1px]">
-                            <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-200 flex flex-col items-center gap-4 animate-in zoom-in-95 duration-200">
-                                <div className="relative">
-                                    <div className="w-12 h-12 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
-                                    <Layers className="absolute inset-0 m-auto text-blue-600" size={20} />
-                                </div>
-                                <div className="text-center">
-                                    <div className="text-sm font-bold text-slate-800">정사영상 스트리밍 중</div>
-                                    <div className="text-[10px] text-slate-500 mt-1">대용량 COG 데이터를 최적화하여 불러오고 있습니다.</div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
 
 
@@ -1002,6 +995,7 @@ export function FootprintMap({
                             onLoadComplete={handleCogLoadComplete}
                             onLoadError={handleCogLoadError}
                             projectBounds={selectedCogProject.bounds}
+                            showBasemap={showBasemap}
                         />
                     )}
 

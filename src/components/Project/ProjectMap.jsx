@@ -114,6 +114,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         opacity={0.8}
                         onLoadComplete={() => setIsLoading(false)}
                         onLoadError={() => setIsLoading(false)}
+                        showBasemap={showBasemap}
                     />
                 )}
 
