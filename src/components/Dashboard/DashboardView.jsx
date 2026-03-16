@@ -326,7 +326,11 @@ export default function DashboardView({
     showInspector = false,
     renderInspector = null,
     regionFilter = 'ALL',
-    onRegionClick
+    onRegionClick,
+    sheetState = null,
+    onSheetToggle = null,
+    onSheetsLoaded = null,
+    onSheetStateChange = null,
 }) {
     const containerRef = useRef(null);
     const [containerWidth, setContainerWidth] = useState(800);
@@ -517,6 +521,12 @@ export default function DashboardView({
                             onRegionClick={onRegionClick}
                             activeRegionName={regionFilter}
                             resetKey={mapResetKey}
+                            sheetState={sheetState}
+                            sheetProjectBounds={selectedProject?.bounds}
+                            onSheetToggle={onSheetToggle}
+                            onSheetsLoaded={onSheetsLoaded}
+                            onSheetStateChange={onSheetStateChange}
+                            selectedProject={selectedProject}
                         />
                     </div>
 
@@ -562,6 +572,12 @@ export default function DashboardView({
                         onRegionClick={onRegionClick}
                         activeRegionName={regionFilter}
                         resetKey={mapResetKey}
+                        sheetState={sheetState}
+                        sheetProjectBounds={selectedProject?.bounds}
+                        onSheetToggle={onSheetToggle}
+                        onSheetsLoaded={onSheetsLoaded}
+                        onSheetStateChange={onSheetStateChange}
+                        selectedProject={selectedProject}
                     />
 
                     {/* Drag Handle */}

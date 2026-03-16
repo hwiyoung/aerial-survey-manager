@@ -292,10 +292,12 @@ function Dashboard() {
 
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
+  const [sheetState, setSheetState] = useState({ visible: false, scale: 5000, selectedSheets: [], searchResult: null });
 
-  // Reset selected image when project changes or when leaving processing mode
+  // Reset selected image and sheet state when project changes or when leaving processing mode
   useEffect(() => {
     setSelectedImageId(null);
+    setSheetState({ visible: false, scale: 5000, selectedSheets: [], searchResult: null });
   }, [selectedProjectId, viewMode]);
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -1567,6 +1569,18 @@ function Dashboard() {
                 selectedProject={selectedProject}
                 sidebarWidth={sidebarWidth}
                 mapResetKey={mapResetKey}
+                sheetState={sheetState}
+                onSheetToggle={(mapid) => {
+                  const sel = sheetState.selectedSheets || [];
+                  setSheetState({
+                    ...sheetState,
+                    selectedSheets: sel.includes(mapid) ? sel.filter(s => s !== mapid) : [...sel, mapid],
+                  });
+                }}
+                onSheetsLoaded={(sheets) => {
+                  setSheetState(prev => ({ ...prev, overlappingSheets: sheets }));
+                }}
+                onSheetStateChange={setSheetState}
                 onProjectClick={(project) => {
                   setSelectedProjectId(project.id);
                   setHighlightProjectId(project.id);

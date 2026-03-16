@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { FileImage, Download, Loader2, X, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
@@ -105,6 +105,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                                 COG 삭제됨 {project.ortho_size ? `(${(project.ortho_size / (1024 * 1024 * 1024)).toFixed(2)} GB 확보)` : ''}
                             </div>
                         )}
+
                     </div>
                 </div>
                 <div className="flex-1 p-6 bg-slate-50 overflow-y-auto">

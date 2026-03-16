@@ -3,9 +3,10 @@ import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON, Im
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
-import { Layers, Eye, EyeOff, ChevronRight, X, Map as MapIcon } from 'lucide-react';
+import { Layers, Eye, EyeOff, ChevronRight, X, Map as MapIcon, Grid3X3, Search, Download, Merge } from 'lucide-react';
 import proj4 from 'proj4';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
+import SheetGridOverlay from '../Project/SheetGridOverlay';
 
 // Set proj4 globally for georaster-layer-for-leaflet
 if (typeof window !== 'undefined') {
@@ -425,6 +426,7 @@ export function CogLayer({ projectId, visible = true, opacity = 0.8, onLoadCompl
 
 const REGION_PANE = 'region-boundary';
 const PROJECT_PANE = 'project-footprint';
+const SHEET_PANE = 'sheet-grid';
 
 export function MapPanes() {
     const map = useMap();
@@ -433,9 +435,11 @@ export function MapPanes() {
         if (!map) return;
         const regionPane = map.getPane(REGION_PANE) || map.createPane(REGION_PANE);
         const projectPane = map.getPane(PROJECT_PANE) || map.createPane(PROJECT_PANE);
+        const sheetPane = map.getPane(SHEET_PANE) || map.createPane(SHEET_PANE);
 
         regionPane.style.zIndex = '2';
         projectPane.style.zIndex = '3';
+        sheetPane.style.zIndex = '4';
     }, [map]);
 
     return null;
@@ -670,9 +674,10 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
  * Header bar with layer controls, legend, and COG status
  */
 function FootprintMapHeader({
-    showRegions, setShowRegions,
-    showFootprints, setShowFootprints,
+    showRegions, onRegionToggle,
+    showFootprints, onFootprintToggle,
     selectedCogProject, cogLoadStatus, cogError,
+    sheetState, onSheetToggle,
 }) {
     return (
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
@@ -684,7 +689,7 @@ function FootprintMapHeader({
             <div className="flex items-center gap-4">
                 <div className="flex gap-3 text-xs">
                     <button
-                        onClick={() => setShowFootprints(!showFootprints)}
+                        onClick={onFootprintToggle}
                         className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showFootprints ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}
                         title="촬영 영역 표시 토글"
                     >
@@ -692,12 +697,20 @@ function FootprintMapHeader({
                         <span>촬영 영역</span>
                     </button>
                     <button
-                        onClick={() => setShowRegions(!showRegions)}
+                        onClick={onRegionToggle}
                         className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${showRegions ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}
                         title="권역 경계 표시 토글"
                     >
                         <Layers size={12} />
                         <span>권역</span>
+                    </button>
+                    <button
+                        onClick={onSheetToggle}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${sheetState?.visible ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}
+                        title="도엽 격자 표시 토글"
+                    >
+                        <Grid3X3 size={12} />
+                        <span>도엽</span>
                     </button>
                     <div className="flex items-center gap-1.5">
                         <div className="w-3 h-3 rounded" style={{ backgroundColor: STATUS_COLORS.completed.fill }}></div>
@@ -754,6 +767,262 @@ function OverlapSelectionPopup({ overlapProjects, selectedProjectId, onProjectCl
 }
 
 /**
+ * 도엽 검색 결과로 지도 이동하는 헬퍼 컴포넌트
+ */
+function SheetSearchFitBounds({ searchResult }) {
+    const map = useMap();
+    const lastMapidRef = useRef(null);
+    useEffect(() => {
+        if (searchResult?.found && searchResult.mapid !== lastMapidRef.current) {
+            lastMapidRef.current = searchResult.mapid;
+            const b = searchResult.bounds_wgs84;
+            map.fitBounds([[b[0][0], b[0][1]], [b[1][0], b[1][1]]], { padding: [50, 50], maxZoom: 18 });
+        }
+    }, [searchResult, map]);
+    return null;
+}
+
+/**
+ * 도엽 컨트롤 플로팅 패널 (지도 위에 표시)
+ */
+function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) {
+    const [searchInput, setSearchInput] = useState('');
+    const [searchResult, setSearchResult] = useState(null);
+    const [isClipping, setIsClipping] = useState(false);
+    const [isMerging, setIsMerging] = useState(false);
+    const [availableScales, setAvailableScales] = useState([]);
+
+    useEffect(() => {
+        api.getSheetScales().then(data => {
+            setAvailableScales(data.scales || []);
+        }).catch(() => {});
+    }, []);
+
+    const handleSearch = () => {
+        if (!searchInput.trim()) return;
+        api.searchSheet(searchInput.trim()).then(r => {
+            setSearchResult(r);
+            if (r.found) {
+                onSheetStateChange?.({
+                    ...sheetState,
+                    visible: true,
+                    scale: r.scale,
+                    searchResult: r,
+                    selectedSheets: [...(sheetState?.selectedSheets || []).filter(s => s !== r.mapid), r.mapid],
+                });
+            }
+        }).catch(() => setSearchResult({ found: false }));
+    };
+
+    const handleClip = async () => {
+        if (!selectedProject?.id || !sheetState?.selectedSheets?.length) return;
+        setIsClipping(true);
+        try {
+            const result = await api.clipExport([selectedProject.id], sheetState.selectedSheets, {
+                scale: sheetState.scale || 5000,
+                crs: 'EPSG:5186',
+                gsd: selectedProject.result_gsd || null,
+            });
+            api.triggerDirectDownload(result.download_id);
+        } catch (err) {
+            alert('도엽 클립 실패: ' + err.message);
+        } finally {
+            setIsClipping(false);
+        }
+    };
+
+    const handleMerge = async () => {
+        if (!selectedProject?.id || !sheetState?.selectedSheets?.length) return;
+        setIsMerging(true);
+        try {
+            for (const sheetId of sheetState.selectedSheets) {
+                const result = await api.mergeExport([selectedProject.id], sheetId, {
+                    scale: sheetState.scale || 5000,
+                    crs: 'EPSG:5186',
+                    gsd: selectedProject.result_gsd || null,
+                });
+                api.triggerDirectDownload(result.download_id);
+            }
+        } catch (err) {
+            alert('도엽 머지 실패: ' + err.message);
+        } finally {
+            setIsMerging(false);
+        }
+    };
+
+    // 좌상단→우하단 정렬: 위도 내림차순(위→아래), 같은 행이면 경도 오름차순(왼→오른)
+    const overlappingSheets = [...(sheetState?.overlappingSheets || [])].sort((a, b) => {
+        const aLat = a.bounds_wgs84?.[1]?.[0] ?? 0; // maxlat (북쪽)
+        const bLat = b.bounds_wgs84?.[1]?.[0] ?? 0;
+        const aLon = a.bounds_wgs84?.[0]?.[1] ?? 0; // minlon (서쪽)
+        const bLon = b.bounds_wgs84?.[0]?.[1] ?? 0;
+        if (Math.abs(aLat - bLat) > 0.0001) return bLat - aLat; // 위도 내림차순
+        return aLon - bLon; // 경도 오름차순
+    });
+    const selectedSheets = sheetState?.selectedSheets || [];
+    const hasOrtho = selectedProject?.ortho_path;
+
+    return (
+        <div className="absolute top-3 left-3 z-[1000] bg-white/95 backdrop-blur-sm rounded-xl shadow-lg border border-slate-200 w-72 max-h-[calc(100%-24px)] overflow-y-auto">
+            <div className="p-3 border-b border-slate-100">
+                <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <Grid3X3 size={14} className="text-amber-500" />
+                        도엽 격자
+                    </h4>
+                    <button
+                        onClick={() => onSheetStateChange?.({ ...sheetState, visible: false })}
+                        className="p-0.5 hover:bg-slate-100 rounded text-slate-400"
+                    >
+                        <X size={14} />
+                    </button>
+                </div>
+
+                {/* 축척 선택 */}
+                {availableScales.length > 0 && (
+                    <div className="flex gap-1">
+                        {availableScales.map(s => (
+                            <button
+                                key={s.scale}
+                                onClick={() => onSheetStateChange?.({ ...sheetState, scale: s.scale, selectedSheets: [], searchResult: null })}
+                                className={`text-[10px] px-2.5 py-1 rounded font-bold transition-colors ${(sheetState?.scale || 5000) === s.scale ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                            >
+                                {s.label}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* 도엽번호 검색 */}
+            <div className="p-3 border-b border-slate-100">
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">도엽번호 검색</label>
+                <div className="flex gap-1">
+                    <input
+                        type="text"
+                        value={searchInput}
+                        onChange={e => setSearchInput(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                        placeholder="예: 37806043"
+                        className="flex-1 text-xs border border-slate-200 rounded px-2 py-1.5 font-mono"
+                    />
+                    <button
+                        onClick={handleSearch}
+                        className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded transition-colors"
+                    >
+                        <Search size={14} className="text-slate-500" />
+                    </button>
+                </div>
+                {searchResult && !searchResult.found && (
+                    <p className="text-[10px] text-red-500 mt-1">도엽을 찾을 수 없습니다.</p>
+                )}
+                {searchResult?.found && (
+                    <p className="text-[10px] text-blue-600 mt-1">{searchResult.mapid} ({searchResult.name}) - 1:{searchResult.scale.toLocaleString()}</p>
+                )}
+            </div>
+
+            {/* 겹치는 도엽 목록 */}
+            {overlappingSheets.length > 0 && (
+                <div className="p-3 border-b border-slate-100">
+                    <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] font-bold text-slate-400">
+                            겹치는 도엽 ({overlappingSheets.length}개)
+                        </label>
+                        {selectedSheets.length === 0 && (
+                            <button
+                                onClick={() => onSheetStateChange?.({
+                                    ...sheetState,
+                                    selectedSheets: overlappingSheets.map(s => s.mapid),
+                                })}
+                                className="text-[10px] text-blue-600 hover:text-blue-800 font-bold"
+                            >
+                                전체 선택
+                            </button>
+                        )}
+                        {selectedSheets.length > 0 && (
+                            <button
+                                onClick={() => onSheetStateChange?.({ ...sheetState, selectedSheets: [] })}
+                                className="text-[10px] text-red-500 hover:text-red-700 font-bold"
+                            >
+                                전체 해제
+                            </button>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                        {overlappingSheets.map(sheet => {
+                            const isSelected = selectedSheets.includes(sheet.mapid);
+                            return (
+                                <span
+                                    key={sheet.mapid}
+                                    onClick={() => {
+                                        onSheetStateChange?.({
+                                            ...sheetState,
+                                            selectedSheets: isSelected
+                                                ? selectedSheets.filter(s => s !== sheet.mapid)
+                                                : [...selectedSheets, sheet.mapid],
+                                        });
+                                    }}
+                                    className={`text-[10px] px-1.5 py-0.5 rounded font-mono cursor-pointer transition-colors select-none ${isSelected ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'}`}
+                                    title={isSelected ? '클릭하여 선택 해제' : '클릭하여 선택'}
+                                >
+                                    {sheet.mapid}
+                                </span>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {/* 선택된 도엽 + 내보내기 버튼 */}
+            {selectedSheets.length > 0 && (
+                <div className="p-3">
+                    <label className="text-[10px] font-bold text-slate-400 block mb-1">
+                        선택된 도엽 ({selectedSheets.length}개)
+                    </label>
+                    <div className="flex flex-wrap gap-1 mb-3">
+                        {selectedSheets.map(sid => (
+                            <span
+                                key={sid}
+                                className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded font-mono cursor-pointer hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors select-none"
+                                onClick={() => onSheetStateChange?.({ ...sheetState, selectedSheets: selectedSheets.filter(s => s !== sid) })}
+                                title="클릭하여 선택 해제"
+                            >
+                                {sid} ×
+                            </span>
+                        ))}
+                    </div>
+
+                    {!hasOrtho && (
+                        <p className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+                            정사영상(COG)이 없어 내보내기가 불가합니다.
+                        </p>
+                    )}
+
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleClip}
+                            disabled={isClipping || !hasOrtho}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                            <Download size={13} />
+                            {isClipping ? '클립 중...' : `클립 (${selectedSheets.length})`}
+                        </button>
+                        <button
+                            onClick={handleMerge}
+                            disabled={isMerging || !hasOrtho}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                            <Layers size={13} />
+                            {isMerging ? '머지 중...' : `머지 (${selectedSheets.length})`}
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/**
  * Footprint Map Component
  * Shows real map with project footprints as colored rectangles
  */
@@ -765,7 +1034,13 @@ export function FootprintMap({
     selectedProjectId = null,
     onRegionClick,
     activeRegionName = 'ALL',
-    resetKey = 0
+    resetKey = 0,
+    sheetState = null,
+    sheetProjectBounds = null,
+    onSheetToggle = null,
+    onSheetsLoaded = null,
+    onSheetStateChange = null,
+    selectedProject = null,
 }) {
     const [highlightPulse, setHighlightPulse] = useState(false);
     const blinkCountRef = useRef(0);
@@ -881,6 +1156,14 @@ export function FootprintMap({
         ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
 
+    // Stabilize bounds reference to prevent TiTilerOrthoLayer useEffect re-fires
+    // on every periodic refresh (projects re-fetch → footprints recompute → new bounds array)
+    const cogBoundsKey = selectedCogProject ? JSON.stringify(selectedCogProject.bounds) : null;
+    const stableCogBounds = useMemo(
+        () => selectedCogProject?.bounds || null,
+        [cogBoundsKey]
+    );
+
     useEffect(() => {
         if (!showFootprints) {
             setHoveredProjectId(null);
@@ -917,10 +1200,32 @@ export function FootprintMap({
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${isFlexHeight ? 'flex flex-col h-full' : ''}`}>
             <FootprintMapHeader
-                showRegions={showRegions} setShowRegions={setShowRegions}
-                showFootprints={showFootprints} setShowFootprints={setShowFootprints}
+                showRegions={showRegions}
+                showFootprints={showFootprints}
+                onFootprintToggle={() => {
+                    const willShow = !showFootprints;
+                    setShowFootprints(willShow);
+                    if (willShow && onSheetStateChange) {
+                        onSheetStateChange({ ...sheetState, visible: false });
+                    }
+                }}
                 selectedCogProject={selectedCogProject}
                 cogLoadStatus={cogLoadStatus} cogError={cogError}
+                sheetState={sheetState}
+                onRegionToggle={() => {
+                    const willShow = !showRegions;
+                    setShowRegions(willShow);
+                    if (willShow && onSheetStateChange) {
+                        onSheetStateChange({ ...sheetState, visible: false });
+                    }
+                }}
+                onSheetToggle={() => {
+                    if (onSheetStateChange) {
+                        const willShow = !sheetState?.visible;
+                        onSheetStateChange({ ...sheetState, visible: willShow });
+                        if (willShow) setShowFootprints(false);
+                    }
+                }}
             />
 
             <div className={`${isFlexHeight ? 'flex-1' : ''} ${hoveredProjectId ? 'project-hovered' : ''}`} style={{ ...(isFlexHeight ? { minHeight: '300px' } : containerStyle), isolation: 'isolate', position: 'relative', zIndex: 0, overflow: 'hidden' }}>
@@ -975,14 +1280,14 @@ export function FootprintMap({
                             opacity={cogOpacity}
                             onLoadComplete={handleCogLoadComplete}
                             onLoadError={handleCogLoadError}
-                            projectBounds={selectedCogProject.bounds}
+                            projectBounds={stableCogBounds}
                             showBasemap={showBasemap}
                         />
                     )}
                     {selectedCogProject && !selectedCogProject.project.ortho_path && selectedCogProject.project.ortho_thumbnail_path && (
                         <ImageOverlay
                             url={`/storage/${selectedCogProject.project.ortho_thumbnail_path}`}
-                            bounds={selectedCogProject.bounds}
+                            bounds={stableCogBounds}
                             opacity={cogOpacity}
                         />
                     )}
@@ -1078,6 +1383,20 @@ export function FootprintMap({
                         onProjectClick={onProjectClick}
                         onClose={() => setOverlapProjects(null)}
                     />
+
+                    {/* 도엽 격자 오버레이 - 프로젝트 없어도 뷰포트 기준으로 표시 */}
+                    {sheetState?.visible && (
+                        <SheetGridOverlay
+                            visible={true}
+                            scale={sheetState.scale || 5000}
+                            projectBounds={sheetProjectBounds}
+                            selectedSheets={sheetState.selectedSheets || []}
+                            onToggleSheet={onSheetToggle}
+                            onSheetsLoaded={onSheetsLoaded}
+                            pane={SHEET_PANE}
+                        />
+                    )}
+                    {sheetState?.searchResult?.found && <SheetSearchFitBounds searchResult={sheetState.searchResult} />}
                 </MapContainer>
 
                 {/* 배경지도 토글 버튼 */}
@@ -1088,6 +1407,15 @@ export function FootprintMap({
                 >
                     <MapIcon size={40} />
                 </button>
+
+                {/* 도엽 컨트롤 플로팅 패널 */}
+                {sheetState?.visible && (
+                    <SheetControlPanel
+                        sheetState={sheetState}
+                        onSheetStateChange={onSheetStateChange}
+                        selectedProject={selectedProject}
+                    />
+                )}
             </div >
         </div >
     );

@@ -517,6 +517,46 @@ class ApiClient {
         return this.request(`/projects/stats/storage${query}`);
     }
 
+    // --- 도엽 (Map Sheets) ---
+    async getSheetScales() {
+        return this.request('/sheets/scales');
+    }
+
+    async getSheets(scale, bounds) {
+        const b = `${bounds.minlat},${bounds.minlon},${bounds.maxlat},${bounds.maxlon}`;
+        return this.request(`/sheets?scale=${scale}&bounds=${encodeURIComponent(b)}`);
+    }
+
+    async searchSheet(mapid) {
+        return this.request(`/sheets/search?mapid=${encodeURIComponent(mapid)}`);
+    }
+
+    async clipExport(projectIds, sheetIds, options = {}) {
+        return this.request('/download/clip', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_ids: projectIds,
+                sheet_ids: sheetIds,
+                scale: options.scale || 5000,
+                crs: options.crs || 'EPSG:5186',
+                gsd: options.gsd ? parseFloat(options.gsd) : null,
+            }),
+        });
+    }
+
+    async mergeExport(projectIds, sheetId, options = {}) {
+        return this.request('/download/merge', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_ids: projectIds,
+                sheet_id: sheetId,
+                scale: options.scale || 5000,
+                crs: options.crs || 'EPSG:5186',
+                gsd: options.gsd ? parseFloat(options.gsd) : null,
+            }),
+        });
+    }
+
     // --- COG/Orthoimage ---
     async getCogUrl(projectId) {
         return this.request(`/download/projects/${projectId}/cog-url`);
