@@ -231,6 +231,7 @@ def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) ->
         "ortho_size": project.ortho_size,
         "area": project.area,
         "ortho_path": project.ortho_path,
+        "ortho_thumbnail_path": project.ortho_thumbnail_path,
         "bounds": serialize_geometry(bounds_wkt if bounds_wkt is not None else project.bounds),
     }
     d.update(extra)
@@ -796,6 +797,128 @@ async def delete_source_images(
         )
 
     return {"message": "원본 이미지 삭제가 시작되었습니다.", "project_id": str(project_id)}
+
+
+@router.delete("/{project_id}/ortho/cog", status_code=status.HTTP_200_OK)
+async def delete_ortho_cog(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    프로젝트의 정사영상(COG) 파일을 삭제합니다.
+    삭제 후 정사영상을 다시 보려면 재처리가 필요합니다.
+    프로젝트 메타데이터(bounds, area, GSD 등)는 보존됩니다.
+    """
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = scoped_project
+
+    if not project.ortho_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="정사영상(COG)이 존재하지 않는 프로젝트입니다.",
+        )
+
+    ortho_path = project.ortho_path
+    ortho_size = project.ortho_size or 0
+
+    from app.services.storage import get_storage
+    storage = get_storage()
+
+    # 1. COG 삭제 전 썸네일 생성
+    thumbnail_storage_key = None
+    try:
+        thumbnail_storage_key = await _generate_ortho_thumbnail(
+            storage, ortho_path, str(project_id)
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Thumbnail generation failed: {e}")
+
+    # 2. 스토리지에서 COG 파일 삭제
+    try:
+        if storage.object_exists(ortho_path):
+            storage.delete_object(ortho_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"COG 파일 삭제 실패: {str(e)}",
+        )
+
+    # 3. DB 업데이트
+    project.ortho_path = None
+    project.ortho_size = None
+    if thumbnail_storage_key:
+        project.ortho_thumbnail_path = thumbnail_storage_key
+    await db.commit()
+
+    return {
+        "message": "정사영상(COG)이 삭제되었습니다.",
+        "project_id": str(project_id),
+        "freed_bytes": ortho_size,
+    }
+
+
+async def _generate_ortho_thumbnail(storage, ortho_path: str, project_id: str) -> Optional[str]:
+    """COG에서 저해상도 썸네일 PNG를 생성하여 스토리지에 저장."""
+    import tempfile
+    import subprocess
+
+    # COG 파일의 로컬 경로 확인
+    local_path = storage.get_local_path(ortho_path)
+    temp_cog = None
+
+    if not local_path or not os.path.exists(local_path):
+        # MinIO 등 원격 스토리지인 경우 임시 다운로드
+        if not storage.object_exists(ortho_path):
+            return None
+        temp_cog = tempfile.NamedTemporaryFile(delete=False, suffix='.tif')
+        temp_cog.close()
+        storage.download_file(ortho_path, temp_cog.name)
+        local_path = temp_cog.name
+
+    try:
+        # GDAL로 저해상도 PNG 생성 (최대 1024px 너비)
+        thumb_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        thumb_file.close()
+
+        result = subprocess.run(
+            ['gdal_translate', '-of', 'PNG', '-outsize', '1024', '0',
+             '-co', 'ZLEVEL=6', local_path, thumb_file.name],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode != 0:
+            logger.warning(f"gdal_translate failed: {result.stderr}")
+            return None
+
+        # 파일 퍼미션 수정 (nginx가 읽을 수 있도록)
+        os.chmod(thumb_file.name, 0o644)
+
+        # 스토리지에 업로드 (projects/ 하위에 저장하여 nginx 직접 서빙)
+        thumbnail_key = f"projects/{project_id}/ortho/ortho_thumb.png"
+        storage.upload_file(thumb_file.name, thumbnail_key, "image/png")
+
+        # 업로드된 파일도 퍼미션 보장
+        dest_path = storage.get_local_path(thumbnail_key)
+        if dest_path and os.path.exists(dest_path):
+            os.chmod(dest_path, 0o644)
+
+        # 임시 파일 정리
+        os.unlink(thumb_file.name)
+
+        return thumbnail_key
+    finally:
+        if temp_cog:
+            os.unlink(temp_cog.name)
 
 
 def _parse_eo_config(config_json: str) -> EOConfig:

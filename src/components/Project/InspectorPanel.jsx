@@ -6,7 +6,7 @@ import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 export default function InspectorPanel({ project, image, qcData, onQcUpdate, onCloseImage, onExport, onProjectUpdate }) {
     const [isImageLoaded, setIsImageLoaded] = useState(false);
     const [isCancelling, setIsCancelling] = useState(false);
-    const [isDeletingSource, setIsDeletingSource] = useState(false);
+    const [isDeletingCog, setIsDeletingCog] = useState(false);
 
     // Real-time progress tracking
     const { progress: procProgress, status: procStatus, message: procMessage } = useProcessingProgress(
@@ -33,24 +33,23 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
         }
     };
 
-    const handleDeleteSource = async () => {
+    const handleDeleteCog = async () => {
         if (!window.confirm(
-            '원본 이미지를 삭제하시겠습니까?\n\n' +
-            '⚠️ 삭제 후에는 재처리가 불가능합니다.\n' +
-            '정사영상 결과물은 유지됩니다.'
+            'COG 정사영상을 삭제하시겠습니까?\n\n' +
+            '⚠️ 이 작업은 되돌릴 수 없습니다.\n' +
+            '저해상도 썸네일은 보존됩니다.'
         )) return;
 
-        setIsDeletingSource(true);
+        setIsDeletingCog(true);
         try {
-            await api.deleteSourceImages(project.id);
-            // Optimistic UI update
+            await api.deleteOrthoCog(project.id);
             if (onProjectUpdate) {
-                onProjectUpdate({ ...project, source_deleted: true });
+                onProjectUpdate({ ...project, ortho_path: null, ortho_size: null });
             }
         } catch (err) {
-            alert('원본 이미지 삭제 실패: ' + err.message);
+            alert('COG 삭제 실패: ' + err.message);
         } finally {
-            setIsDeletingSource(false);
+            setIsDeletingCog(false);
         }
     };
 
@@ -65,34 +64,6 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                     <div className="space-y-4 text-sm">
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">권역</span><span className="font-medium">{project.region}</span></div>
                         <div className="flex justify-between border-b pb-2"><span className="text-slate-500">상태</span><span className={`font-bold ${project.status === '완료' || project.status === 'completed' ? 'text-emerald-600' : project.status === '오류' || project.status === 'error' ? 'text-red-600' : 'text-blue-600'}`}>{project.status === 'completed' ? '완료' : project.status}</span></div>
-                        <div className="flex justify-between border-b pb-2"><span className="text-slate-500">원본사진</span><span className="font-medium">{project.image_count || project.imageCount || 0}장</span></div>
-                        {project.source_size && (
-                            <div className="flex justify-between border-b pb-2">
-                                <span className="text-slate-500">원본 총 용량</span>
-                                <span className="font-medium">
-                                    {project.source_deleted
-                                        ? <span className="text-slate-400 line-through">{(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB</span>
-                                        : `${(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB`
-                                    }
-                                </span>
-                            </div>
-                        )}
-                        {(project.status === '완료' || project.status === 'completed') && project.source_size && !project.source_deleted && (
-                            <button
-                                onClick={handleDeleteSource}
-                                disabled={isDeletingSource}
-                                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                                <Trash2 size={14} />
-                                {isDeletingSource ? '삭제 중...' : '원본 이미지 삭제 (저장공간 확보)'}
-                            </button>
-                        )}
-                        {project.source_deleted && (
-                            <div className="flex items-center gap-2 py-2 px-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg">
-                                <CheckCircle2 size={14} />
-                                삭제됨 ({project.source_size ? `${(project.source_size / (1024 * 1024 * 1024)).toFixed(2)} GB 확보` : '완료'})
-                            </div>
-                        )}
                         {project.ortho_size && (
                             <div className="flex justify-between border-b pb-2">
                                 <span className="text-slate-500">정사영상 용량</span>
@@ -105,7 +76,35 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                                 <span className="font-medium text-blue-600 font-bold">{project.area.toFixed(3)} km²</span>
                             </div>
                         )}
+                        {project.result_gsd && (
+                            <div className="flex justify-between border-b pb-2">
+                                <span className="text-slate-500">GSD</span>
+                                <span className="font-medium">{project.result_gsd.toFixed(2)} cm/px</span>
+                            </div>
+                        )}
+                        {project.process_mode && (
+                            <div className="flex justify-between border-b pb-2">
+                                <span className="text-slate-500">처리 모드</span>
+                                <span className="font-medium">{project.process_mode}</span>
+                            </div>
+                        )}
                         {project.startDate && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">촬영일</span><span className="font-medium">{project.startDate}</span></div>}
+                        {(project.status === '완료' || project.status === 'completed') && project.ortho_path && (
+                            <button
+                                onClick={handleDeleteCog}
+                                disabled={isDeletingCog}
+                                className="w-full flex items-center justify-center gap-2 py-2 text-xs text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors disabled:opacity-50"
+                            >
+                                <Trash2 size={14} />
+                                {isDeletingCog ? '삭제 중...' : 'COG 정사영상 삭제 (저장공간 확보)'}
+                            </button>
+                        )}
+                        {(project.status === '완료' || project.status === 'completed') && !project.ortho_path && project.ortho_thumbnail_path && (
+                            <div className="flex items-center gap-2 py-2 px-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg">
+                                <CheckCircle2 size={14} />
+                                COG 삭제됨 {project.ortho_size ? `(${(project.ortho_size / (1024 * 1024 * 1024)).toFixed(2)} GB 확보)` : ''}
+                            </div>
+                        )}
                     </div>
                 </div>
                 <div className="flex-1 p-6 bg-slate-50 overflow-y-auto">

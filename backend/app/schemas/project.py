@@ -44,6 +44,7 @@ class ProjectResponse(ProjectBase):
     ortho_size: Optional[int] = None
     area: Optional[float] = None
     ortho_path: Optional[str] = None
+    ortho_thumbnail_path: Optional[str] = None
     bounds: Optional[List[List[float]]] = None  # List of [lat, lng] or [[lat, lng], ...]
     # 업로드 상태 통계
     upload_completed_count: int = 0  # 업로드 완료된 이미지 수

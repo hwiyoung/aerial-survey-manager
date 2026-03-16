@@ -333,7 +333,7 @@ export default function DashboardView({
     const [layoutMode, setLayoutMode] = useState('auto'); // 'wide', 'narrow', or 'auto'
 
     // Map height for narrow layout (draggable)
-    const [mapHeight, setMapHeight] = useState(600);
+    const [mapHeight, setMapHeight] = useState(1000);
     const isDragging = useRef(false);
     const startY = useRef(0);
     const startHeight = useRef(350);
@@ -504,7 +504,7 @@ export default function DashboardView({
 
             {/* WIDE LAYOUT: Map (left) + Stats (right) side by side */}
             {isWideLayout ? (
-                <div className="grid grid-cols-2 gap-6" style={{ height: 'calc(100vh - 180px)' }}>
+                <div className="grid grid-cols-2 gap-6" style={{ height: 'calc(100vh - 140px)' }}>
                     {/* Left Column - Footprint Map (full height) */}
                     <div className="flex flex-col">
                         <FootprintMap

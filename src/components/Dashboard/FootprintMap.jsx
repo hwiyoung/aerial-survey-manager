@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
-import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON } from 'react-leaflet';
+import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON, ImageOverlay } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../api/client';
@@ -967,8 +967,8 @@ export function FootprintMap({
                     {allPoints.length > 0 && !highlightFootprint && !selectedFootprint && !activeRegionName && <MapBoundsFitter bounds={allPoints} />}
                     {highlightFootprint && <HighlightFlyTo footprint={highlightFootprint} />}
 
-                    {/* Orthophoto Tile Layer - TiTiler-based for efficient streaming */}
-                    {selectedCogProject && (
+                    {/* Orthophoto Tile Layer - TiTiler or Thumbnail fallback */}
+                    {selectedCogProject && selectedCogProject.project.ortho_path && (
                         <TiTilerOrthoLayer
                             projectId={selectedCogProject.id}
                             visible={true}
@@ -977,6 +977,13 @@ export function FootprintMap({
                             onLoadError={handleCogLoadError}
                             projectBounds={selectedCogProject.bounds}
                             showBasemap={showBasemap}
+                        />
+                    )}
+                    {selectedCogProject && !selectedCogProject.project.ortho_path && selectedCogProject.project.ortho_thumbnail_path && (
+                        <ImageOverlay
+                            url={`/storage/${selectedCogProject.project.ortho_thumbnail_path}`}
+                            bounds={selectedCogProject.bounds}
+                            opacity={cogOpacity}
                         />
                     )}
 

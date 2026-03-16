@@ -47,6 +47,7 @@ class Project(Base):
     source_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false") # source images deleted
     ortho_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True) # size of generated ortho
     ortho_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ortho_thumbnail_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     
     # Relationships
     owner: Mapped["User"] = relationship("User", back_populates="owned_projects")

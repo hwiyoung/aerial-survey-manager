@@ -1376,7 +1376,7 @@ function Dashboard() {
             projects={projects}
             selectedProjectId={selectedProjectId}
             checkedProjectIds={checkedProjectIds}
-            onSelectProject={(id) => { setSelectedProjectId(id); setHighlightProjectId(id); setSelectedImageId(null); setShowInspector(false); }}
+            onSelectProject={(id) => { setSelectedProjectId(id); setHighlightProjectId(id); setSelectedImageId(null); setShowInspector(true); }}
             onOpenInspector={(id) => { setSelectedProjectId(id); setShowInspector(true); }}
             onToggleCheck={handleToggleCheck}
             onSelectMultiple={handleSelectMultiple}
@@ -1620,6 +1620,7 @@ function Dashboard() {
         onClose={() => setExportModalState({ ...exportModalState, isOpen: false })}
         targetProjectIds={exportModalState.projectIds}
         allProjects={projects}
+        onProjectsChanged={refreshProjects}
       />
 
       {/* Group Create/Edit Modal */}

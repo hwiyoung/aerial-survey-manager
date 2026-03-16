@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap, ImageOverlay } from 'react-leaflet';
 import L from 'leaflet';
 import { Loader2, Camera, Layers, X, Map as MapIcon, Crosshair } from 'lucide-react';
 import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
@@ -59,10 +59,12 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
     }, []);
 
     useEffect(() => {
-        if (project?.status === '완료' || project?.status === 'completed') {
+        if ((project?.status === '완료' || project?.status === 'completed') && project?.ortho_path) {
             setIsLoading(true);
+        } else {
+            setIsLoading(false);
         }
-    }, [project?.id]);
+    }, [project?.id, project?.ortho_path]);
 
     const images = useMemo(() => {
         if (!project?.images) return [];
@@ -107,7 +109,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                     />
                 )}
 
-                {(project?.status === '완료' || project?.status === 'completed') && (
+                {(project?.status === '완료' || project?.status === 'completed') && project?.ortho_path && (
                     <TiTilerOrthoLayer
                         projectId={project.id}
                         visible={true}
@@ -115,6 +117,16 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         onLoadComplete={() => setIsLoading(false)}
                         onLoadError={() => setIsLoading(false)}
                         showBasemap={showBasemap}
+                    />
+                )}
+                {(project?.status === '완료' || project?.status === 'completed') && !project?.ortho_path && project?.ortho_thumbnail_path && project?.bounds && (
+                    <ImageOverlay
+                        url={`/storage/${project.ortho_thumbnail_path}`}
+                        bounds={project.bounds.length >= 2 ? [
+                            [Math.min(...project.bounds.map(p => p[0])), Math.min(...project.bounds.map(p => p[1]))],
+                            [Math.max(...project.bounds.map(p => p[0])), Math.max(...project.bounds.map(p => p[1]))]
+                        ] : project.bounds}
+                        opacity={1.0}
                     />
                 )}
 

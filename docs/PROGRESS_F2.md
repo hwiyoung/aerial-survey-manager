@@ -90,9 +90,15 @@ ServerFileBrowser 기반 파일 탐색 UX 개선 3건 + 1건
 - [x] B2. Shift+클릭 시 텍스트 드래그 선택 방지 (select-none)
 - [x] B3. EO 파일 선택을 네이티브 탐색기 대신 ServerFileBrowser로 통일
 - [x] B4. EO FileBrowser 열 때 이미지 선택 경로(sourceDir)로 초기 이동
-- [x] C1~C5. 코드 품질 검토 및 빌드 검증
+- [x] C1. 파일/함수 분리
+- [x] C2. 코드 통합/재사용 검토
+- [x] C3. 사이드이펙트 확인
+- [x] C4. 불필요 코드 정리
+- [x] C5. 코드 품질 검토
 - [x] 🚪 변경사항 보고
-- [x] D1~D3. UX/통합/배포 검토
+- [x] D1. UX 관점 검토
+- [x] D2. 전체 변경사항 통합 검토
+- [x] D3. 배포 가능성 판단
 - [x] 🚪 최종 승인
 - [x] D4. 커밋 (82ef6de)
 
