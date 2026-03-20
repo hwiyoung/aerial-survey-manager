@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 # --- Auth Schemas ---
@@ -21,13 +21,13 @@ class TokenRefreshRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     """Login request schema."""
-    email: EmailStr
+    email: str  # username or email
     password: str
 
 
 class RegisterRequest(BaseModel):
     """User registration request schema."""
-    email: EmailStr
+    email: str
     password: str = Field(min_length=8)
     name: str = Field(min_length=1, max_length=100)
     organization_id: Optional[UUID] = None
@@ -36,7 +36,7 @@ class RegisterRequest(BaseModel):
 # --- User Schemas ---
 class UserBase(BaseModel):
     """Base user schema."""
-    email: EmailStr
+    email: str
     name: Optional[str] = None
     role: str = "user"
 
@@ -86,7 +86,7 @@ class UserAdminUpdate(UserUpdate):
 
 class UserInviteRequest(BaseModel):
     """Request payload for inviting existing/new users."""
-    email: EmailStr
+    email: str
     name: Optional[str] = None
     role: Optional[str] = None
     organization_id: Optional[UUID] = None

@@ -82,297 +82,92 @@ docker tag ${PROD_PROJECT}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
 echo ""
 echo "4. 배포용 docker-compose.yml 생성 중..."
 
-# 배포용 docker-compose.yml 생성 (build 대신 image 사용)
-cat > "$RELEASE_DIR/docker-compose.yml" << EOF
-# ============================================================
-# Aerial Survey Manager - 배포용 Docker Compose
-# Version: ${VERSION}
-# 주의: 이 파일은 빌드된 이미지를 사용합니다.
-#       먼저 ./load-images.sh를 실행하세요.
-# ============================================================
+# docker-compose.prod.yml을 기반으로 build → image 변환
+# 더 이상 heredoc으로 별도 관리하지 않음 — prod.yml이 유일한 소스
+python3 << PYEOF
+import re
 
-x-logging: &default-logging
-  driver: "json-file"
-  options:
-    max-size: "10m"
-    max-file: "3"
+with open('docker-compose.prod.yml', 'r') as f:
+    content = f.read()
 
-x-logging-worker: &worker-logging
-  driver: "json-file"
-  options:
-    max-size: "50m"
-    max-file: "5"
+# 서비스별 이미지 매핑
+VERSION = '${VERSION}'
+PREFIX = '${IMAGE_PREFIX}'
+service_images = {
+    'frontend': f'{PREFIX}:frontend-{VERSION}',
+    'api': f'{PREFIX}:api-{VERSION}',
+    'worker-engine': f'{PREFIX}:worker-engine-{VERSION}',
+    'celery-beat': f'{PREFIX}:celery-beat-{VERSION}',
+    'celery-worker-thumbnail': f'{PREFIX}:celery-worker-{VERSION}',
+    'celery-worker': f'{PREFIX}:celery-worker-{VERSION}',
+    'flower': f'{PREFIX}:flower-{VERSION}',
+}
 
-services:
-  frontend:
-    image: ${IMAGE_PREFIX}:frontend-${VERSION}
-    pull_policy: never
-    restart: always
-    depends_on:
-      - api
-    networks:
-      - aerial-network
-    logging: *default-logging
+lines = content.split('\n')
+output = []
+skip_build = False
+build_indent = 0
+current_service = None
+i = 0
 
-  api:
-    image: ${IMAGE_PREFIX}:api-${VERSION}
-    pull_policy: never
-    restart: always
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - STORAGE_BACKEND=\${STORAGE_BACKEND:-local}
-      - LOCAL_STORAGE_PATH=/data/storage
-      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=aerial-survey
-      - JWT_SECRET_KEY=\${JWT_SECRET_KEY:-change-this-in-production}
-      - EXTERNAL_ENGINE_URL=\${EXTERNAL_ENGINE_URL:-}
-      - EXTERNAL_ENGINE_API_KEY=\${EXTERNAL_ENGINE_API_KEY:-}
-      - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
-    volumes:
-      - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - \${MINIO_DATA_PATH:-./data}:/data/minio:ro
-      - \${TILES_PATH:-/data/tiles}:/data/tiles:ro
-      # 권역 GeoJSON 데이터 (초기 시드용)
-      - ./data/regions:/app/data:ro
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - aerial-network
-    logging: *default-logging
+while i < len(lines):
+    line = lines[i]
+    stripped = line.strip()
 
-  worker-engine:
-    container_name: aerial-worker-engine
-    image: ${IMAGE_PREFIX}:worker-engine-${VERSION}
-    pull_policy: never
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-engine@%h
-    restart: always
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_BACKEND=\${STORAGE_BACKEND:-local}
-      - LOCAL_STORAGE_PATH=/data/storage
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=aerial-survey
-      - METASHAPE_LICENSE_KEY=\${ENGINE_LICENSE_KEY:-}
-      - PROJECT_ID=\${PROJECT_ID:-unknown}
-      - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
-      - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
-    volumes:
-      - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - engine-license:/var/tmp/agisoft/licensing
-      # 처리 엔진 스크립트는 Docker 이미지 내부에 포함됨 (Python 버전 호환성)
-    depends_on:
-      - redis
-      - db
-    networks:
-      aerial-network:
-        aliases:
-          - worker-engine
-    mac_address: "02:42:AC:17:00:64"
-    logging: *worker-logging
+    # 서비스 이름 감지 (2칸 들여쓰기)
+    service_match = re.match(r'^  (\S[\w-]+):', line)
+    if service_match and not line.startswith('    '):
+        current_service = service_match.group(1)
 
-  celery-beat:
-    image: ${IMAGE_PREFIX}:celery-beat-${VERSION}
-    pull_policy: never
-    command: celery -A app.workers.tasks beat --loglevel=info
-    restart: always
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
-    depends_on:
-      - redis
-    networks:
-      - aerial-network
-    logging: *default-logging
+    # build: 블록 시작 감지
+    if stripped.startswith('build:') and current_service in service_images:
+        indent = len(line) - len(line.lstrip())
+        img = service_images[current_service]
+        output.append(f'{" " * indent}image: {img}')
+        output.append(f'{" " * indent}pull_policy: never')
 
-  celery-worker:
-    image: ${IMAGE_PREFIX}:celery-worker-${VERSION}
-    pull_policy: never
-    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2
-    restart: always
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:\${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - STORAGE_BACKEND=\${STORAGE_BACKEND:-local}
-      - LOCAL_STORAGE_PATH=/data/storage
-      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=\${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
-    volumes:
-      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - \${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-    depends_on:
-      - redis
-    networks:
-      - aerial-network
-    logging: *default-logging
+        if stripped == 'build:':
+            # 멀티라인 build 블록 — 하위 들여쓰기 전부 스킵
+            i += 1
+            while i < len(lines):
+                next_stripped = lines[i].strip()
+                next_indent = len(lines[i]) - len(lines[i].lstrip())
+                if next_stripped == '' or next_indent > indent:
+                    i += 1
+                else:
+                    break
+            continue
+        else:
+            # 싱글라인 build: ./backend 등
+            i += 1
+            continue
 
-  db:
-    image: postgis/postgis:15-3.3
-    restart: always
-    environment:
-      - POSTGRES_DB=aerial_survey
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=\${POSTGRES_PASSWORD:-postgres}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - aerial-network
-    logging: *default-logging
+    # 데이터 경로: ./data → ./data/regions (배포 패키지 구조에 맞게)
+    if '- ./data:/app/data:ro' in line or '- ./data/regions:/app/data:ro' in line:
+        indent = len(line) - len(line.lstrip())
+        output.append(f'{" " * indent}- ./data/regions:/app/data:ro')
+        i += 1
+        continue
 
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes
-    restart: always
-    volumes:
-      - redis_data:/data
-    networks:
-      - aerial-network
-    logging: *default-logging
+    output.append(line)
+    i += 1
 
-  minio:
-    image: minio/minio:latest
-    profiles: ["minio"]
-    command: server /data --console-address ":9001"
-    restart: always
-    environment:
-      - MINIO_ROOT_USER=\${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_ROOT_PASSWORD=\${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_API_CORS_ALLOW_ORIGIN=*
-    ports:
-      - "127.0.0.1:9003:9001"
-    volumes:
-      - \${MINIO_DATA_PATH:-./data/minio}:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - aerial-network
-    logging: *default-logging
+# 헤더 추가
+header = f'# Aerial Survey Manager - 배포용 (v{VERSION})\n# 이 파일은 docker-compose.prod.yml에서 자동 생성됨\n'
+result = header + '\n'.join(output)
 
-  minio-init:
-    image: minio/mc
-    profiles: ["minio"]
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        mc alias set myminio http://minio:9000 \$\${MINIO_ACCESS_KEY:-minioadmin} \$\${MINIO_SECRET_KEY:-minioadmin}
-        mc mb --ignore-existing myminio/aerial-survey
-        mc anonymous set download myminio/aerial-survey/public
-        mc anonymous set download myminio/aerial-survey/projects
-        echo "MinIO bucket initialized successfully"
-    environment:
-      - MINIO_ACCESS_KEY=\${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=\${MINIO_SECRET_KEY:-minioadmin}
-    networks:
-      - aerial-network
+with open('${RELEASE_DIR}/docker-compose.yml', 'w') as f:
+    f.write(result)
 
-  titiler:
-    image: ghcr.io/developmentseed/titiler:0.18.0
-    restart: always
-    environment:
-      - TITILER_API_CORS_ORIGINS=*
-      - AWS_ACCESS_KEY_ID=\${MINIO_ACCESS_KEY:-minioadmin}
-      - AWS_SECRET_ACCESS_KEY=\${MINIO_SECRET_KEY:-minioadmin}
-      - AWS_S3_ENDPOINT=minio:9000
-      - AWS_VIRTUAL_HOSTING=FALSE
-      - AWS_HTTPS=NO
-      - AWS_NO_SIGN_REQUEST=NO
-    volumes:
-      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage:ro
-    networks:
-      - aerial-network
-    logging: *default-logging
-
-  nginx:
-    image: nginx:alpine
-    restart: always
-    ports:
-      - "80:80"                          # presigned URL용 (MinIO)
-      - "\${WEB_PORT:-8081}:80"          # 웹 접속용
-      - "\${HTTPS_PORT:-443}:443"        # HTTPS용
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro
-      # 오프라인 타일맵
-      - \${TILES_PATH:-./data/tiles}:/data/tiles:ro
-      # 로컬 스토리지
-      - \${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage:ro
-    depends_on:
-      - frontend
-      - api
-      - titiler
-    networks:
-      - aerial-network
-    logging: *default-logging
-
-  flower:
-    image: ${IMAGE_PREFIX}:flower-${VERSION}
-    pull_policy: never
-    command: celery -A app.workers.tasks flower --port=5555
-    restart: always
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-    ports:
-      - "127.0.0.1:5555:5555"
-    depends_on:
-      - redis
-    networks:
-      - aerial-network
-    logging: *default-logging
-
-networks:
-  aerial-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.23.0.0/16
-
-volumes:
-  pgdata:
-  redis_data:
-  engine-license:
-EOF
+print('  docker-compose.prod.yml → docker-compose.yml 변환 완료')
+PYEOF
 
 echo ""
 echo "5. 기타 배포 파일 복사 중..."
 
 # 필수 파일 복사
 cp .env.production.example "$RELEASE_DIR/.env.example"
-cp nginx.prod.conf "$RELEASE_DIR/nginx.conf"
+cp nginx.prod.conf "$RELEASE_DIR/nginx.prod.conf"
 cp init.sql "$RELEASE_DIR/"
 
 # scripts 디렉토리 복사
@@ -397,13 +192,24 @@ echo "  - 프로덕션 환경에서는 실제 인증서로 교체하세요."
 # data/regions 디렉토리 생성 (시드 데이터용)
 mkdir -p "$RELEASE_DIR/data/regions"
 
-# 권역 GeoJSON 데이터 복사 (초기 시드용)
+# 권역 GeoJSON 데이터 복사 (초기 시드용, 파일명 후보 순서대로 탐색)
 echo "  - 권역 GeoJSON 데이터 복사 중..."
-if [ -f "./data/전국_권역_5K_5179.geojson" ]; then
-    cp "./data/전국_권역_5K_5179.geojson" "$RELEASE_DIR/data/regions/"
-    echo "    ✓ 전국_권역_5K_5179.geojson 복사 완료"
+REGION_SRC=""
+for candidate in \
+    "./data/전국_권역_5K_5179.geojson" \
+    "./data/TN_MAPINDX_5K_5179.geojson" \
+    "./data/regions.geojson"; do
+    if [ -f "$candidate" ]; then
+        REGION_SRC="$candidate"
+        break
+    fi
+done
+
+if [ -n "$REGION_SRC" ]; then
+    cp "$REGION_SRC" "$RELEASE_DIR/data/regions/regions.geojson"
+    echo "    ✓ $(basename $REGION_SRC) → regions.geojson 복사 완료"
 else
-    echo "    ⚠ 권역 GeoJSON 파일을 찾을 수 없습니다."
+    echo "    ⚠ 권역 GeoJSON 파일을 찾을 수 없습니다. (data/*.geojson 없음)"
 fi
 
 # 카메라 모델 데이터 복사 (초기 시드용)
@@ -412,7 +218,21 @@ if [ -f "./data/io.csv" ]; then
     cp "./data/io.csv" "$RELEASE_DIR/data/regions/"
     echo "    ✓ io.csv 복사 완료"
 else
-    echo "    ⚠ io.csv 파일을 찾을 수 없습니다."
+    echo "    ⚠ io.csv 파일을 찾을 수 없습니다. data/io.csv 를 확인하세요."
+fi
+
+# 도엽(map sheet) GeoJSON 데이터 복사
+echo "  - 도엽 GeoJSON 데이터 복사 중..."
+SHEET_COUNT=0
+for f in ./data/TN_MAPINDX_*K_5179.geojson; do
+    if [ -f "$f" ]; then
+        cp "$f" "$RELEASE_DIR/data/regions/"
+        echo "    ✓ $(basename $f) 복사 완료"
+        SHEET_COUNT=$((SHEET_COUNT + 1))
+    fi
+done
+if [ "$SHEET_COUNT" -eq 0 ]; then
+    echo "    ⚠ 도엽 GeoJSON 파일을 찾을 수 없습니다."
 fi
 
 # 처리 엔진 스크립트는 Docker 이미지 내부에 포함됨

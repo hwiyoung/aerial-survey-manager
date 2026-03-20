@@ -4,6 +4,79 @@ import {
     ChevronRight, ChevronDown, MoreHorizontal, Edit2, Trash2,
     Play, Download, FileImage, Eye, Loader2
 } from 'lucide-react';
+import api from '../../api/client';
+
+// Export Raster는 COG 변환에 합쳐서 표시 (내부 동작은 별개이나 UI에서는 하나로)
+const DISPLAY_STEPS = [
+    { key: 'Align Photos',      label: '이미지 정렬' },
+    { key: 'Build Depth Maps',  label: '깊이 맵' },
+    { key: 'Build DEM',         label: 'DEM 생성' },
+    { key: 'Build Orthomosaic', label: '정사모자이크' },
+    { key: 'Convert COG',       label: 'COG 변환', mergeKeys: ['Export Raster', 'Convert COG'] },
+];
+
+function mergedProgress(stepStatus, keys) {
+    const values = keys.map(k => stepStatus[k]).filter(v => v !== undefined);
+    if (values.length === 0) return undefined;
+    if (values.some(v => v >= 1000)) return 1000; // 하나라도 에러면 에러
+    if (values.every(v => v >= 99.9)) return 100;  // 모두 완료
+    // 진행 중인 값 중 최대값 반환
+    return Math.max(...values);
+}
+
+function ProcessingSteps({ projectId }) {
+    const [stepStatus, setStepStatus] = useState(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const fetch = () => {
+            api.getProcessingStatus(projectId)
+                .then(data => { if (!cancelled && data?.step_status) setStepStatus(data.step_status); })
+                .catch(() => {});
+        };
+        fetch();
+        const id = setInterval(fetch, 5000);
+        return () => { cancelled = true; clearInterval(id); };
+    }, [projectId]);
+
+    if (!stepStatus || Object.keys(stepStatus).length === 0) return null;
+
+    return (
+        <div className="mt-1.5 space-y-0.5">
+            {DISPLAY_STEPS.map(({ key, label, mergeKeys }) => {
+                const progress = mergeKeys
+                    ? mergedProgress(stepStatus, mergeKeys)
+                    : stepStatus[key];
+                if (progress === undefined) return null;
+                const isDone = progress >= 99.9 && progress < 1000;
+                const isError = progress >= 1000;
+                const isActive = progress > 0 && progress < 99.9 && !isError;
+                return (
+                    <div key={key} className="flex items-center gap-1.5">
+                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            isError ? 'bg-red-400' :
+                            isDone ? 'bg-green-400' :
+                            isActive ? 'bg-blue-400 animate-pulse' :
+                            'bg-slate-200'
+                        }`} />
+                        <span className={`text-[10px] flex-1 ${
+                            isError ? 'text-red-500' :
+                            isDone ? 'text-green-600' :
+                            isActive ? 'text-blue-600 font-medium' :
+                            'text-slate-400'
+                        }`}>{label}</span>
+                        {isActive && (
+                            <span className="text-[9px] text-blue-500">{Math.round(progress)}%</span>
+                        )}
+                        {isDone && (
+                            <span className="text-[9px] text-green-500">✓</span>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
 
 const REGIONS = [
     '수도권북부 권역',
@@ -210,7 +283,7 @@ export function ProjectItem({
                         <span className="text-slate-300">|</span>
                         <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
                         {project.area && <><span className="text-slate-300">|</span><span className="font-bold text-blue-600"> {project.area.toFixed(2)} km²</span></>}
-                        {project.startDate && <><span className="text-slate-300">|</span><span>📅 {project.startDate}</span></>}
+                        {project.completedDate && <><span className="text-slate-300">|</span><span>📅 {project.completedDate}</span></>}
                     </div>
                     <div className="flex-1" />
                     {(() => {
@@ -236,6 +309,7 @@ export function ProjectItem({
                         <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
                             <div className="h-full bg-blue-500 rounded-full transition-all duration-500" style={{ width: `${project.progress || 0}%` }} />
                         </div>
+                        <ProcessingSteps projectId={project.id} />
                     </div>
                 )}
                 {(project.status === '오류' || project.status === 'error') && project.error_message && (

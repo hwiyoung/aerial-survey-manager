@@ -188,6 +188,9 @@ def _cleanup_project_storage(project_id: UUID, original_paths: list[str]) -> Non
         storage = get_storage()
 
         for path in original_paths:
+            # 절대 경로(로컬 임포트)는 외장하드/외부 파일이므로 삭제하지 않음
+            if os.path.isabs(path):
+                continue
             try:
                 storage.delete_recursive(f"{path}/")
                 try:
@@ -231,6 +234,7 @@ def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) ->
         "ortho_size": project.ortho_size,
         "area": project.area,
         "ortho_path": project.ortho_path,
+        "ortho_thumbnail_path": project.ortho_thumbnail_path,
         "bounds": serialize_geometry(bounds_wkt if bounds_wkt is not None else project.bounds),
     }
     d.update(extra)
@@ -339,12 +343,16 @@ async def list_projects(
 
         result_gsd = latest_job.result_gsd if latest_job else None
         process_mode = latest_job.process_mode if latest_job else None
+        processing_started_at = latest_job.started_at if latest_job else None
+        processing_completed_at = latest_job.completed_at if latest_job else None
 
         response = _build_project_response(
             project, bounds_wkt=bounds_wkt, image_count=image_count,
             upload_completed_count=upload_completed_count,
             upload_in_progress=upload_uploading_count > 0,
             result_gsd=result_gsd, process_mode=process_mode,
+            processing_started_at=processing_started_at,
+            processing_completed_at=processing_completed_at,
             **_build_project_access_fields(
                 project,
                 current_user,
@@ -482,10 +490,14 @@ async def get_project(
 
     result_gsd = latest_job.result_gsd if latest_job else None
     process_mode = latest_job.process_mode if latest_job else None
+    processing_started_at = latest_job.started_at if latest_job else None
+    processing_completed_at = latest_job.completed_at if latest_job else None
 
     return _build_project_response(
         project, bounds_wkt=bounds_wkt, image_count=image_count,
         result_gsd=result_gsd, process_mode=process_mode,
+        processing_started_at=processing_started_at,
+        processing_completed_at=processing_completed_at,
         **_build_project_access_fields(
             project,
             current_user,
@@ -584,6 +596,8 @@ async def update_project(
 
     result_gsd = latest_job.result_gsd if latest_job else None
     process_mode = latest_job.process_mode if latest_job else None
+    processing_started_at = latest_job.started_at if latest_job else None
+    processing_completed_at = latest_job.completed_at if latest_job else None
 
     if update_data:
         change_log = {
@@ -610,6 +624,8 @@ async def update_project(
         upload_completed_count=upload_completed_count,
         upload_in_progress=upload_uploading_count > 0,
         result_gsd=result_gsd, process_mode=process_mode,
+        processing_started_at=processing_started_at,
+        processing_completed_at=processing_completed_at,
         **_build_project_access_fields(
             project,
             current_user,
@@ -796,6 +812,128 @@ async def delete_source_images(
         )
 
     return {"message": "원본 이미지 삭제가 시작되었습니다.", "project_id": str(project_id)}
+
+
+@router.delete("/{project_id}/ortho/cog", status_code=status.HTTP_200_OK)
+async def delete_ortho_cog(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    프로젝트의 정사영상(COG) 파일을 삭제합니다.
+    삭제 후 정사영상을 다시 보려면 재처리가 필요합니다.
+    프로젝트 메타데이터(bounds, area, GSD 등)는 보존됩니다.
+    """
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = scoped_project
+
+    if not project.ortho_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="정사영상(COG)이 존재하지 않는 프로젝트입니다.",
+        )
+
+    ortho_path = project.ortho_path
+    ortho_size = project.ortho_size or 0
+
+    from app.services.storage import get_storage
+    storage = get_storage()
+
+    # 1. COG 삭제 전 썸네일 생성
+    thumbnail_storage_key = None
+    try:
+        thumbnail_storage_key = await _generate_ortho_thumbnail(
+            storage, ortho_path, str(project_id)
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Thumbnail generation failed: {e}")
+
+    # 2. 스토리지에서 COG 파일 삭제
+    try:
+        if storage.object_exists(ortho_path):
+            storage.delete_object(ortho_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"COG 파일 삭제 실패: {str(e)}",
+        )
+
+    # 3. DB 업데이트
+    project.ortho_path = None
+    project.ortho_size = None
+    if thumbnail_storage_key:
+        project.ortho_thumbnail_path = thumbnail_storage_key
+    await db.commit()
+
+    return {
+        "message": "정사영상(COG)이 삭제되었습니다.",
+        "project_id": str(project_id),
+        "freed_bytes": ortho_size,
+    }
+
+
+async def _generate_ortho_thumbnail(storage, ortho_path: str, project_id: str) -> Optional[str]:
+    """COG에서 저해상도 썸네일 PNG를 생성하여 스토리지에 저장."""
+    import tempfile
+    import subprocess
+
+    # COG 파일의 로컬 경로 확인
+    local_path = storage.get_local_path(ortho_path)
+    temp_cog = None
+
+    if not local_path or not os.path.exists(local_path):
+        # MinIO 등 원격 스토리지인 경우 임시 다운로드
+        if not storage.object_exists(ortho_path):
+            return None
+        temp_cog = tempfile.NamedTemporaryFile(delete=False, suffix='.tif')
+        temp_cog.close()
+        storage.download_file(ortho_path, temp_cog.name)
+        local_path = temp_cog.name
+
+    try:
+        # GDAL로 썸네일 PNG 생성 (최대 4096px 너비 — COG 삭제 후 가시화용)
+        thumb_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        thumb_file.close()
+
+        result = subprocess.run(
+            ['gdal_translate', '-of', 'PNG', '-outsize', '4096', '0',
+             '-co', 'ZLEVEL=6', local_path, thumb_file.name],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            logger.warning(f"gdal_translate failed: {result.stderr}")
+            return None
+
+        # 파일 퍼미션 수정 (nginx가 읽을 수 있도록)
+        os.chmod(thumb_file.name, 0o644)
+
+        # 스토리지에 업로드 (projects/ 하위에 저장하여 nginx 직접 서빙)
+        thumbnail_key = f"projects/{project_id}/ortho/ortho_thumb.png"
+        storage.upload_file(thumb_file.name, thumbnail_key, "image/png")
+
+        # 업로드된 파일도 퍼미션 보장
+        dest_path = storage.get_local_path(thumbnail_key)
+        if dest_path and os.path.exists(dest_path):
+            os.chmod(dest_path, 0o644)
+
+        # 임시 파일 정리
+        os.unlink(thumb_file.name)
+
+        return thumbnail_key
+    finally:
+        if temp_cog:
+            os.unlink(temp_cog.name)
 
 
 def _parse_eo_config(config_json: str) -> EOConfig:
@@ -1187,24 +1325,22 @@ async def get_storage_stats(
         if not refresh and _storage_cache["data"] and now - _storage_cache["ts"] < 300:
             return _storage_cache["data"]
 
-        # Determine storage directory based on backend
         settings = get_settings()
-        if settings.STORAGE_BACKEND == "local":
-            storage_dir = settings.LOCAL_STORAGE_PATH
-        else:
-            # Scan only the aerial-survey bucket, not the entire MinIO data dir
-            storage_dir = f"/data/minio/{settings.MINIO_BUCKET}"
 
-        # Run du -sb in parallel threads (bind mounts from host)
-        storage_size, processing_size, tiles_size = await asyncio.gather(
-            asyncio.to_thread(_get_dir_size, storage_dir),
-            asyncio.to_thread(_get_dir_size, "/data/processing"),
-            asyncio.to_thread(_get_dir_size, "/data/tiles"),
-        )
+        # 정사영상 총 용량: DB의 ortho_size 합산 (정확하고 빠름)
+        from app.database import async_session
+        async with async_session() as db:
+            result = await db.execute(
+                select(func.coalesce(func.sum(Project.ortho_size), 0))
+            )
+            ortho_total = result.scalar() or 0
+
+        # 배경지도 타일 용량만 du로 스캔
+        tiles_size = await asyncio.to_thread(_get_dir_size, "/data/tiles")
 
         resp = StorageStatsResponse(
-            storage_size=storage_size,
-            processing_size=processing_size,
+            storage_size=ortho_total,
+            processing_size=0,
             tiles_size=tiles_size,
             storage_backend=settings.STORAGE_BACKEND,
         )

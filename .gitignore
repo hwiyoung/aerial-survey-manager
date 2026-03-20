@@ -47,6 +47,7 @@ data/
 *.png
 !src/**/*.png
 !src/**/*.jpg
+!public/**/*.png
 
 # Docker volumes (local)
 pgdata/

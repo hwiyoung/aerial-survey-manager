@@ -82,10 +82,14 @@ services:
       # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
       - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
       - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - ${MINIO_DATA_PATH:-./data}:/data/minio:ro
       - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
       # 권역 GeoJSON 데이터 (초기 시드용)
       - ./data:/app/data:ro
+      # 호스트 파일시스템 탐색용 (이미지 업로드 경로 선택)
+      - /media:/media:ro,rslave
+      - /mnt:/mnt:ro
+      - /run/media:/run/media:ro
+      - /home:/home:ro
     depends_on:
       db:
         condition: service_healthy
@@ -107,8 +111,16 @@ services:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info -n worker-engine@%h
+    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info --concurrency=1 -n worker-engine@%h
     restart: always
+    stop_signal: SIGTERM
+    stop_grace_period: 120s
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-engine@$$HOSTNAME --timeout 20 | grep -q pong || exit 1"]
+      interval: 120s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
     deploy:
       resources:
         reservations:
@@ -127,6 +139,7 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
       - METASHAPE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
@@ -136,7 +149,11 @@ services:
       - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
       - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
       - engine-license:/var/tmp/agisoft/licensing
-      # 처리 엔진 스크립트는 Docker 이미지 내부에 포함됨 (Python 버전 호환성)
+      # 호스트 파일시스템 (이미지 원본 접근)
+      - /media:/media:ro,rslave
+      - /mnt:/mnt:ro
+      - /run/media:/run/media:ro
+      - /home:/home:ro
     depends_on:
       - redis
       - db
@@ -168,27 +185,68 @@ services:
     logging: *default-logging
 
   # ============================================================
-  # Celery Worker (처리 외 모든 태스크: 썸네일, 파일관리, COG삽입 등)
+  # Celery Worker - 썸네일 전용 (처리 중에도 동시 실행)
   # ============================================================
-  celery-worker:
+  celery-worker-thumbnail:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2
+    command: celery -A app.workers.tasks worker -Q thumbnail --loglevel=info --concurrency=1 -n worker-thumbnail@%h
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-thumbnail@$$HOSTNAME --timeout 10 | grep -q pong || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
       - LOCAL_STORAGE_PATH=/data/storage
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
     volumes:
       - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
       - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - /media:/media:ro,rslave
+      - /mnt:/mnt:ro
+      - /run/media:/run/media:ro
+      - /home:/home:ro
+    depends_on:
+      - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Celery Worker (파일관리, COG삽입 등)
+  # ============================================================
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2 -n worker-celery@%h
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-celery@$$HOSTNAME --timeout 10 | grep -q pong || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+      - LOCAL_STORAGE_PATH=/data/storage
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
+    volumes:
+      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
+      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - /media:/media:ro,rslave
+      - /mnt:/mnt:ro
+      - /run/media:/run/media:ro
+      - /home:/home:ro
     depends_on:
       - redis
     networks:

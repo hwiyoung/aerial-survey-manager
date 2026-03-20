@@ -27,40 +27,13 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 settings = get_settings()
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(
-    request: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Register a new user."""
-    # Check if email already exists
-    result = await db.execute(select(User).where(User.email == request.email))
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
-        )
-    
-    # Resolve organization: use provided ID or fall back to first available org
-    org_id = request.organization_id
-    if org_id is None:
-        result = await db.execute(
-            select(Organization.id).order_by(Organization.created_at).limit(1)
-        )
-        org_id = result.scalar_one_or_none()
-
-    # Create new user
-    user = User(
-        email=request.email,
-        password_hash=hash_password(request.password),
-        name=request.name,
-        organization_id=org_id,
+@router.post("/register", status_code=status.HTTP_403_FORBIDDEN)
+async def register():
+    """Registration is disabled. Single-user system."""
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Registration is disabled.",
     )
-    db.add(user)
-    await db.flush()
-    await db.refresh(user)
-    
-    return user
 
 
 @router.post("/login", response_model=TokenResponse)

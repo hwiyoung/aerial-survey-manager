@@ -68,12 +68,18 @@ check_requirements() {
         log_info "NVIDIA Driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
 
         # NVIDIA Container Toolkit 확인
-        if ! docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &> /dev/null; then
-            log_error "NVIDIA Container Toolkit이 제대로 설정되지 않았습니다."
+        if command -v nvidia-ctk &> /dev/null; then
+            log_info "NVIDIA Container Toolkit: $(nvidia-ctk --version 2>&1 | head -1)"
+        elif docker info 2>/dev/null | grep -qi "nvidia"; then
+            log_info "NVIDIA Container Toolkit: 정상 (docker runtime 확인됨)"
+        else
+            log_warn "NVIDIA Container Toolkit이 감지되지 않았습니다."
             echo "설치 방법은 docs/DEPLOYMENT_GUIDE.md를 참조하세요."
-            exit 1
+            read -p "Container Toolkit 없이 계속 진행하시겠습니까? (y/N): " continue_without_toolkit
+            if [[ ! "$continue_without_toolkit" =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
         fi
-        log_info "NVIDIA Container Toolkit: 정상"
     fi
 
     # 디스크 용량 확인
@@ -131,21 +137,14 @@ setup_environment() {
     read -p "웹 서비스 포트 [8081]: " web_port
     web_port=${web_port:-8081}
 
-    # MINIO_PUBLIC_ENDPOINT 설정
-    if [ "$web_port" = "80" ] || [ "$web_port" = "443" ]; then
-        minio_endpoint="$domain"
-    else
-        minio_endpoint="$domain:$web_port"
-    fi
-
     # 저장소 경로 설정
     echo ""
     echo -e "${YELLOW}저장소 경로 설정 (대용량 디스크 경로 권장)${NC}"
     read -p "처리 데이터 경로 [./data/processing]: " processing_path
     processing_path=${processing_path:-./data/processing}
 
-    read -p "MinIO 저장소 경로 [./data/minio]: " minio_path
-    minio_path=${minio_path:-./data/minio}
+    read -p "저장소 경로 [./data/storage]: " storage_path
+    storage_path=${storage_path:-./data/storage}
 
     # 오프라인 타일맵 설정
     echo ""
@@ -210,18 +209,20 @@ setup_environment() {
 
     postgres_password=$(generate_password)
     jwt_secret=$(generate_secret)
-    minio_access_key="aerial-admin"
-    minio_secret_key=$(generate_password)
-
     # .env 파일 업데이트
     sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$postgres_password|" .env
     sed -i "s|^JWT_SECRET_KEY=.*|JWT_SECRET_KEY=$jwt_secret|" .env
-    sed -i "s|^MINIO_ACCESS_KEY=.*|MINIO_ACCESS_KEY=$minio_access_key|" .env
-    sed -i "s|^MINIO_SECRET_KEY=.*|MINIO_SECRET_KEY=$minio_secret_key|" .env
-    sed -i "s|^MINIO_PUBLIC_ENDPOINT=.*|MINIO_PUBLIC_ENDPOINT=$minio_endpoint|" .env
     sed -i "s|^PROCESSING_DATA_PATH=.*|PROCESSING_DATA_PATH=$processing_path|" .env
-    sed -i "s|^MINIO_DATA_PATH=.*|MINIO_DATA_PATH=$minio_path|" .env
+    sed -i "s|^LOCAL_STORAGE_PATH=.*|LOCAL_STORAGE_PATH=$storage_path|" .env
     sed -i "s|^ENGINE_LICENSE_KEY=.*|ENGINE_LICENSE_KEY=$engine_license|" .env
+    sed -i "s|^WEB_PORT=.*|WEB_PORT=$web_port|" .env
+
+    # 도메인 설정
+    if ! grep -q "^DOMAIN=" .env; then
+        echo "DOMAIN=$domain" >> .env
+    else
+        sed -i "s|^DOMAIN=.*|DOMAIN=$domain|" .env
+    fi
 
     # 타일 경로 설정
     if ! grep -q "^TILES_PATH=" .env; then
@@ -237,24 +238,15 @@ setup_environment() {
         sed -i "s|^USE_OFFLINE_TILES=.*|USE_OFFLINE_TILES=$USE_OFFLINE_TILES|" .env
     fi
 
-    # 도메인 설정 추가
-    if ! grep -q "^DOMAIN=" .env; then
-        echo "DOMAIN=$domain" >> .env
-    else
-        sed -i "s|^DOMAIN=.*|DOMAIN=$domain|" .env
-    fi
-
     # 저장소 디렉토리 생성
     mkdir -p "$processing_path"
-    mkdir -p "$minio_path"
+    mkdir -p "$storage_path"
 
     echo ""
     log_info "환경 설정 완료"
     echo ""
     echo -e "${YELLOW}=== 생성된 인증 정보 (안전하게 보관하세요) ===${NC}"
     echo "PostgreSQL 비밀번호: $postgres_password"
-    echo "MinIO Access Key: $minio_access_key"
-    echo "MinIO Secret Key: $minio_secret_key"
     echo ""
 }
 
@@ -374,6 +366,15 @@ start_services() {
     else
         sed -i "s|^USE_ENGINE=.*|USE_ENGINE=$USE_ENGINE|" .env
     fi
+
+    # 엔진 사용 시 COMPOSE_PROFILES 설정 (docker compose up -d만으로 엔진 포함)
+    if [ "$USE_ENGINE" = "true" ]; then
+        if ! grep -q "^COMPOSE_PROFILES=" .env 2>/dev/null; then
+            echo "COMPOSE_PROFILES=engine" >> .env
+        else
+            sed -i "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=engine|" .env
+        fi
+    fi
 }
 
 # 헬스체크
@@ -447,7 +448,6 @@ print_completion() {
     echo ""
     echo -e "${BLUE}관리 도구:${NC}"
     echo "  Flower (작업 모니터링): http://localhost:5555"
-    echo "  MinIO Console: http://localhost:9003"
     echo ""
     echo -e "${YELLOW}다음 단계:${NC}"
     echo "  1. 웹 UI에 접속하여 관리자 계정 생성"

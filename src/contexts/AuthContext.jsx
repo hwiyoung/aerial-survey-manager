@@ -53,7 +53,7 @@ export function AuthProvider({ children }) {
             setUser(userData);
             return true;
         } catch (err) {
-            setError(err.message);
+            setError(err?.response?.data?.detail || err.message || '로그인에 실패했습니다.');
             return false;
         }
     }, []);

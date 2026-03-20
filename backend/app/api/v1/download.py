@@ -919,3 +919,322 @@ async def get_prepared_download(
         },
         media_type=info["media_type"],
     )
+
+
+# ── 도엽 클립/머지 API ──
+
+class ClipRequest(BaseModel):
+    """도엽 클립 내보내기 요청."""
+    project_ids: List[UUID]
+    sheet_ids: List[str]  # MAPIDCD_NO 목록
+    scale: int = 5000
+    crs: str = "EPSG:5186"
+    gsd: float | None = None
+
+
+class MergeRequest(BaseModel):
+    """도엽 머지 내보내기 요청."""
+    project_ids: List[UUID]
+    sheet_id: str  # 단일 도엽
+    scale: int = 5000
+    crs: str = "EPSG:5186"
+    gsd: float | None = None
+
+
+def _get_sheet_bounds_in_crs(sheet_info: dict, target_crs: str) -> tuple:
+    """도엽 bounds(WGS84)를 타겟 CRS로 변환하여 (minx, miny, maxx, maxy) 반환."""
+    from pyproj import Transformer
+
+    b = sheet_info["b4326"]  # (minlat, minlon, maxlat, maxlon)
+
+    if target_crs == "EPSG:4326":
+        # WGS84: x=lon, y=lat
+        return (b[1], b[0], b[3], b[2])
+
+    transformer = Transformer.from_crs("EPSG:4326", target_crs, always_xy=True)
+    x_min, y_min = transformer.transform(b[1], b[0])  # lon, lat → x, y
+    x_max, y_max = transformer.transform(b[3], b[2])
+    return (min(x_min, x_max), min(y_min, y_max), max(x_min, x_max), max(y_min, y_max))
+
+
+def _clip_to_extent(source_path: str, target_crs: str, extent: tuple,
+                    target_gsd_cm: float | None) -> str | None:
+    """정사영상을 주어진 extent로 클립한다. 결과 임시 파일 경로 반환."""
+    import subprocess
+
+    if not re.match(r'^EPSG:\d{4,5}$', target_crs):
+        raise ValueError(f"Invalid CRS format: {target_crs}")
+
+    out_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tif')
+    out_file.close()
+
+    minx, miny, maxx, maxy = extent
+    cmd = [
+        "gdalwarp",
+        "-t_srs", target_crs,
+        "-te", str(minx), str(miny), str(maxx), str(maxy),
+        "-r", "bilinear",
+        "-overwrite",
+        "-co", "COMPRESS=LZW",
+        "-co", "TILED=YES",
+    ]
+
+    if target_gsd_cm:
+        target_res = target_gsd_cm / 100.0
+        if target_crs == "EPSG:4326":
+            deg_res = target_res / 111320.0
+            cmd.extend(["-tr", f"{deg_res:.12f}", f"{deg_res:.12f}"])
+        else:
+            cmd.extend(["-tr", str(target_res), str(target_res)])
+
+    cmd.extend([source_path, out_file.name])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        try:
+            os.unlink(out_file.name)
+        except Exception:
+            pass
+        print(f"[clip] gdalwarp failed: {result.stderr}", flush=True)
+        return None
+
+    # 빈 파일 체크 (extent가 정사영상 범위 밖인 경우)
+    if os.path.getsize(out_file.name) < 1000:
+        try:
+            os.unlink(out_file.name)
+        except Exception:
+            pass
+        return None
+
+    return out_file.name
+
+
+@router.post("/clip")
+async def clip_export(
+    request: ClipRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """도엽 단위로 정사영상을 클립하여 다운로드한다."""
+    from app.api.v1.sheets import _get_index
+
+    if not request.project_ids or not request.sheet_ids:
+        raise HTTPException(status_code=400, detail="project_ids와 sheet_ids가 필요합니다.")
+    if len(request.sheet_ids) > 50:
+        raise HTTPException(status_code=400, detail="최대 50개 도엽까지 선택 가능합니다.")
+
+    idx = _get_index(request.scale)
+    if not idx["loaded"]:
+        raise HTTPException(status_code=404, detail=f"1:{request.scale} 도엽 데이터가 없습니다.")
+
+    # 도엽 정보 조회
+    sheet_infos = {}
+    for sid in request.sheet_ids:
+        if sid in idx["sheets"]:
+            sheet_infos[sid] = idx["sheets"][sid]
+    if not sheet_infos:
+        raise HTTPException(status_code=404, detail="유효한 도엽이 없습니다.")
+
+    # 프로젝트 COG 파일 수집
+    projects_with_files = await _collect_export_files(
+        request.project_ids, "EPSG:4326", None, current_user, db,
+    )
+    if not projects_with_files:
+        raise HTTPException(status_code=404, detail="정사영상이 있는 프로젝트가 없습니다.")
+
+    # 클립 실행
+    clipped_files = []
+    temp_files = []
+    try:
+        for sid, sinfo in sheet_infos.items():
+            extent = _get_sheet_bounds_in_crs(sinfo, request.crs)
+            for item in projects_with_files:
+                source = item["file_path"]
+                clipped = _clip_to_extent(source, request.crs, extent, request.gsd)
+                if clipped:
+                    safe_title = re.sub(r'[^\w\-]', '_', item["project"].title)
+                    arcname = f"{sid}_{safe_title}.tif"
+                    clipped_files.append({"path": clipped, "arcname": arcname})
+                    temp_files.append(clipped)
+
+        if not clipped_files:
+            raise HTTPException(status_code=404, detail="클립 결과가 없습니다. 도엽이 정사영상 범위 밖일 수 있습니다.")
+
+        # 단일 파일: TIF 직접, 다중: ZIP
+        if len(clipped_files) == 1:
+            cf = clipped_files[0]
+            file_size = os.path.getsize(cf["path"])
+            token = await create_download_token(
+                file_path=cf["path"],
+                filename=cf["arcname"],
+                media_type="image/tiff",
+                file_size=file_size,
+                organization_id=str(current_user.organization_id) if current_user.organization_id else None,
+                project_ids=[str(p["project"].id) for p in projects_with_files],
+                user_id=str(current_user.id),
+            )
+            return {"download_id": token, "filename": cf["arcname"], "file_size": file_size}
+
+        # ZIP 패킹
+        temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+        temp_zip.close()
+        temp_files.append(temp_zip.name)
+
+        with zipfile.ZipFile(temp_zip.name, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for cf in clipped_files:
+                zf.write(cf["path"], cf["arcname"])
+
+        zip_size = os.path.getsize(temp_zip.name)
+        zip_filename = f"clip_{request.scale}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+
+        # 개별 클립 파일 정리 (ZIP에 넣었으므로)
+        for cf in clipped_files:
+            try:
+                os.unlink(cf["path"])
+            except Exception:
+                pass
+
+        token = await create_download_token(
+            file_path=temp_zip.name,
+            filename=zip_filename,
+            media_type="application/zip",
+            file_size=zip_size,
+            organization_id=str(current_user.organization_id) if current_user.organization_id else None,
+            project_ids=[str(p["project"].id) for p in projects_with_files],
+            user_id=str(current_user.id),
+        )
+        return {"download_id": token, "filename": zip_filename, "file_size": zip_size}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 임시 파일 정리
+        for tf in temp_files:
+            try:
+                os.unlink(tf)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"클립 처리 실패: {str(e)}")
+    finally:
+        # _collect_export_files에서 만든 temp 파일 정리
+        for item in projects_with_files:
+            fp = item["file_path"]
+            if fp.startswith(tempfile.gettempdir()):
+                try:
+                    os.unlink(fp)
+                except Exception:
+                    pass
+
+
+@router.post("/merge")
+async def merge_export(
+    request: MergeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """여러 프로젝트의 정사영상을 하나의 도엽 범위로 합쳐서 다운로드한다."""
+    import subprocess
+    from app.api.v1.sheets import _get_index
+
+    if not request.project_ids or len(request.project_ids) < 2:
+        raise HTTPException(status_code=400, detail="머지는 2개 이상의 프로젝트가 필요합니다.")
+
+    idx = _get_index(request.scale)
+    if not idx["loaded"]:
+        raise HTTPException(status_code=404, detail=f"1:{request.scale} 도엽 데이터가 없습니다.")
+
+    if request.sheet_id not in idx["sheets"]:
+        raise HTTPException(status_code=404, detail=f"도엽 {request.sheet_id}을 찾을 수 없습니다.")
+
+    sinfo = idx["sheets"][request.sheet_id]
+    extent = _get_sheet_bounds_in_crs(sinfo, request.crs)
+
+    # 프로젝트 COG 파일 수집
+    projects_with_files = await _collect_export_files(
+        request.project_ids, "EPSG:4326", None, current_user, db,
+    )
+    if len(projects_with_files) < 2:
+        raise HTTPException(status_code=404, detail="머지할 수 있는 정사영상이 2개 미만입니다.")
+
+    temp_files = []
+    try:
+        # 각 프로젝트를 도엽 범위로 클립
+        clipped_paths = []
+        for item in projects_with_files:
+            clipped = _clip_to_extent(item["file_path"], request.crs, extent, request.gsd)
+            if clipped:
+                clipped_paths.append(clipped)
+                temp_files.append(clipped)
+
+        if len(clipped_paths) < 2:
+            raise HTTPException(status_code=404, detail="머지할 수 있는 클립 결과가 2개 미만입니다.")
+
+        # gdalwarp로 모자이킹 (마지막 입력 우선)
+        merged_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tif')
+        merged_file.close()
+        temp_files.append(merged_file.name)
+
+        minx, miny, maxx, maxy = extent
+        merge_cmd = [
+            "gdalwarp",
+            "-t_srs", request.crs,
+            "-te", str(minx), str(miny), str(maxx), str(maxy),
+            "-r", "bilinear",
+            "-overwrite",
+            "-co", "COMPRESS=LZW",
+            "-co", "TILED=YES",
+        ]
+
+        if request.gsd:
+            target_res = request.gsd / 100.0
+            if request.crs == "EPSG:4326":
+                deg_res = target_res / 111320.0
+                merge_cmd.extend(["-tr", f"{deg_res:.12f}", f"{deg_res:.12f}"])
+            else:
+                merge_cmd.extend(["-tr", str(target_res), str(target_res)])
+
+        merge_cmd.extend(clipped_paths)
+        merge_cmd.append(merged_file.name)
+
+        result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            raise Exception(f"gdalwarp merge failed: {result.stderr}")
+
+        # 클립 임시 파일 정리
+        for cp in clipped_paths:
+            try:
+                os.unlink(cp)
+            except Exception:
+                pass
+
+        file_size = os.path.getsize(merged_file.name)
+        filename = f"merge_{request.sheet_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tif"
+
+        token = await create_download_token(
+            file_path=merged_file.name,
+            filename=filename,
+            media_type="image/tiff",
+            file_size=file_size,
+            organization_id=str(current_user.organization_id) if current_user.organization_id else None,
+            project_ids=[str(p["project"].id) for p in projects_with_files],
+            user_id=str(current_user.id),
+        )
+        return {"download_id": token, "filename": filename, "file_size": file_size}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        for tf in temp_files:
+            try:
+                os.unlink(tf)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"머지 처리 실패: {str(e)}")
+    finally:
+        for item in projects_with_files:
+            fp = item["file_path"]
+            if fp.startswith(tempfile.gettempdir()):
+                try:
+                    os.unlink(fp)
+                except Exception:
+                    pass

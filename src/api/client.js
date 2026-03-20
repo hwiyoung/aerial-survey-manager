@@ -299,14 +299,38 @@ class ApiClient {
         return this.request(`/projects/${projectId}/source-images`, { method: 'DELETE' });
     }
 
+    async deleteOrthoCog(projectId) {
+        return this.request(`/projects/${projectId}/ortho/cog`, { method: 'DELETE' });
+    }
+
     // --- Images ---
     async getProjectImages(projectId) {
         return this.request(`/upload/projects/${projectId}/images`);
     }
 
+    async getImage(imageId) {
+        return this.request(`/upload/images/${imageId}`);
+    }
+
+    async regenerateThumbnail(imageId) {
+        return this.request(`/upload/images/${imageId}/regenerate-thumbnail`, { method: 'POST' });
+    }
+
     async initImageUpload(projectId, filename, fileSize) {
         return this.request(`/upload/projects/${projectId}/images/init?filename=${encodeURIComponent(filename)}&file_size=${fileSize}`, {
             method: 'POST',
+        });
+    }
+
+    // --- Local Import ---
+    async localImport(projectId, sourceDir, filePaths = null) {
+        const body = { source_dir: sourceDir };
+        if (filePaths && filePaths.length > 0) {
+            body.file_paths = filePaths;
+        }
+        return this.request(`/upload/projects/${projectId}/local-import`, {
+            method: 'POST',
+            body: JSON.stringify(body),
         });
     }
 
@@ -392,6 +416,19 @@ class ApiClient {
                 ws.close();
             },
         };
+    }
+
+    // --- Filesystem Browser ---
+    async getFilesystemRoots() {
+        return this.request('/filesystem/roots');
+    }
+
+    async browseFilesystem(path = '/', fileTypes = 'images') {
+        return this.request(`/filesystem/browse?path=${encodeURIComponent(path)}&file_types=${encodeURIComponent(fileTypes)}`);
+    }
+
+    async readTextFile(path) {
+        return this.request(`/filesystem/read-text?path=${encodeURIComponent(path)}`);
     }
 
     // --- Camera Models ---
@@ -486,6 +523,46 @@ class ApiClient {
     async getStorageStats(refresh = false) {
         const query = refresh ? '?refresh=true' : '';
         return this.request(`/projects/stats/storage${query}`);
+    }
+
+    // --- 도엽 (Map Sheets) ---
+    async getSheetScales() {
+        return this.request('/sheets/scales');
+    }
+
+    async getSheets(scale, bounds) {
+        const b = `${bounds.minlat},${bounds.minlon},${bounds.maxlat},${bounds.maxlon}`;
+        return this.request(`/sheets?scale=${scale}&bounds=${encodeURIComponent(b)}`);
+    }
+
+    async searchSheet(mapid) {
+        return this.request(`/sheets/search?mapid=${encodeURIComponent(mapid)}`);
+    }
+
+    async clipExport(projectIds, sheetIds, options = {}) {
+        return this.request('/download/clip', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_ids: projectIds,
+                sheet_ids: sheetIds,
+                scale: options.scale || 5000,
+                crs: options.crs || 'EPSG:5186',
+                gsd: options.gsd ? parseFloat(options.gsd) : null,
+            }),
+        });
+    }
+
+    async mergeExport(projectIds, sheetId, options = {}) {
+        return this.request('/download/merge', {
+            method: 'POST',
+            body: JSON.stringify({
+                project_ids: projectIds,
+                sheet_id: sheetId,
+                scale: options.scale || 5000,
+                crs: options.crs || 'EPSG:5186',
+                gsd: options.gsd ? parseFloat(options.gsd) : null,
+            }),
+        });
     }
 
     // --- COG/Orthoimage ---

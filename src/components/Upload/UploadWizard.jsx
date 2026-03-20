@@ -1,14 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { UploadCloud, FileText, CheckCircle2, ChevronRight, ChevronLeft, AlertCircle, X, Camera, FolderOpen, Info, Trash2, Image as ImageIcon, FilePlus, ArrowRight, ArrowLeft, Table as TableIcon, RefreshCw, AlertTriangle } from 'lucide-react';
 
-const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.dng', '.raw', '.arw', '.cr2', '.nef'];
-
-const isImageFile = (file) => {
-    if (file.type.startsWith('image/')) return true;
-    const ext = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
-    return IMAGE_EXTENSIONS.includes(ext);
-};
 import api from '../../api/client';
+import ServerFileBrowser from './ServerFileBrowser';
 
 export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const [step, setStep] = useState(1);
@@ -30,6 +24,8 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     });
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
+    const [autoProcess, setAutoProcess] = useState(true);
+    const [processMode, setProcessMode] = useState('Normal');
 
     useEffect(() => {
         if (isOpen) {
@@ -57,14 +53,16 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
             alert("Failed to add camera model");
         }
     };
-    const [selectedFiles, setSelectedFiles] = useState([]);
     const [selectedEoFile, setSelectedEoFile] = useState(null);
     const [eoConfig, setEoConfig] = useState({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
 
-    const folderInputRef = useRef(null);
-    const fileInputRef = useRef(null);
-    const eoInputRef = useRef(null);
     const [selectionMode, setSelectionMode] = useState(null); // 'folder' or 'files'
+    const [showFileBrowser, setShowFileBrowser] = useState(false);
+    const [fileBrowserMode, setFileBrowserMode] = useState('folder');
+    const [sourceDir, setSourceDir] = useState(null);
+    const [serverFilePaths, setServerFilePaths] = useState(null);
+    const [showEoFileBrowser, setShowEoFileBrowser] = useState(false);
+    const [eoFilePath, setEoFilePath] = useState(null);
 
     const [rawEoData, setRawEoData] = useState(`ImageID,Lat,Lon,Alt,Omega,Phi,Kappa
 IMG_001,37.1234,127.5543,150.2,0.1,-0.2,1.5
@@ -105,15 +103,20 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setEoConfig({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } });
             setProjectName('');
             setShowMismatchWarning(false);
-            setSelectedFiles([]);
             setSelectedEoFile(null);
+            setSourceDir(null);
+            setServerFilePaths(null);
+            setShowFileBrowser(false);
+            setShowEoFileBrowser(false);
+            setEoFilePath(null);
+            setAutoProcess(true);
         }
     }, [isOpen]);
 
     // ESC key handler to close modal
     useEffect(() => {
         const handleKeyDown = (e) => {
-            if (e.key === 'Escape' && !showMismatchWarning) {
+            if (e.key === 'Escape' && !showMismatchWarning && !showFileBrowser && !showEoFileBrowser) {
                 if (imageCount > 0 || eoFileName) {
                     if (window.confirm('업로드를 취소하시겠습니까? 모든 선택이 초기화됩니다.')) {
                         onClose();
@@ -127,54 +130,39 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             document.addEventListener('keydown', handleKeyDown);
         }
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, imageCount, eoFileName, showMismatchWarning, onClose]);
+    }, [isOpen, imageCount, eoFileName, showMismatchWarning, showFileBrowser, showEoFileBrowser, onClose]);
 
-    const handleFolderSelect = (e) => {
-        const allFiles = Array.from(e.target.files);
-        const imageFiles = allFiles.filter(isImageFile);
-
-        if (imageFiles.length < allFiles.length) {
-            console.log(`${allFiles.length - imageFiles.length} files filtered out from folder`);
-        }
-
-        setSelectedFiles(imageFiles); // Replace existing files for folder selection
-        setImageCount(imageFiles.length);
-        setSelectionMode('folder');
-        // Clear the other input
-        if (fileInputRef.current) fileInputRef.current.value = '';
-        // Auto-set project name from folder name if not set
-        if (!projectName && allFiles.length > 0) {
-            const path = allFiles[0].webkitRelativePath || '';
-            const folderName = path.split('/')[0];
-            if (folderName) setProjectName(folderName);
+    const handleServerSelect = (result) => {
+        if (fileBrowserMode === 'folder') {
+            setSourceDir(result.path);
+            setImageCount(result.imageCount);
+            setSelectionMode('folder');
+            setServerFilePaths(null);
+            if (!projectName) {
+                const folderName = result.path.split('/').pop();
+                if (folderName) setProjectName(folderName);
+            }
+        } else {
+            setSourceDir(result.path);
+            setServerFilePaths(result.filePaths);
+            setImageCount(result.filePaths.length);
+            setSelectionMode('files');
         }
     };
-    const handleFileSelect = (e) => {
-        const files = Array.from(e.target.files);
-        const imageFiles = files.filter(isImageFile);
 
-        if (imageFiles.length < files.length) {
-            alert(`${files.length - imageFiles.length}개의 비이미지 파일이 제외되었습니다.`);
-        }
-
-        setSelectedFiles(imageFiles); // Replace existing files for individual file selection
-        setImageCount(imageFiles.length);
-        setSelectionMode('files');
-        // Clear the other input
-        if (folderInputRef.current) folderInputRef.current.value = '';
-    };
-
-    const handleEoFileSelect = (e) => {
-        const file = e.target.files[0];
-        if (file) {
+    const handleEoServerSelect = async (result) => {
+        if (!result.filePath) return;
+        setEoFilePath(result.filePath);
+        try {
+            const data = await api.readTextFile(result.filePath);
+            setRawEoData(data.content);
+            setEoFileName(data.filename);
+            // Create a File object from the content for upload compatibility
+            const blob = new Blob([data.content], { type: 'text/plain' });
+            const file = new File([blob], data.filename, { type: 'text/plain' });
             setSelectedEoFile(file);
-            setEoFileName(file.name);
-
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                setRawEoData(e.target.result);
-            };
-            reader.readAsText(file);
+        } catch (err) {
+            alert(`EO 파일 읽기 실패: ${err.message}`);
         }
     };
 
@@ -209,20 +197,21 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
     };
 
     const handleFinish = async () => {
-        // Pass raw data to parent for processing
         const projectData = {
             title: projectName || `Project_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`,
             region: '수도권북부 권역',
             company: '',
         };
 
-        console.log('handleFinish - selectedEoFile:', selectedEoFile); // DEBUG
         await onComplete({
             projectData,
-            files: selectedFiles,
+            sourceDir,
+            filePaths: serverFilePaths,
             eoFile: selectedEoFile,
             eoConfig,
             cameraModel,
+            autoProcess: autoProcess && !!eoFileName,
+            processMode,
         });
         onClose();
     };
@@ -230,6 +219,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
     if (!isOpen) return null;
 
     return (
+        <>
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={handleCancelUpload}>
             <div className="bg-white rounded-xl shadow-2xl w-[900px] flex flex-col max-h-[95vh]" onClick={e => e.stopPropagation()}>
                 <div className="h-16 border-b border-slate-200 flex items-center justify-between px-8 bg-slate-50">
@@ -244,25 +234,8 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                         <div className="space-y-6 max-w-2xl mx-auto h-full flex flex-col justify-center">
                             <h4 className="text-xl font-bold text-slate-800 text-center mb-6">1. 원본 이미지 선택</h4>
                             <div className="grid grid-cols-2 gap-4">
-                                <input
-                                    type="file"
-                                    webkitdirectory="true"
-                                    directory="true"
-                                    ref={folderInputRef}
-                                    onChange={handleFolderSelect}
-                                    className="hidden"
-                                />
-                                <input
-                                    id="file-upload"
-                                    type="file"
-                                    multiple
-                                    ref={fileInputRef}
-                                    onChange={handleFileSelect}
-                                    className="hidden"
-                                    accept="image/*,.tif,.tiff,.dng,.raw,.arw,.cr2,.nef"
-                                />
                                 <button
-                                    onClick={() => folderInputRef.current.click()}
+                                    onClick={() => { setFileBrowserMode('folder'); setShowFileBrowser(true); }}
                                     className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectionMode === 'folder' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
                                 >
                                     <FolderOpen size={48} className="text-blue-600" />
@@ -272,7 +245,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                     </div>
                                 </button>
                                 <button
-                                    onClick={() => fileInputRef.current.click()}
+                                    onClick={() => { setFileBrowserMode('files'); setShowFileBrowser(true); }}
                                     className={`p-10 border-2 rounded-xl flex flex-col items-center gap-4 transition-all ${selectionMode === 'files' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}
                                 >
                                     <FilePlus size={48} className="text-emerald-600" />
@@ -282,25 +255,26 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                     </div>
                                 </button>
                             </div>
-                            {imageCount > 0 && <div className="text-center p-4 bg-slate-100 rounded-lg text-slate-700 animate-in fade-in flex items-center justify-center gap-2"><CheckCircle2 size={20} className="text-blue-600" />총 <span className="font-bold text-blue-600">{imageCount}</span>장의 이미지가 확인되었습니다.</div>}
+                            {imageCount > 0 && (
+                                <div className="text-center p-4 bg-slate-100 rounded-lg text-slate-700 animate-in fade-in">
+                                    <div className="flex items-center justify-center gap-2">
+                                        <CheckCircle2 size={20} className="text-blue-600" />
+                                        총 <span className="font-bold text-blue-600">{imageCount}</span>장의 이미지가 확인되었습니다.
+                                    </div>
+                                    {sourceDir && <div className="text-xs text-slate-500 mt-2 font-mono truncate" title={sourceDir}>{sourceDir}</div>}
+                                </div>
+                            )}
                         </div>
                     )}
                     {step === 2 && (
                         <div className="flex flex-col h-full gap-6">
-                            <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); if (eoInputRef.current) eoInputRef.current.value = ''; }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
+                            <div className="flex justify-between items-center shrink-0"><h4 className="text-xl font-bold text-slate-800">2. EO (Exterior Orientation) 로드 및 설정</h4><button onClick={() => { setEoConfig({ delimiter: 'space', hasHeader: true, crs: 'TM중부 (EPSG:5186)', columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 } }); setEoFileName(null); setSelectedEoFile(null); setEoFilePath(null); }} className="text-xs flex items-center gap-1 text-slate-500 hover:text-blue-600 bg-slate-100 px-2 py-1 rounded"><RefreshCw size={12} /> 설정 초기화</button></div>
                             <div className="flex gap-6 shrink-0 h-[220px]">
-                                <input
-                                    type="file"
-                                    accept=".txt,.csv,.json"
-                                    ref={eoInputRef}
-                                    onChange={handleEoFileSelect}
-                                    className="hidden"
-                                />
                                 <div
                                     className={`w-1/4 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${eoFileName ? 'border-emerald-500 bg-emerald-50' : 'border-slate-300 hover:bg-slate-50'}`}
-                                    onClick={() => eoInputRef.current.click()}
+                                    onClick={() => setShowEoFileBrowser(true)}
                                 >
-                                    {eoFileName ? (<><div className="p-3 bg-emerald-100 rounded-full text-emerald-600"><FileText size={32} /></div><div className="text-center px-4"><div className="text-sm font-bold text-slate-800 truncate max-w-[150px]">{eoFileName}</div><div className="text-[10px] text-emerald-600 font-bold mt-1">로드 성공</div></div></>) : (<><div className="p-3 bg-slate-100 rounded-full text-slate-400"><UploadCloud size={32} /></div><div className="text-center"><div className="text-sm font-bold text-slate-600">EO 파일 선택</div><div className="text-xs text-slate-400 mt-1">.txt, .csv, .json</div></div></>)}
+                                    {eoFileName ? (<><div className="p-3 bg-emerald-100 rounded-full text-emerald-600"><FileText size={32} /></div><div className="text-center px-4"><div className="text-sm font-bold text-slate-800 truncate max-w-[150px]">{eoFileName}</div><div className="text-[10px] text-emerald-600 font-bold mt-1">로드 성공</div>{eoFilePath && <div className="text-[9px] text-slate-400 font-mono truncate max-w-[150px] mt-0.5" title={eoFilePath}>{eoFilePath}</div>}</div></>) : (<><div className="p-3 bg-slate-100 rounded-full text-slate-400"><UploadCloud size={32} /></div><div className="text-center"><div className="text-sm font-bold text-slate-600">EO 파일 선택</div><div className="text-xs text-slate-400 mt-1">.txt, .csv, .json</div></div></>)}
                                 </div>
                                 <div className="flex-1 bg-slate-50 p-5 rounded-xl border border-slate-200 flex flex-col justify-between">
                                     <div className="grid grid-cols-3 gap-6">
@@ -433,8 +407,35 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoConfig.crs} · {eoLineCount}줄</div></div></div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{cameraModel}</span></div>
                                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
+                                <label className={`flex items-center gap-3 pt-4 border-t border-slate-100 cursor-pointer ${!eoFileName ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                    <input
+                                        type="checkbox"
+                                        checked={autoProcess && !!eoFileName}
+                                        onChange={(e) => setAutoProcess(e.target.checked)}
+                                        disabled={!eoFileName}
+                                        className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    <div>
+                                        <span className="font-bold text-slate-700">완료 후 자동 처리</span>
+                                        <p className="text-xs text-slate-400 mt-0.5">{eoFileName ? '프로젝트 생성 즉시 처리를 시작합니다' : 'EO 파일을 먼저 선택해주세요'}</p>
+                                    </div>
+                                </label>
+                                {autoProcess && !!eoFileName && (
+                                    <div className="ml-8 mt-2 flex items-center gap-3">
+                                        <span className="text-sm text-slate-500">처리 모드</span>
+                                        <select
+                                            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white font-bold"
+                                            value={processMode}
+                                            onChange={(e) => setProcessMode(e.target.value)}
+                                        >
+                                            <option value="Normal">정밀 처리</option>
+                                            <option value="Fast">고속 처리</option>
+                                        </select>
+                                        <span className="text-xs text-slate-400">{processMode === 'Normal' ? '품질 우선 (느림)' : '속도 우선 (빠름)'}</span>
+                                    </div>
+                                )}
                             </div>
-                            <p className="text-center text-sm text-slate-500"><span className="font-bold text-slate-700">확인</span> 버튼을 누르면 프로젝트 처리 옵션 화면으로 이동합니다.</p>
+                            <p className="text-center text-sm text-slate-500">{autoProcess && eoFileName ? <><span className="font-bold text-blue-600">확인</span> 버튼을 누르면 프로젝트가 생성되고 <span className="font-bold">즉시 처리가 시작</span>됩니다.</> : <><span className="font-bold text-slate-700">확인</span> 버튼을 누르면 프로젝트 처리 옵션 화면으로 이동합니다.</>}</p>
                         </div>
                     )}
                 </div>
@@ -469,5 +470,20 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 </div>
             </div>
         </div>
+        <ServerFileBrowser
+            isOpen={showFileBrowser}
+            onClose={() => setShowFileBrowser(false)}
+            onSelect={handleServerSelect}
+            mode={fileBrowserMode}
+        />
+        <ServerFileBrowser
+            isOpen={showEoFileBrowser}
+            onClose={() => setShowEoFileBrowser(false)}
+            onSelect={handleEoServerSelect}
+            mode="eo"
+            fileTypes="eo"
+            initialPath={sourceDir}
+        />
+        </>
     );
 }

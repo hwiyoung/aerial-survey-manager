@@ -149,7 +149,10 @@ function Dashboard() {
         ...p,
         status: STATUS_MAP[p.status] || p.status,
         imageCount: p.image_count || 0,
-        startDate: p.created_at?.slice(0, 10) || '',
+        completedDate: p.updated_at?.slice(0, 10) || '',
+        createdDate: p.created_at?.slice(0, 10) || '',
+        processingStartedAt: p.processing_started_at || null,
+        processingCompletedAt: p.processing_completed_at || null,
         // Use real bounds from backend, don't mock it!
         bounds: p.bounds,
         orthoResult: (p.status === 'completed' || p.status === '완료') ? {
@@ -292,11 +295,23 @@ function Dashboard() {
 
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
+  const [sheetState, setSheetState] = useState({ visible: false, scale: 5000, selectedSheets: [], searchResult: null });
 
-  // Reset selected image when project changes or when leaving processing mode
+  // Reset selected image and sheet state when project or view changes
   useEffect(() => {
     setSelectedImageId(null);
+    setSheetState({ visible: false, scale: 5000, selectedSheets: [], searchResult: null });
   }, [selectedProjectId, viewMode]);
+
+  // Reset project images only when returning to dashboard (not when entering processing)
+  const prevViewModeRef = React.useRef(viewMode);
+  useEffect(() => {
+    const prev = prevViewModeRef.current;
+    prevViewModeRef.current = viewMode;
+    if (prev === 'processing' && viewMode === 'dashboard') {
+      setProjectImages([]);
+    }
+  }, [viewMode]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [regionFilter, setRegionFilter] = useState('ALL');
@@ -543,10 +558,15 @@ function Dashboard() {
     // Try to find in projects list first
     const proj = projects.find(p => p.id === selectedProjectId);
 
+    // processing 모드에서는 processingProject.images를 우선 사용 (fetch 직후 세팅됨)
+    const images = projectImages.length > 0
+      ? projectImages
+      : (processingProject?.images || []);
+
     if (proj) {
       return {
         ...proj,
-        images: projectImages
+        images
       };
     }
 
@@ -554,7 +574,7 @@ function Dashboard() {
     if (viewMode === 'processing' && processingProject) {
       return {
         ...processingProject,
-        images: projectImages.length > 0 ? projectImages : (processingProject.images || [])
+        images
       };
     }
 
@@ -638,7 +658,7 @@ function Dashboard() {
     };
   }, [isResizing]);
 
-  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel }) => {
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess, processMode }) => {
     try {
       // 1. Create Project via API
       console.log('Creating project:', projectData);
@@ -649,7 +669,132 @@ function Dashboard() {
       });
       console.log('Project created:', created);
 
-      // 2. Initialize Images (Create records in DB)
+      // 2a. Local path import mode - register images by path
+      if (sourceDir) {
+        console.log('Registering local images from:', sourceDir);
+        try {
+          const importResult = await api.localImport(created.id, sourceDir, filePaths);
+          console.log('Local import result:', importResult);
+          if (importResult.registered === 0) {
+            alert('이미지 파일을 찾을 수 없습니다: ' + sourceDir);
+            // Clean up the orphaned project that was just created
+            try {
+              await deleteProject(created.id);
+              console.log('Cleaned up orphaned project:', created.id);
+            } catch (cleanupErr) {
+              console.error('Failed to clean up orphaned project:', cleanupErr);
+            }
+            return;
+          }
+          // Set file count from import result for downstream use
+          files = []; // Clear browser files
+          const localImageCount = importResult.registered;
+
+          // 3. Upload EO Data if exists
+          let imagesToUse = generatePlaceholderImages(created.id, localImageCount);
+          if (eoFile) {
+            console.log('Uploading EO data...');
+            try {
+              await api.uploadEoData(created.id, eoFile, eoConfig);
+
+              const maxRetries = 5;
+              const baseDelay = 800;
+              for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                const delay = baseDelay * attempt;
+                console.log(`Fetching images (attempt ${attempt}/${maxRetries}) after ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+
+                const fetchedImages = await fetchImages(created.id);
+                if (fetchedImages && fetchedImages.length > 0) {
+                  const points = fetchedImages.map(img => {
+                    const eo = img.exterior_orientation;
+                    return {
+                      id: img.id,
+                      name: img.filename,
+                      wx: eo ? eo.x : 0,
+                      wy: eo ? eo.y : 0,
+                      z: eo ? eo.z : null,
+                      omega: eo ? eo.omega : null,
+                      phi: eo ? eo.phi : null,
+                      kappa: eo ? eo.kappa : null,
+                      hasEo: !!eo,
+                      thumbnail_url: img.thumbnail_url || null,
+                      file_size: img.file_size || null,
+                      thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
+                    };
+                  });
+
+                  const imagesWithEo = points.filter(p => p.hasEo);
+                  if (imagesWithEo.length > 0) {
+                    console.log(`Found ${imagesWithEo.length} images with EO data`);
+                    imagesToUse = imagesWithEo;
+                    setProjectImages(imagesToUse);
+                    break;
+                  }
+                  if (attempt === maxRetries) {
+                    console.warn('No EO data found after all retries, using images without EO');
+                    imagesToUse = points;
+                    setProjectImages(imagesToUse);
+                  }
+                }
+              }
+              alert("프로젝트 생성이 완료되었습니다.");
+            } catch (e) {
+              console.error(e);
+              alert("Failed to upload EO data: " + e.message);
+            }
+          } else {
+            alert(`프로젝트 생성 완료. ${localImageCount}개 이미지 등록됨.`);
+          }
+
+          // 5. Auto-schedule processing if requested
+          let projectStatus = '대기';
+          if (autoProcess && eoFile) {
+            try {
+              console.log('Auto-scheduling processing for project:', created.id);
+              await api.scheduleProcessing(created.id, {
+                engine: 'metashape',
+                gsd: 5.0,
+                output_crs: 'EPSG:5186',
+                output_format: 'GeoTiff',
+                process_mode: processMode || 'Normal',
+              });
+              projectStatus = '진행중';
+              console.log('Processing auto-scheduled successfully');
+            } catch (schedErr) {
+              console.error('Auto-schedule failed:', schedErr);
+              // Non-fatal: project is created, user can manually start processing
+            }
+          }
+
+          // 6. Update UI State for local-import (no upload needed)
+          const projectForProcessing = {
+            ...created,
+            status: projectStatus,
+            imageCount: localImageCount,
+            image_count: localImageCount,
+            images: imagesToUse,
+            bounds: { x: 30, y: 30, w: 40, h: 40 },
+            cameraModel: cameraModel,
+            upload_in_progress: false,
+            upload_completed_count: localImageCount,
+          };
+
+          setProcessingProject(projectForProcessing);
+          setViewMode('processing');
+          setIsUploadOpen(false);
+          window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
+          await refreshProjects();
+          setImageRefreshKey(prev => prev + 1);
+          return; // Done - skip the HTTP upload flow below
+        } catch (err) {
+          console.error('Local import failed:', err);
+          alert('로컬 이미지 등록 실패: ' + err.message);
+          return;
+        }
+      }
+
+      // 2b. Initialize Images for HTTP upload (Create records in DB)
       // NOTE: init_multipart_upload (step 4) also creates Image records, but this step is
       // needed first so that EO upload (step 3) can match filenames to existing Image records.
       if (files && files.length > 0) {
@@ -887,6 +1032,7 @@ function Dashboard() {
 
       setProcessingProject(projectForProcessing);
       setViewMode('processing');
+      setIsUploadOpen(false);
       // 브라우저 히스토리에 추가 (뒤로가기 지원)
       window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
 
@@ -1252,7 +1398,7 @@ function Dashboard() {
             projects={projects}
             selectedProjectId={selectedProjectId}
             checkedProjectIds={checkedProjectIds}
-            onSelectProject={(id) => { setSelectedProjectId(id); setHighlightProjectId(id); setSelectedImageId(null); setShowInspector(false); }}
+            onSelectProject={(id) => { setSelectedProjectId(id); setHighlightProjectId(id); setSelectedImageId(null); setShowInspector(true); }}
             onOpenInspector={(id) => { setSelectedProjectId(id); setShowInspector(true); }}
             onToggleCheck={handleToggleCheck}
             onSelectMultiple={handleSelectMultiple}
@@ -1361,7 +1507,7 @@ function Dashboard() {
               if (proj) {
                 // If projectId differs from current selectedProjectId, we need to fetch images first
                 let imagesToUse = projectImages;
-                if (projectId !== selectedProjectId) {
+                if (projectId !== selectedProjectId || projectImages.length === 0) {
                   // Fetch images for this project
                   try {
                     const images = await fetchImages(projectId);
@@ -1384,6 +1530,7 @@ function Dashboard() {
                       };
                     });
                     imagesToUse = points.filter(p => p.hasEo);
+                    console.log('[onOpenProcessing] fetched images:', images.length, 'with EO:', imagesToUse.length);
                     // Also update state so map can show them
                     setProjectImages(imagesToUse);
                   } catch (err) {
@@ -1443,6 +1590,18 @@ function Dashboard() {
                 selectedProject={selectedProject}
                 sidebarWidth={sidebarWidth}
                 mapResetKey={mapResetKey}
+                sheetState={sheetState}
+                onSheetToggle={(mapid) => {
+                  const sel = sheetState.selectedSheets || [];
+                  setSheetState({
+                    ...sheetState,
+                    selectedSheets: sel.includes(mapid) ? sel.filter(s => s !== mapid) : [...sel, mapid],
+                  });
+                }}
+                onSheetsLoaded={(sheets) => {
+                  setSheetState(prev => ({ ...prev, overlappingSheets: sheets }));
+                }}
+                onSheetStateChange={setSheetState}
                 onProjectClick={(project) => {
                   setSelectedProjectId(project.id);
                   setHighlightProjectId(project.id);
@@ -1496,6 +1655,7 @@ function Dashboard() {
         onClose={() => setExportModalState({ ...exportModalState, isOpen: false })}
         targetProjectIds={exportModalState.projectIds}
         allProjects={projects}
+        onProjectsChanged={refreshProjects}
       />
 
       {/* Group Create/Edit Modal */}

@@ -102,6 +102,19 @@ def _read_processing_status_file(project_id: str) -> dict:
     return {}
 
 
+def _read_step_status_file(project_id: str) -> dict:
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+        status_path = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id) / ".work" / "status.json"
+        if status_path.exists():
+            with open(status_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
 def _to_float(value):
     """Parse numeric values safely to float."""
     if isinstance(value, int | float):
@@ -152,15 +165,25 @@ class ConnectionManager:
     
     def disconnect(self, project_id: str, websocket: WebSocket):
         if project_id in self.active_connections:
-            self.active_connections[project_id].remove(websocket)
-    
+            try:
+                self.active_connections[project_id].remove(websocket)
+            except ValueError:
+                pass
+
     async def broadcast(self, project_id: str, message: dict):
-        if project_id in self.active_connections:
-            for connection in self.active_connections[project_id]:
-                try:
-                    await connection.send_json(message)
-                except Exception:
-                    pass
+        if project_id not in self.active_connections:
+            return
+        dead = []
+        for connection in self.active_connections[project_id]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+        for conn in dead:
+            try:
+                self.active_connections[project_id].remove(conn)
+            except ValueError:
+                pass
 
 manager = ConnectionManager()
 
@@ -542,8 +565,55 @@ async def schedule_processing(
     # Update project status
     project.status = "scheduled"
 
-    await db.commit()
+    # Check if all images are already uploaded — if so, transition immediately
+    from app.models.project import Image
+    from sqlalchemy import func
 
+    status_result = await db.execute(
+        select(
+            Image.upload_status,
+            func.count(Image.id).label("cnt"),
+        )
+        .where(Image.project_id == project_id)
+        .group_by(Image.upload_status)
+    )
+    status_counts = {row.upload_status: row.cnt for row in status_result}
+    pending_or_uploading = status_counts.get("pending", 0) + status_counts.get("uploading", 0)
+    completed_images = status_counts.get("completed", 0)
+
+    if pending_or_uploading == 0 and completed_images > 0:
+        # All images already uploaded — transition to queued and submit task
+        job.status = "queued"
+        project.status = "queued"
+        project.progress = 0
+
+        await db.commit()
+
+        try:
+            from app.workers.tasks import process_orthophoto
+            options_dict = {
+                "engine": job.engine,
+                "gsd": job.gsd,
+                "output_crs": job.output_crs,
+                "output_format": job.output_format,
+                "process_mode": job.process_mode or "Normal",
+            }
+            queue_name = job.engine or "metashape"
+            task = process_orthophoto.apply_async(
+                args=[str(job.id), str(project_id), options_dict],
+                queue=queue_name,
+            )
+            job.celery_task_id = task.id
+            await db.commit()
+        except Exception as celery_err:
+            # Celery submission failed — revert to scheduled
+            job.status = "scheduled"
+            project.status = "scheduled"
+            await db.commit()
+    else:
+        await db.commit()
+
+    await db.refresh(job)
     return ProcessingJobResponse.model_validate(job)
 
 @router.get("/projects/{project_id}/status", response_model=ProcessingJobResponse)
@@ -588,6 +658,9 @@ async def get_processing_status(
         response.message = status_payload.get("message")
     if isinstance(status_payload.get("metrics"), dict):
         response.metrics = status_payload.get("metrics")
+    step_status = _read_step_status_file(str(project_id))
+    if step_status:
+        response.step_status = step_status
     return response
 
 
@@ -867,7 +940,7 @@ async def websocket_status(
             # Echo back for ping/pong
             if data == "ping":
                 await websocket.send_text("pong")
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
         manager.disconnect(project_id, websocket)
 
 

@@ -14,6 +14,8 @@ from app.api.v1.permissions import router as permissions_router
 from app.api.v1.organizations import router as organizations_router
 from app.api.v1.regions import router as regions_router
 from app.api.v1.storage_files import router as storage_files_router
+from app.api.v1.filesystem import router as filesystem_router
+from app.api.v1.sheets import router as sheets_router
 
 router = APIRouter()
 
@@ -30,3 +32,5 @@ router.include_router(groups_router)
 router.include_router(organizations_router)
 router.include_router(regions_router)
 router.include_router(storage_files_router)
+router.include_router(filesystem_router)
+router.include_router(sheets_router)

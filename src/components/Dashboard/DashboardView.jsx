@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye, Activity } from 'lucide-react';
+import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye } from 'lucide-react';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
 import { api } from '../../api/client';
@@ -7,24 +7,6 @@ import { formatBytesValue as formatBytes, formatBytesUnit } from '../../utils/fo
 
 // Month names for chart display
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-function formatMetricSeconds(value) {
-    const numeric = Number(value);
-    if (value === null || value === undefined || !Number.isFinite(numeric)) {
-        return '-';
-    }
-
-    if (numeric < 60) return `${numeric.toFixed(1)}초`;
-    const minutes = Math.floor(numeric / 60);
-    const seconds = Math.round(numeric % 60);
-    return `${minutes}분 ${seconds}초`;
-}
-
-function formatMetricRate(value) {
-    const numeric = Number(value);
-    if (value === null || value === undefined || !Number.isFinite(numeric)) return '-';
-    return `${numeric.toFixed(1)}%`;
-}
 
 /**
  * Enhanced Stats Card for dashboard - larger with more details
@@ -72,16 +54,9 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
 /**
  * Stats summary section with 4 key metrics
  */
-function StatsSummary({ stats, storageStats, processingMetrics, isCompact = false }) {
+function StatsSummary({ stats, storageStats, isCompact = false }) {
     const completedCount = stats.completed;
     const totalCount = stats.total || (stats.completed + stats.processing);
-
-    // Total storage from API (sum of three dirs)
-    const totalSize = storageStats
-        ? storageStats.storage_size + storageStats.processing_size + storageStats.tiles_size
-        : 0;
-    const storageLabel = '영상 데이터';
-    const metricSummary = processingMetrics?.summary;
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -114,22 +89,18 @@ function StatsSummary({ stats, storageStats, processingMetrics, isCompact = fals
                     </div>
                 </DashboardStatsCard>
 
-                {/* 저장 용량 (디렉토리별 실사용량) */}
+                {/* 저장 용량 (정사영상 + 배경지도) */}
                 {storageStats ? (
                     <DashboardStatsCard
                         icon={<HardDrive size={18} />}
-                        value={formatBytes(totalSize)}
-                        unit={formatBytesUnit(totalSize)}
+                        value={formatBytes(storageStats.storage_size + storageStats.tiles_size)}
+                        unit={formatBytesUnit(storageStats.storage_size + storageStats.tiles_size)}
                         label="총 저장 용량"
                     >
                         <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
                             <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">{storageLabel}</span>
+                                <span className="text-slate-500">정사영상</span>
                                 <span className="font-medium text-slate-700">{formatBytes(storageStats.storage_size)} {formatBytesUnit(storageStats.storage_size)}</span>
-                            </div>
-                            <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">작업 데이터</span>
-                                <span className="font-medium text-slate-700">{formatBytes(storageStats.processing_size)} {formatBytesUnit(storageStats.processing_size)}</span>
                             </div>
                             <div className="flex justify-between text-xs">
                                 <span className="text-slate-500">배경 지도</span>
@@ -143,7 +114,6 @@ function StatsSummary({ stats, storageStats, processingMetrics, isCompact = fals
                         value={stats.dataSize || '0'}
                         unit="GB"
                         label="정사영상 용량"
-                        subLabel={`총 저장 용량: ${stats.totalStorage} GB`}
                     />
                 )}
 
@@ -155,39 +125,6 @@ function StatsSummary({ stats, storageStats, processingMetrics, isCompact = fals
                     label="총 원본 사진"
                     subLabel={stats.total > 0 ? `평균 ${stats.avgPhotos}장 / 블록` : '프로젝트 없음'}
                 />
-
-                {metricSummary && (
-                    <DashboardStatsCard
-                        icon={<Activity size={18} />}
-                        value={metricSummary.total_elapsed_avg_seconds || '-'}
-                        unit={metricSummary.total_elapsed_avg_seconds ? '초' : ''}
-                        label="처리 성능 지표(SLO)"
-                        subLabel={`최근 ${metricSummary.total_elapsed_sample_count}개 작업 기준`}
-                    >
-                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
-                            <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">큐 대기 P95</span>
-                                <span className="font-medium text-slate-700">{formatMetricSeconds(metricSummary.queue_wait_p95_seconds)}</span>
-                            </div>
-                            <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">처리시간 P95</span>
-                                <span className="font-medium text-slate-700">{formatMetricSeconds(metricSummary.total_elapsed_p95_seconds)}</span>
-                            </div>
-                            <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">메모리 P95</span>
-                                <span className="font-medium text-slate-700">{metricSummary.memory_usage_p95_mb ? `${metricSummary.memory_usage_p95_mb.toFixed(1)}MB` : '-'}</span>
-                            </div>
-                            <div className="flex justify-between text-xs">
-                                <span className="text-slate-500">SLO 위반율</span>
-                                <span className="font-medium text-slate-700">{formatMetricRate(Math.max(
-                                    metricSummary.queue_wait_violation_rate || 0,
-                                    metricSummary.total_elapsed_violation_rate || 0,
-                                    metricSummary.memory_violation_rate || 0
-                                ))}</span>
-                            </div>
-                        </div>
-                    </DashboardStatsCard>
-                )}
             </div>
         </div>
     );
@@ -326,23 +263,37 @@ export default function DashboardView({
     showInspector = false,
     renderInspector = null,
     regionFilter = 'ALL',
-    onRegionClick
+    onRegionClick,
+    sheetState = null,
+    onSheetToggle = null,
+    onSheetsLoaded = null,
+    onSheetStateChange = null,
 }) {
     const containerRef = useRef(null);
     const [containerWidth, setContainerWidth] = useState(800);
     const [layoutMode, setLayoutMode] = useState('auto'); // 'wide', 'narrow', or 'auto'
 
     // Map height for narrow layout (draggable)
-    const [mapHeight, setMapHeight] = useState(600);
+    const [mapHeight, setMapHeight] = useState(1000);
     const isDragging = useRef(false);
     const startY = useRef(0);
     const startHeight = useRef(350);
+
+    // 인스펙터 열릴 때 지도 높이 자동 축소, 닫힐 때 복원
+    const prevShowInspector = useRef(showInspector);
+    useEffect(() => {
+        if (showInspector && !prevShowInspector.current) {
+            setMapHeight(900);
+        } else if (!showInspector && prevShowInspector.current) {
+            setMapHeight(1000);
+        }
+        prevShowInspector.current = showInspector;
+    }, [showInspector]);
 
     // Statistics data from API
     const [monthlyData, setMonthlyData] = useState([]);
     const [regionalData, setRegionalData] = useState([]);
     const [storageStats, setStorageStats] = useState(null);
-    const [processingMetrics, setProcessingMetrics] = useState(null);
     const [statsLoading, setStatsLoading] = useState(true);
 
     // Track source_deleted count for delayed storage refresh
@@ -365,15 +316,26 @@ export default function DashboardView({
         prevDeletedCount.current = sourceDeletedCount;
     }, [sourceDeletedCount]);
 
+    // projects 변경 시 (처리완료, COG 삭제 등) 저장용량 자동 갱신
+    const projectsVersionRef = useRef(0);
+    useEffect(() => {
+        // 최초 로드가 아닌 경우에만 storage 갱신
+        if (projectsVersionRef.current > 0) {
+            api.getStorageStats().then(res => {
+                if (res?.storage_size !== undefined) setStorageStats(res);
+            }).catch(() => {});
+        }
+        projectsVersionRef.current += 1;
+    }, [projects]);
+
     // Fetch statistics data from API (each request independent — one failure doesn't break others)
     useEffect(() => {
         const fetchStats = async () => {
             setStatsLoading(true);
-            const [monthlyRes, regionalRes, storageRes, processingMetricsRes] = await Promise.allSettled([
+            const [monthlyRes, regionalRes, storageRes] = await Promise.allSettled([
                 api.getMonthlyStats(),
                 api.getRegionalStats(),
                 api.getStorageStats(),
-                api.getProcessingMetrics(),
             ]);
 
             // Monthly stats
@@ -399,12 +361,6 @@ export default function DashboardView({
             // Storage stats
             if (storageRes.status === 'fulfilled' && storageRes.value?.storage_size !== undefined) {
                 setStorageStats(storageRes.value);
-            }
-
-            if (processingMetricsRes.status === 'fulfilled' && processingMetricsRes.value?.total_jobs !== undefined) {
-                setProcessingMetrics(processingMetricsRes.value);
-            } else {
-                setProcessingMetrics(null);
             }
 
             setStatsLoading(false);
@@ -504,7 +460,7 @@ export default function DashboardView({
 
             {/* WIDE LAYOUT: Map (left) + Stats (right) side by side */}
             {isWideLayout ? (
-                <div className="grid grid-cols-2 gap-6" style={{ minHeight: 'calc(100vh - 180px)' }}>
+                <div className="grid grid-cols-2 gap-6" style={{ height: 'calc(100vh - 140px)' }}>
                     {/* Left Column - Footprint Map (full height) */}
                     <div className="flex flex-col">
                         <FootprintMap
@@ -517,6 +473,12 @@ export default function DashboardView({
                             onRegionClick={onRegionClick}
                             activeRegionName={regionFilter}
                             resetKey={mapResetKey}
+                            sheetState={sheetState}
+                            sheetProjectBounds={selectedProject?.bounds}
+                            onSheetToggle={onSheetToggle}
+                            onSheetsLoaded={onSheetsLoaded}
+                            onSheetStateChange={onSheetStateChange}
+                            selectedProject={selectedProject}
                         />
                     </div>
 
@@ -533,7 +495,7 @@ export default function DashboardView({
                         ) : (
                             <>
                                 {/* Stats Summary (4 cards in 2x2 grid) */}
-                                <StatsSummary stats={stats} storageStats={storageStats} processingMetrics={processingMetrics} isCompact={true} />
+                                <StatsSummary stats={stats} storageStats={storageStats} isCompact={true} />
 
                                 {/* Additional Charts */}
                                 <TrendLineChart data={monthlyData} height={180} />
@@ -562,6 +524,12 @@ export default function DashboardView({
                         onRegionClick={onRegionClick}
                         activeRegionName={regionFilter}
                         resetKey={mapResetKey}
+                        sheetState={sheetState}
+                        sheetProjectBounds={selectedProject?.bounds}
+                        onSheetToggle={onSheetToggle}
+                        onSheetsLoaded={onSheetsLoaded}
+                        onSheetStateChange={onSheetStateChange}
+                        selectedProject={selectedProject}
                     />
 
                     {/* Drag Handle */}
@@ -577,7 +545,8 @@ export default function DashboardView({
                             const handleMouseMove = (moveEvent) => {
                                 if (!isDragging.current) return;
                                 const deltaY = moveEvent.clientY - startY.current;
-                                const newHeight = Math.max(200, Math.min(600, startHeight.current + deltaY));
+                                const maxH = window.innerHeight - 200;
+                                const newHeight = Math.max(200, Math.min(maxH, startHeight.current + deltaY));
                                 setMapHeight(newHeight);
                             };
 
@@ -608,7 +577,7 @@ export default function DashboardView({
                     ) : (
                         <>
                             {/* Stats Summary (4 cards in a row) */}
-                            <StatsSummary stats={stats} storageStats={storageStats} processingMetrics={processingMetrics} isCompact={false} />
+                            <StatsSummary stats={stats} storageStats={storageStats} isCompact={false} />
 
                             {/* Additional Charts */}
                             <TrendLineChart data={monthlyData} height={200} />

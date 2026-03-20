@@ -3,6 +3,7 @@ import json
 import hashlib
 import hmac
 import logging
+import os
 import uuid as uuid_mod
 from uuid import UUID
 from pathlib import Path
@@ -345,6 +346,173 @@ async def list_project_images(
     return response
 
 
+# ============================================================================
+# Local Path Import - Register images by local filesystem path (no file copy)
+# ============================================================================
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
+
+
+class LocalImportRequest(BaseModel):
+    """Request body for local path import."""
+    source_dir: str
+    file_paths: Optional[List[str]] = None  # Specific files to register (individual selection mode)
+
+
+class LocalImportResponse(BaseModel):
+    """Response for local path import."""
+    registered: int
+    skipped: int
+    total_size: int
+
+
+@router.post("/projects/{project_id}/local-import", response_model=LocalImportResponse)
+async def local_import(
+    project_id: UUID,
+    request: LocalImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Register local image files by scanning a directory path.
+
+    Instead of uploading files via HTTP, this endpoint scans a local directory
+    for image files and creates Image records pointing to the original paths.
+    No files are copied or moved.
+    """
+    # Check permission
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    # Basic path validation: require absolute path with no traversal components
+    raw_path = request.source_dir
+    if not raw_path.startswith("/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="source_dir must be an absolute path (starting with /)",
+        )
+    source_dir = Path(raw_path).resolve()
+    if ".." in Path(raw_path).parts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="source_dir must not contain '..' components",
+        )
+
+    logger.info(f"[local-import] Scanning directory: {source_dir} (raw={raw_path})")
+
+    if not source_dir.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Directory not found: {request.source_dir}",
+        )
+
+    # 파일 스캔 + 사이즈 조회를 스레드풀에서 실행 (이벤트 루프 블로킹 방지)
+    import asyncio
+
+    def _scan_and_stat_files():
+        """동기 파일시스템 작업을 별도 스레드에서 실행."""
+        files = []
+        if request.file_paths:
+            for fp in request.file_paths:
+                p = Path(fp)
+                if not p.is_absolute():
+                    continue
+                if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
+                    try:
+                        size = os.path.getsize(p)
+                        files.append((p, size))
+                    except OSError:
+                        pass
+        else:
+            for entry in sorted(source_dir.iterdir()):
+                if entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
+                    try:
+                        size = os.path.getsize(entry)
+                        files.append((entry, size))
+                    except OSError:
+                        pass
+        return files
+
+    scanned_files = await asyncio.to_thread(_scan_and_stat_files)
+
+    if not scanned_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No image files found in {request.source_dir} (supported: {', '.join(IMAGE_EXTENSIONS)})",
+        )
+
+    # Check for existing images to avoid duplicates
+    filenames = [f[0].name for f in scanned_files]
+    existing_result = await db.execute(
+        select(Image.filename).where(
+            Image.project_id == project_id,
+            Image.filename.in_(filenames),
+        )
+    )
+    existing_filenames = {row[0] for row in existing_result.all()}
+
+    registered = 0
+    skipped = 0
+    total_size = 0
+
+    for file_path, file_size in scanned_files:
+        if file_path.name in existing_filenames:
+            skipped += 1
+            continue
+
+        total_size += file_size
+
+        image = Image(
+            project_id=project_id,
+            filename=file_path.name,
+            original_path=str(file_path.resolve()),
+            file_size=file_size,
+            upload_status="completed",
+        )
+        db.add(image)
+        registered += 1
+
+    await db.commit()
+
+    # Trigger thumbnail generation for newly registered images
+    if registered > 0:
+        try:
+            # Re-query to get the image IDs we just created
+            new_images_result = await db.execute(
+                select(Image.id).where(
+                    Image.project_id == project_id,
+                    Image.filename.in_([f.name for f in image_files if f.name not in existing_filenames]),
+                )
+            )
+            from app.workers.tasks import generate_thumbnail
+            for row in new_images_result.all():
+                generate_thumbnail.delay(str(row[0]))
+        except Exception as e:
+            logger.warning(f"Failed to trigger thumbnail generation: {e}")
+
+    logger.info(
+        f"[local-import] project={project_id}, registered={registered}, "
+        f"skipped={skipped}, total_size={total_size}"
+    )
+
+    return LocalImportResponse(
+        registered=registered,
+        skipped=skipped,
+        total_size=total_size,
+    )
+
+
 @router.post("/projects/{project_id}/images/regenerate-thumbnails")
 async def regenerate_project_thumbnails(
     project_id: UUID,
@@ -382,53 +550,124 @@ async def regenerate_project_thumbnails(
         )
 
 
+@router.get("/images/{image_id}", response_model=ImageResponse)
+async def get_image(
+    image_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single image with thumbnail_url."""
+    from sqlalchemy.orm import joinedload
+
+    result = await db.execute(
+        select(Image)
+        .options(
+            joinedload(Image.exterior_orientation),
+            joinedload(Image.camera_model),
+        )
+        .where(Image.id == image_id)
+    )
+    image = result.scalar_one_or_none()
+
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    scoped_project = await _get_scoped_project(image.project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    storage = get_storage()
+    img_dict = {
+        "id": image.id,
+        "project_id": image.project_id,
+        "filename": image.filename,
+        "original_path": image.original_path,
+        "thumbnail_path": image.thumbnail_path,
+        "thumbnail_url": storage.get_presigned_url(image.thumbnail_path) if image.thumbnail_path else None,
+        "captured_at": image.captured_at,
+        "resolution": image.resolution,
+        "file_size": image.file_size,
+        "has_error": image.has_error,
+        "upload_status": image.upload_status,
+        "created_at": image.created_at,
+        "image_width": image.image_width,
+        "image_height": image.image_height,
+        "camera_model": image.camera_model,
+        "exterior_orientation": image.exterior_orientation,
+    }
+    return ImageResponse.model_validate(img_dict)
+
+
 @router.post("/images/{image_id}/regenerate-thumbnail")
 async def regenerate_image_thumbnail(
     image_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Regenerate thumbnail for a specific image."""
-    # Find the image
-    result = await db.execute(
-        select(Image).where(Image.id == image_id)
-    )
+    """온디맨드 썸네일 생성 (API에서 직접 실행, URL 즉시 반환)."""
+    import asyncio
+    from sqlalchemy import update as sa_update
+    from app.workers.tasks import _generate_thumbnail_gdal, _generate_thumbnail_pil
+
+    result = await db.execute(select(Image).where(Image.id == image_id))
     image = result.scalar_one_or_none()
 
     if not image:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
 
     scoped_project = await _get_scoped_project(image.project_id, current_user, db)
     if not scoped_project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    # Check permission
     permission_checker = PermissionChecker("edit")
     if not await permission_checker.check(str(image.project_id), current_user, db):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    storage = get_storage()
+
+    # 원본 파일 경로 결정
+    if os.path.isabs(image.original_path) and os.path.exists(image.original_path):
+        source_path = image.original_path
+    else:
+        local_src = storage.get_local_path(image.original_path)
+        if local_src and os.path.exists(local_src):
+            source_path = local_src
+        else:
+            # 로컬 접근 불가 → Celery 폴백
+            from app.workers.tasks import generate_thumbnail
+            task = generate_thumbnail.delay(str(image_id), force=True)
+            return {"status": "triggered", "task_id": task.id}
+
+    thumb_path = f"/tmp/thumb_{image_id}_{image.filename}.jpg"
+    thumb_object_name = f"projects/{image.project_id}/thumbnails/{image.filename}.jpg"
+
+    def _run_generation():
+        try:
+            _generate_thumbnail_gdal(source_path, thumb_path)
+        except Exception:
+            _generate_thumbnail_pil(source_path, thumb_path)
+        storage.upload_file(thumb_path, thumb_object_name, "image/jpeg")
+        if os.path.exists(thumb_path):
+            try:
+                os.remove(thumb_path)
+            except Exception:
+                pass
 
     try:
-        from app.workers.tasks import generate_thumbnail
-        task = generate_thumbnail.delay(str(image_id), force=True)
-        return {
-            "status": "triggered",
-            "task_id": task.id,
-            "message": f"Thumbnail regeneration started for image {image_id}",
-        }
+        await asyncio.to_thread(_run_generation)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to trigger thumbnail regeneration: {str(e)}",
+            detail=f"썸네일 생성 실패: {str(e)}",
         )
+
+    await db.execute(
+        sa_update(Image).where(Image.id == image_id).values(thumbnail_path=thumb_object_name)
+    )
+    await db.commit()
+
+    thumbnail_url = storage.get_presigned_url(thumb_object_name)
+    return {"status": "completed", "thumbnail_url": thumbnail_url}
 
 
 # ============================================================================
@@ -877,8 +1116,14 @@ async def complete_multipart_upload(
                 status_counts = {row.upload_status: row.cnt for row in status_result}
                 pending_or_uploading = status_counts.get("pending", 0) + status_counts.get("uploading", 0)
                 completed_images = status_counts.get("completed", 0)
+                failed_images = status_counts.get("failed", 0)
 
-                if pending_or_uploading == 0 and completed_images > 0:
+                logger.info(
+                    f"[Scheduled Processing] Upload status for project {project_id}: "
+                    f"completed={completed_images}, pending/uploading={pending_or_uploading}, failed={failed_images}"
+                )
+
+                if pending_or_uploading == 0 and completed_images > 0 and failed_images == 0:
                     # All images uploaded — update DB state first (atomic)
                     scheduled_job.status = "queued"
                     scoped_project.status = "queued"

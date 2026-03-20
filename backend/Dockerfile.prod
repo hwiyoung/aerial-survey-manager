@@ -74,9 +74,5 @@ RUN mkdir -p /data/processing
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Security: Run as non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /data /entrypoint.sh
-USER appuser
-
 # Run the application with auto-migration
 CMD ["/entrypoint.sh"]
