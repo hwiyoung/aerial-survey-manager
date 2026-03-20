@@ -51,9 +51,9 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_routes={
         "app.workers.tasks.process_orthophoto": {"queue": "metashape"},
-        # 처리 외 모든 태스크는 celery 워커에서 처리
-        "app.workers.tasks.generate_thumbnail": {"queue": "celery"},
-        "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "celery"},
+        # 썸네일 태스크는 전용 워커에서 처리 (처리 중에도 동시 실행)
+        "app.workers.tasks.generate_thumbnail": {"queue": "thumbnail"},
+        "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "thumbnail"},
         "app.workers.tasks.delete_project_data": {"queue": "celery"},
         "app.workers.tasks.save_eo_metadata": {"queue": "celery"},
         "app.workers.tasks.delete_source_images": {"queue": "celery"},
@@ -239,31 +239,6 @@ def _prepare_images(storage, images, input_dir: Path, update_progress) -> int:
 
 
 # ============================================================================
-# Thumbnail throttling during active processing
-# ============================================================================
-
-PROCESSING_ACTIVE_KEY = "metashape:processing_active"
-THUMBNAIL_DEFER_SECONDS = 60
-
-
-def _set_processing_flag(active: bool):
-    """Set or clear the processing-active flag in Redis."""
-    import redis
-    r = redis.from_url(settings.REDIS_URL)
-    if active:
-        r.set(PROCESSING_ACTIVE_KEY, "1", ex=7200)  # 2h TTL safety net
-    else:
-        r.delete(PROCESSING_ACTIVE_KEY)
-
-
-def _is_processing_active() -> bool:
-    """Check whether Metashape processing is running."""
-    import redis
-    r = redis.from_url(settings.REDIS_URL)
-    return r.exists(PROCESSING_ACTIVE_KEY) > 0
-
-
-# ============================================================================
 # Main processing task
 # ============================================================================
 
@@ -306,9 +281,6 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             job.started_at = datetime.utcnow()
             project.status = "processing"
             db.commit()
-
-            # Throttle thumbnail tasks while processing is active
-            _set_processing_flag(True)
 
             queue_wait_seconds = None
             queued_at = getattr(job, 'queued_at', None) or getattr(job, 'created_at', None)
@@ -609,9 +581,6 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 metrics=final_metrics,
             )
 
-            # Resume thumbnail processing
-            _set_processing_flag(False)
-
             # Broadcast completion via WebSocket AFTER all DB updates
             _broadcast_ws(project_id, "completed", 100, "Processing completed successfully")
 
@@ -653,13 +622,61 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             except NameError:
                 pass  # write_status_file/phase_timings not yet defined (early failure)
             
-            # Resume thumbnail processing
-            _set_processing_flag(False)
-
             # Broadcast error via WebSocket
             _broadcast_ws(project_id, "error", 0, user_friendly_error)
 
             raise
+
+
+def _generate_thumbnail_gdal(source_path: str, dest_path: str, size: int = 256):
+    """gdal_translate로 썸네일 생성 (오버뷰 활용 시 빠름).
+
+    gdalinfo로 밴드 수/데이터 타입을 먼저 확인해 gdal_translate를 한 번만 실행.
+    - 8-bit: -scale 생략 (파일을 한 번만 읽음)
+    - 16-bit 이상: -scale 추가 (0-255 변환 필요)
+    - 밴드 4개 이상: -b 1 -b 2 -b 3 으로 RGB만 추출
+    """
+    import subprocess, json
+
+    # 파일 메타데이터 확인 (픽셀 데이터 미읽음, 빠름)
+    info = subprocess.run(
+        ["gdalinfo", "-json", source_path],
+        capture_output=True, text=True, timeout=30
+    )
+    if info.returncode != 0:
+        raise RuntimeError(f"gdalinfo 실패: {info.stderr.strip()}")
+
+    meta = json.loads(info.stdout)
+    bands = meta.get("bands", [])
+    band_count = len(bands)
+    data_type = bands[0].get("type", "Byte") if bands else "Byte"
+
+    cmd = ["gdal_translate", "-of", "JPEG", "-outsize", str(size), "0", "-r", "average"]
+
+    # 4밴드 이상(RGBN 등)이면 첫 3밴드만 선택
+    if band_count > 3:
+        cmd += ["-b", "1", "-b", "2", "-b", "3"]
+
+    # 16-bit 이상이면 0-255 스케일링 필요 (8-bit는 생략해 파일을 한 번만 읽음)
+    if data_type not in ("Byte",):
+        cmd += ["-scale"]
+
+    cmd += [source_path, dest_path]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"gdal_translate 실패: {result.stderr.strip()}")
+
+
+def _generate_thumbnail_pil(source_path: str, dest_path: str, size: int = 256):
+    """PIL로 썸네일 생성 (폴백, 전체 파일 읽음)."""
+    from PIL import Image as PILImage
+    PILImage.MAX_IMAGE_PIXELS = 300000000
+    with PILImage.open(source_path) as img:
+        if img.mode in ('RGBA', 'LA', 'P'):
+            img = img.convert('RGB')
+        img.thumbnail((size, size))
+        img.save(dest_path, "JPEG", quality=85)
 
 
 @celery_app.task(
@@ -677,18 +694,6 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
         image_id: UUID of the image
         force: If True, regenerate even if thumbnail already exists
     """
-    # Defer if Metashape processing is active (avoid I/O contention)
-    if _is_processing_active():
-        generate_thumbnail.apply_async(
-            args=[image_id],
-            kwargs={"force": force},
-            countdown=THUMBNAIL_DEFER_SECONDS,
-        )
-        return {"status": "deferred", "message": "Processing active, retrying later"}
-
-    from PIL import Image as PILImage
-    # Increase limit for large aerial images (e.g., UltraCam Eagle: 17310x11310 = 195MP)
-    PILImage.MAX_IMAGE_PIXELS = 300000000  # 300 megapixels
     from app.models.project import Image
     from app.services.storage import get_storage
     from app.utils.db import sync_db_session
@@ -701,54 +706,47 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
         if not image or not image.original_path:
             return {"status": "error", "message": "Image not found or no original path"}
 
-        # Skip if thumbnail already exists (unless force=True)
         if image.thumbnail_path and not force:
             return {"status": "skipped", "message": "Thumbnail already exists"}
 
         storage = get_storage()
 
-        # Download original (or use local path directly)
-        # For local-import images, original_path is an absolute filesystem path
+        # 원본 파일 경로 결정 (로컬 직접 접근 or 다운로드)
         if os.path.isabs(image.original_path) and os.path.exists(image.original_path):
-            temp_path = image.original_path  # Use directly, no download needed
+            temp_path = image.original_path
         else:
             local_src = storage.get_local_path(image.original_path)
             if local_src and os.path.exists(local_src):
-                temp_path = local_src  # Use directly, no download needed
+                temp_path = local_src
             else:
                 temp_path = f"/tmp/{image_id}_{image.filename}"
                 try:
                     storage.download_file(image.original_path, temp_path)
                 except Exception as e:
                     print(f"Failed to download original image {image_id}: {e}")
-                    raise  # Will trigger retry
+                    raise
 
-        # Generate thumbnail
+        thumb_path = f"/tmp/thumb_{image_id}_{image.filename}.jpg"
+
         try:
-            with PILImage.open(temp_path) as img:
-                # Handle RGBA images (convert to RGB for JPEG)
-                if img.mode in ('RGBA', 'LA', 'P'):
-                    img = img.convert('RGB')
-                img.thumbnail((256, 256))
-                thumb_path = f"/tmp/thumb_{image_id}_{image.filename}.jpg"
-                img.save(thumb_path, "JPEG", quality=85)
+            # GDAL 우선 (오버뷰 활용 → 빠름), 실패 시 PIL 폴백
+            try:
+                _generate_thumbnail_gdal(temp_path, thumb_path)
+            except Exception as gdal_err:
+                print(f"[thumbnail] GDAL 실패 ({gdal_err}), PIL 폴백")
+                _generate_thumbnail_pil(temp_path, thumb_path)
 
-            # Upload thumbnail
             thumb_object_name = f"projects/{image.project_id}/thumbnails/{image.filename}.jpg"
             storage.upload_file(thumb_path, thumb_object_name, "image/jpeg")
-
-            # Update database
             image.thumbnail_path = thumb_object_name
             db.commit()
-
             return {"status": "completed", "thumbnail_path": thumb_object_name}
 
         except Exception as e:
             print(f"Thumbnail generation failed for {image_id}: {e}")
-            raise  # Will trigger retry
+            raise
 
         finally:
-            # Cleanup temp files (don't delete if it's the local storage original)
             is_temp = temp_path and temp_path.startswith("/tmp/")
             if is_temp and os.path.exists(temp_path):
                 try:

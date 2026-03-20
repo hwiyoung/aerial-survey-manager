@@ -165,15 +165,25 @@ class ConnectionManager:
     
     def disconnect(self, project_id: str, websocket: WebSocket):
         if project_id in self.active_connections:
-            self.active_connections[project_id].remove(websocket)
-    
+            try:
+                self.active_connections[project_id].remove(websocket)
+            except ValueError:
+                pass
+
     async def broadcast(self, project_id: str, message: dict):
-        if project_id in self.active_connections:
-            for connection in self.active_connections[project_id]:
-                try:
-                    await connection.send_json(message)
-                except Exception:
-                    pass
+        if project_id not in self.active_connections:
+            return
+        dead = []
+        for connection in self.active_connections[project_id]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+        for conn in dead:
+            try:
+                self.active_connections[project_id].remove(conn)
+            except ValueError:
+                pass
 
 manager = ConnectionManager()
 
@@ -930,7 +940,7 @@ async def websocket_status(
             # Echo back for ping/pong
             if data == "ping":
                 await websocket.send_text("pong")
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
         manager.disconnect(project_id, websocket)
 
 

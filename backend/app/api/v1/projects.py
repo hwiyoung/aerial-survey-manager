@@ -188,6 +188,9 @@ def _cleanup_project_storage(project_id: UUID, original_paths: list[str]) -> Non
         storage = get_storage()
 
         for path in original_paths:
+            # 절대 경로(로컬 임포트)는 외장하드/외부 파일이므로 삭제하지 않음
+            if os.path.isabs(path):
+                continue
             try:
                 storage.delete_recursive(f"{path}/")
                 try:

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, Download, FileOutput, Trash2, AlertTriangle, HardDrive } from 'lucide-react';
 import api from '../../api/client';
 
@@ -21,7 +21,8 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
     const [progress, setProgress] = useState(0);
     const [phase, setPhase] = useState('export'); // 'export' | 'askDelete'
     const [isDeleting, setIsDeleting] = useState(false);
-    const progressIntervalRef = React.useRef(null);
+    const progressIntervalRef = useRef(null);
+    const wasOpenRef = useRef(false);
 
     const targets = useMemo(() => {
         return allProjects.filter(p => targetProjectIds.includes(p.id));
@@ -44,7 +45,8 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
     }, [targets]);
 
     useEffect(() => {
-        if (isOpen) {
+        if (isOpen && !wasOpenRef.current) {
+            // closed → open 전환 시에만 초기화 (WebSocket allProjects 업데이트로 재실행 방지)
             setIsExporting(false);
             setProgress(0);
             setPhase('export');
@@ -56,7 +58,17 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                 setFilename(`Bulk_Export_${new Date().toISOString().slice(0, 10)}`);
             }
         }
+        wasOpenRef.current = isOpen;
     }, [isOpen, targets, resultGsd]);
+
+    // 컴포넌트 언마운트 시 interval 정리
+    useEffect(() => {
+        return () => {
+            if (progressIntervalRef.current) {
+                clearInterval(progressIntervalRef.current);
+            }
+        };
+    }, []);
 
     // ESC 키로 창 닫기
     useEffect(() => {
@@ -124,7 +136,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             onClose();
         } catch (err) {
             console.error('COG deletion failed:', err);
-            alert('COG 삭제 실패: ' + err.message);
+            alert('정사영상 삭제 실패:' + err.message);
             setIsDeleting(false);
         }
     };
@@ -154,7 +166,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
 
                         <div className="text-center space-y-2">
                             <p className="text-sm text-slate-700">
-                                저장공간 절약을 위해 서버의 원본 정사영상(COG)을 삭제하시겠습니까?
+                                저장공간 절약을 위해 서버의 원본 정사영상을 삭제하시겠습니까?
                             </p>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                                 {targets.filter(p => p.ortho_path).map(p => (

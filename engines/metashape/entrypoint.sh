@@ -25,6 +25,24 @@ echo "[Entrypoint] PID: $$"
 echo "[Entrypoint] 명령어: $@"
 echo "========================================"
 
+# 라이센스 자동 활성화 (키가 있고 아직 활성화 안 된 경우)
+if [ -n "$METASHAPE_LICENSE_KEY" ]; then
+    python3 -c "
+import Metashape
+if Metashape.app.activated:
+    print('[Entrypoint] 라이센스 이미 활성화됨')
+else:
+    import os
+    key = os.environ.get('METASHAPE_LICENSE_KEY', '')
+    try:
+        Metashape.License().activate(key)
+        print('[Entrypoint] 라이센스 활성화 완료')
+    except Exception as e:
+        print(f'[Entrypoint] 라이센스 활성화 실패: {e}')
+        print('[Entrypoint] 오프라인 환경이면 인터넷 연결 후 재시작하세요')
+" 2>&1
+fi
+
 # 원래 명령어 실행 (백그라운드)
 exec "$@" &
 CHILD_PID=$!

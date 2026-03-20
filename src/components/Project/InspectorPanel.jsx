@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { FileImage, Download, Loader2, X, AlertTriangle, CheckCircle2, Trash2, Camera, Clock, Calendar } from 'lucide-react';
+import { FileImage, Download, Loader2, X, AlertTriangle, CheckCircle2, Trash2, Camera, Calendar } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 
@@ -57,7 +57,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
 
     const handleDeleteCog = async () => {
         if (!window.confirm(
-            'COG 정사영상을 삭제하시겠습니까?\n\n' +
+            '정사영상을 삭제하시겠습니까?\n\n' +
             '⚠️ 이 작업은 되돌릴 수 없습니다.\n' +
             '저해상도 썸네일은 보존됩니다.'
         )) return;
@@ -69,7 +69,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                 onProjectUpdate({ ...project, ortho_path: null, ortho_size: null });
             }
         } catch (err) {
-            alert('COG 삭제 실패: ' + err.message);
+            alert('정사영상 삭제 실패:' + err.message);
         } finally {
             setIsDeletingCog(false);
         }
@@ -115,15 +115,6 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                             )}
                             {project.createdDate && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">생성일</span><span className="font-medium">{project.createdDate}</span></div>}
                             {project.completedDate && <div className="flex justify-between border-b pb-2"><span className="text-slate-500">처리완료일</span><span className="font-medium">{project.completedDate}</span></div>}
-                            {(() => {
-                                const duration = formatDuration(project.processingStartedAt, project.processingCompletedAt);
-                                return duration ? (
-                                    <div className="flex justify-between border-b pb-2">
-                                        <span className="text-slate-500">소요시간</span>
-                                        <span className="font-medium flex items-center gap-1"><Clock size={13} className="text-blue-500" />{duration}</span>
-                                    </div>
-                                ) : null;
-                            })()}
                             {/* COG 관리 */}
                             {(project.status === '완료' || project.status === 'completed') && project.ortho_path && (
                                 <button
@@ -132,13 +123,13 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                                     className="w-full flex items-center justify-center gap-2 py-2 mt-2 text-xs text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors disabled:opacity-50"
                                 >
                                     <Trash2 size={14} />
-                                    {isDeletingCog ? '삭제 중...' : 'COG 삭제 (저장공간 확보)'}
+                                    {isDeletingCog ? '삭제 중...' : '정사영상 삭제 (저장공간 확보)'}
                                 </button>
                             )}
                             {(project.status === '완료' || project.status === 'completed') && !project.ortho_path && project.ortho_thumbnail_path && (
                                 <div className="flex items-center gap-2 py-2 px-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg">
                                     <CheckCircle2 size={14} />
-                                    COG 삭제됨 {project.ortho_size ? `(${(project.ortho_size / (1024 * 1024 * 1024)).toFixed(2)} GB 확보)` : ''}
+                                    정사영상 삭제됨 {project.ortho_size ? `(${(project.ortho_size / (1024 * 1024 * 1024)).toFixed(2)} GB 확보)` : ''}
                                 </div>
                             )}
                         </div>

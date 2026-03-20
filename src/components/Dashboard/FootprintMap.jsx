@@ -789,11 +789,22 @@ function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) 
     const [searchInput, setSearchInput] = useState('');
     const [searchResult, setSearchResult] = useState(null);
     const [isClipping, setIsClipping] = useState(false);
-    const [availableScales, setAvailableScales] = useState([]);
+    // 축척 버튼을 즉시 표시 (API 응답 대기 없음), 큰 축척(넓은 영역)부터 정렬
+    const [availableScales, setAvailableScales] = useState([
+        { scale: 50000, label: '1:50000' },
+        { scale: 25000, label: '1:25000' },
+        { scale: 5000, label: '1:5000' },
+        { scale: 1000, label: '1:1000' },
+    ]);
 
     useEffect(() => {
         api.getSheetScales().then(data => {
-            setAvailableScales(data.scales || []);
+            const scales = data.scales || [];
+            if (scales.length > 0) {
+                // API 응답으로 업데이트 (큰 축척(넓은 영역)부터 정렬: 50K → 25K → 5K → 1K)
+                const sorted = [...scales].sort((a, b) => Number(b.scale) - Number(a.scale));
+                setAvailableScales(sorted);
+            }
         }).catch(() => {});
     }, []);
 

@@ -19,6 +19,7 @@ _DATA_DIR = os.environ.get("SHEET_DATA_DIR", "/data/storage/../")  # will be res
 def _find_data_dir() -> str:
     """도엽 GeoJSON 파일이 있는 data 디렉토리를 찾는다."""
     candidates = [
+        "/app/data",            # 배포: ./data/regions:/app/data:ro  또는  ./data:/app/data:ro
         "/data/data",           # docker volume mount
         "/data",                # fallback
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "data"),  # dev

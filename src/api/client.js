@@ -308,6 +308,14 @@ class ApiClient {
         return this.request(`/upload/projects/${projectId}/images`);
     }
 
+    async getImage(imageId) {
+        return this.request(`/upload/images/${imageId}`);
+    }
+
+    async regenerateThumbnail(imageId) {
+        return this.request(`/upload/images/${imageId}/regenerate-thumbnail`, { method: 'POST' });
+    }
+
     async initImageUpload(projectId, filename, fileSize) {
         return this.request(`/upload/projects/${projectId}/images/init?filename=${encodeURIComponent(filename)}&file_size=${fileSize}`, {
             method: 'POST',

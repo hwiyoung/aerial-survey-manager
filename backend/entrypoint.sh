@@ -99,33 +99,109 @@ asyncio.run(count_regions())
 " 2>/dev/null || echo "0")
 
 if [ "$REGION_COUNT" -eq 0 ] || [ -z "$REGION_COUNT" ]; then
-    # GeoJSON 파일 경로 탐색 (다양한 이름 지원)
-    REGION_FILE=""
-    for f in "/app/data/전국_권역_5K_5179.geojson" "/app/data/regions.geojson" "data/전국_권역_5K_5179.geojson" "data/regions.geojson"; do
+    # SQL 덤프로 복원 (가장 확실한 방법)
+    SEED_SQL=""
+    for f in "scripts/regions_seed.sql" "/app/data/regions_seed.sql"; do
         if [ -f "$f" ]; then
-            REGION_FILE="$f"
+            SEED_SQL="$f"
             break
         fi
     done
 
-    # import_regions 스크립트 찾기 (.pyc 우선, .py 폴백)
-    IMPORT_SCRIPT=""
-    if [ -f "scripts/import_regions.pyc" ]; then
-        IMPORT_SCRIPT="scripts/import_regions.pyc"
-    elif [ -f "scripts/import_regions.py" ]; then
-        IMPORT_SCRIPT="scripts/import_regions.py"
-    fi
+    if [ -n "$SEED_SQL" ]; then
+        echo "  - Importing regions from SQL dump: $SEED_SQL..."
+        python -c "
+import asyncio, os
 
-    if [ -n "$REGION_FILE" ] && [ -n "$IMPORT_SCRIPT" ]; then
-        echo "  - Importing regions from $REGION_FILE..."
-        python "$IMPORT_SCRIPT" "$REGION_FILE" 2>&1 || echo "    (regions import failed, will retry later)"
+async def import_regions():
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text
+    engine = create_async_engine(os.environ.get('DATABASE_URL'))
+    with open('$SEED_SQL', 'r') as f:
+        sql_content = f.read()
+    # INSERT 문만 추출하여 실행
+    statements = [line.strip() for line in sql_content.split('\n')
+                  if line.strip().startswith('INSERT')]
+    count = 0
+    async with engine.begin() as conn:
+        for stmt in statements:
+            try:
+                await conn.execute(text(stmt))
+                count += 1
+            except Exception:
+                pass  # 중복 데이터 무시
+    await engine.dispose()
+    print(f'    Imported {count} region records')
+
+asyncio.run(import_regions())
+" 2>&1 || echo "    (regions SQL import failed)"
     else
-        echo "  - No regions GeoJSON file or import script found, skipping..."
-        echo "    Searched paths: /app/data/*.geojson, data/*.geojson"
+        # SQL 없으면 GeoJSON 폴백
+        REGION_FILE=""
+        for f in "/app/data/전국_권역_5K_5179.geojson" "/app/data/regions.geojson" "data/전국_권역_5K_5179.geojson" "data/regions.geojson"; do
+            if [ -f "$f" ]; then
+                REGION_FILE="$f"
+                break
+            fi
+        done
+
+        IMPORT_SCRIPT=""
+        if [ -f "scripts/import_regions.pyc" ]; then
+            IMPORT_SCRIPT="scripts/import_regions.pyc"
+        elif [ -f "scripts/import_regions.py" ]; then
+            IMPORT_SCRIPT="scripts/import_regions.py"
+        fi
+
+        if [ -n "$REGION_FILE" ] && [ -n "$IMPORT_SCRIPT" ]; then
+            echo "  - Importing regions from $REGION_FILE..."
+            python "$IMPORT_SCRIPT" "$REGION_FILE" 2>&1 || echo "    (regions import failed)"
+        else
+            echo "  - No regions data found, skipping..."
+        fi
     fi
 else
     echo "  - Regions already seeded ($REGION_COUNT records), skipping..."
 fi
+
+# 기본 관리자 계정 생성 (유저가 없을 때만)
+echo "  - Checking admin account..."
+python -c "
+import asyncio
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+import os
+
+async def seed_admin():
+    engine = create_async_engine(os.environ.get('DATABASE_URL'))
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        result = await session.execute(text('SELECT COUNT(*) FROM users'))
+        count = result.scalar()
+        if count == 0:
+            from app.auth.jwt import hash_password
+            pw = hash_password('siqms')
+            # 기본 조직 생성
+            await session.execute(text(
+                \"INSERT INTO organizations (id, name, quota_storage_gb, quota_projects, created_at) \"
+                \"VALUES (gen_random_uuid(), '기본 조직', 10000, 1000, now()) \"
+                \"ON CONFLICT DO NOTHING\"
+            ))
+            org_result = await session.execute(text(\"SELECT id FROM organizations LIMIT 1\"))
+            org_id = org_result.scalar()
+            # 관리자 계정 생성 (조직 연결)
+            await session.execute(text(
+                \"INSERT INTO users (id, email, password_hash, name, role, is_active, organization_id, created_at) \"
+                \"VALUES (gen_random_uuid(), 'admin', :pw, '관리자', 'admin', true, :org_id, now())\"
+            ), {'pw': pw, 'org_id': org_id})
+            await session.commit()
+            print('    Default organization and admin account created (admin / siqms)')
+        else:
+            print(f'    Admin account already exists ({count} users), skipping...')
+    await engine.dispose()
+
+asyncio.run(seed_admin())
+" 2>/dev/null || echo "    (admin seed skipped)"
 
 echo "Initial data seeding completed."
 

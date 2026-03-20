@@ -782,6 +782,7 @@ function Dashboard() {
 
           setProcessingProject(projectForProcessing);
           setViewMode('processing');
+          setIsUploadOpen(false);
           window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
           await refreshProjects();
           setImageRefreshKey(prev => prev + 1);
@@ -1031,6 +1032,7 @@ function Dashboard() {
 
       setProcessingProject(projectForProcessing);
       setViewMode('processing');
+      setIsUploadOpen(false);
       // 브라우저 히스토리에 추가 (뒤로가기 지원)
       window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
 

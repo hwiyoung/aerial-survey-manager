@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap, ImageOverlay } from 'react-leaflet';
 import L from 'leaflet';
-import { Loader2, Camera, Layers, X, Map as MapIcon, Crosshair } from 'lucide-react';
+import { Loader2, Camera, Layers, X, Map as MapIcon, Crosshair, Eye, EyeOff } from 'lucide-react';
 import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
+import api from '../../api/client';
 
 function FitBounds({ images, projectBounds, projectId, maxZoom }) {
     const map = useMap();
@@ -44,6 +45,49 @@ function MapRefSetter({ mapRef }) {
 export default function ProjectMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
     const [isLoading, setIsLoading] = useState(false);
     const mapRef = React.useRef(null);
+    // 온디맨드 썸네일: { imageId -> url }
+    const [localThumbnails, setLocalThumbnails] = useState({});
+    // 생성 중인 imageId Set
+    const [loadingIds, setLoadingIds] = useState(new Set());
+
+    const triggerThumbnail = useCallback(async (imageId) => {
+        setLoadingIds(prev => new Set([...prev, imageId]));
+        try {
+            const result = await api.regenerateThumbnail(imageId);
+            if (result.thumbnail_url) {
+                setLocalThumbnails(prev => ({ ...prev, [imageId]: result.thumbnail_url }));
+            }
+        } catch {
+            // 실패 시 조용히 무시
+        } finally {
+            setLoadingIds(prev => {
+                const next = new Set(prev);
+                next.delete(imageId);
+                return next;
+            });
+        }
+    }, []);
+
+    const getThumbnailUrl = useCallback((img) => {
+        return localThumbnails[img.id] || img.thumbnail_url || null;
+    }, [localThumbnails]);
+
+    const isThumbnailLoading = useCallback((img) => {
+        return loadingIds.has(img.id);
+    }, [loadingIds]);
+
+    // EO 포인트 표시 토글 (persisted in localStorage)
+    const [showEoPoints, setShowEoPoints] = useState(() => {
+        const saved = localStorage.getItem('eo_points_visible');
+        return saved === null ? true : saved === 'true';
+    });
+    const toggleEoPoints = useCallback(() => {
+        setShowEoPoints(prev => {
+            const next = !prev;
+            localStorage.setItem('eo_points_visible', String(next));
+            return next;
+        });
+    }, []);
 
     // Basemap visibility (persisted in localStorage, shared with FootprintMap)
     const [showBasemap, setShowBasemap] = useState(() => {
@@ -136,7 +180,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
 
                 {(images.length > 0 || project?.bounds) && <FitBounds images={images} projectBounds={project?.bounds} projectId={project?.id} maxZoom={tileConfig.maxZoom} />}
 
-                {images.map(img => (
+                {showEoPoints && images.map(img => (
                     <CircleMarker
                         key={img.id}
                         center={[img.wy, img.wx]}
@@ -151,6 +195,9 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                             click: (e) => {
                                 L.DomEvent.stopPropagation(e);
                                 onSelectImage(img.id);
+                                if (!getThumbnailUrl(img)) {
+                                    triggerThumbnail(img.id);
+                                }
                             }
                         }}
                     >
@@ -166,14 +213,13 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         <Popup minWidth={260} maxWidth={320} closeOnClick={false}>
                             <div className="p-1">
                                 <div className="w-full h-28 bg-slate-100 rounded-lg mb-2 flex items-center justify-center overflow-hidden border border-slate-200 relative">
-                                    {img.thumbnail_url ? (
+                                    {getThumbnailUrl(img) ? (
                                         <>
                                             <img
-                                                src={img.thumbnail_url}
+                                                src={getThumbnailUrl(img)}
                                                 alt={img.name}
                                                 className="w-full h-full object-cover"
                                                 onError={(e) => {
-                                                    // 이미지 로드 실패 시 폴백 표시
                                                     e.target.style.display = 'none';
                                                     if (e.target.nextSibling) {
                                                         e.target.nextSibling.style.display = 'flex';
@@ -185,6 +231,11 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                                                 <span>미리보기 로드 실패</span>
                                             </div>
                                         </>
+                                    ) : isThumbnailLoading(img) ? (
+                                        <div className="text-slate-400 text-xs flex flex-col items-center gap-2">
+                                            <Loader2 size={24} className="animate-spin text-blue-400" />
+                                            <span>썸네일 생성 중...</span>
+                                        </div>
                                     ) : (
                                         <div className="text-slate-400 text-xs flex flex-col items-center gap-1">
                                             <Camera size={24} className="text-slate-300" />
@@ -237,6 +288,14 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                 >
                     <MapIcon size={40} />
                 </button>
+                {/* EO 포인트 토글 버튼 */}
+                <button
+                    onClick={toggleEoPoints}
+                    className={`p-2 rounded-lg shadow-md border transition-colors ${showEoPoints ? 'bg-white border-slate-200 text-orange-500 hover:bg-orange-50' : 'bg-slate-100 border-slate-300 text-slate-400 hover:bg-slate-200'}`}
+                    title={showEoPoints ? 'EO 포인트 숨기기' : 'EO 포인트 표시'}
+                >
+                    {showEoPoints ? <Eye size={40} /> : <EyeOff size={40} />}
+                </button>
                 {/* 원래 범위로 복귀 버튼 */}
                 <button
                     onClick={() => {
@@ -284,8 +343,13 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                 <div className="absolute bottom-4 left-4 right-4 bg-white border-2 border-slate-300 shadow-xl rounded-xl z-[1000]">
                     <div className="flex items-stretch gap-4 p-3 max-h-40">
                         <div className="w-32 h-32 flex-shrink-0 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 flex items-center justify-center">
-                            {selectedImage.thumbnail_url ? (
-                                <img src={selectedImage.thumbnail_url} alt={selectedImage.name} className="w-full h-full object-cover" />
+                            {getThumbnailUrl(selectedImage) ? (
+                                <img src={getThumbnailUrl(selectedImage)} alt={selectedImage.name} className="w-full h-full object-cover" />
+                            ) : isThumbnailLoading(selectedImage) ? (
+                                <div className="text-center text-slate-400 p-2">
+                                    <Loader2 size={32} className="mx-auto mb-1 animate-spin text-blue-400" />
+                                    <span className="text-xs">생성 중...</span>
+                                </div>
                             ) : (
                                 <div className="text-center text-slate-400 p-2">
                                     <Camera size={32} className="mx-auto mb-1 text-slate-300" />
