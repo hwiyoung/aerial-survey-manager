@@ -115,7 +115,7 @@ docker run --rm aerial-prod-worker-engine:latest \
 # 결과가 비어있어야 정상
 ```
 
-> 자세한 내용은 [ADMIN_GUIDE.md](../docs/ADMIN_GUIDE.md)의 "배포 패키지 생성" 섹션 참조
+> 배포 패키지 생성: [ADMIN_GUIDE.md](../docs/ADMIN_GUIDE.md)의 "배포 패키지 생성" 참조
 
 ---
 *Created on 2026-01-27 / Updated on 2026-02-14*

@@ -16,7 +16,7 @@
 7. [도엽 격자](#7-도엽-격자)
 8. [내보내기 (다운로드)](#8-내보내기)
 9. [정사영상 관리](#9-정사영상-관리)
-10. [시스템 관리](#10-시스템-관리)
+10. [문제 발생 시](#10-문제-발생-시)
 
 ---
 
@@ -310,68 +310,10 @@
 
 ---
 
-## 10. 시스템 관리
+## 10. 문제 발생 시
 
-### 서비스 상태 확인
-```bash
-docker compose ps
-```
-
-### 로그 확인
-```bash
-# 전체 로그
-docker compose logs -f
-
-# API 서버 로그
-docker compose logs -f api
-
-# 처리 엔진 로그
-docker compose logs -f worker-engine
-
-# 썸네일 워커 로그
-docker compose logs -f celery-worker-thumbnail
-```
-
-### 서비스 재시작
-```bash
-# 전체 재시작
-docker compose restart
-
-# API만 재시작
-docker compose restart api
-
-# 처리 엔진만 재시작
-docker compose restart worker-engine
-```
-
-### 서비스 중지/시작
-```bash
-# 중지
-docker compose down
-
-# 시작
-docker compose up -d
-```
-
-### 비밀번호 리셋
-```bash
-docker compose exec db psql -U postgres -d aerial_survey -c \
-  "UPDATE users SET hashed_password = 'NEW_HASH' WHERE email = 'admin';"
-```
-
-### Celery 작업 모니터링
-- Flower 대시보드: `http://localhost:5555`
-- 처리 큐, 워커 상태, 태스크 히스토리 확인 가능
-
-### 데이터 경로
-
-| 경로 | 내용 |
-|------|------|
-| `LOCAL_STORAGE_PATH` | 정사영상, 썸네일, 업로드 이미지 |
-| `PROCESSING_DATA_PATH` | 처리 중간 파일 (임시) |
-| `TILES_PATH` | 오프라인 배경지도 타일 |
-| `pgdata` (Docker 볼륨) | PostgreSQL 데이터베이스 |
-| `redis_data` (Docker 볼륨) | Redis 데이터 |
+- 처리가 실패하거나 시스템에 문제가 있으면 관리자에게 문의하세요.
+- 관리자용 운영 가이드: [ADMIN_GUIDE.md](ADMIN_GUIDE.md)
 
 ---
 
@@ -394,19 +336,3 @@ docker compose exec db psql -U postgres -d aerial_survey -c \
 | 지도 드래그 | 자유 이동 |
 | 지도 휠 | 확대/축소 |
 | Ctrl+Shift+R | 브라우저 강력 새로고침 |
-
-## 부록: 처리 엔진 서비스 구성
-
-| 서비스 | 역할 |
-|--------|------|
-| api | FastAPI 백엔드 서버 |
-| frontend | React 프론트엔드 (nginx) |
-| worker-engine | Metashape 처리 엔진 (GPU) |
-| celery-worker | 파일 관리, COG 인제스트 |
-| celery-worker-thumbnail | 썸네일 전용 워커 |
-| celery-beat | 스케줄러 |
-| db | PostgreSQL + PostGIS |
-| redis | 메시지 브로커 |
-| titiler | COG 타일 서버 |
-| nginx | 리버스 프록시 |
-| flower | Celery 모니터링 (관리자) |

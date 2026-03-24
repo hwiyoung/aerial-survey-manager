@@ -107,15 +107,15 @@ PROCESSING_DATA_PATH=/path/to/processing
 
 ## Documentation
 
-| 문서 | 설명 |
-|------|------|
-| [DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md) | 문서 역할/갱신 규칙(우선순위) |
-| [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 배포/초기 구성/버전 업그레이드 |
-| [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | 운영·운영자용 유지보수 가이드 |
-| [ROADMAP.md](docs/ROADMAP.md) | 개발 로드맵 및 변경 이력 |
-| [SPRINT_COMPLETION.md](docs/SPRINT_COMPLETION.md) | 1~4차 스프린트 핵심 목적 달성 상태 |
-| [engines/README.md](engines/README.md) | 처리 엔진 가이드 |
-| [OPERATIONS_MONITORING.md](docs/OPERATIONS_MONITORING.md) | 처리 큐/로그/임계치 모니터링 |
+| 문서 | 대상 | 설명 |
+|------|------|------|
+| [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 배포 담당자 | 설치, 환경 설정, 업그레이드 |
+| [ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | 운영자 | 상황별 대응 레시피 |
+| [USER_MANUAL.md](docs/USER_MANUAL.md) | 사용자 | 화면별 사용법 |
+| [TECHNICAL_MANUAL.md](docs/TECHNICAL_MANUAL.md) | 개발자 | 아키텍처, API, 내부 동작 |
+| [CHANGELOG.md](docs/CHANGELOG.md) | PM/개발자 | 스프린트별 변경 기록 |
+| [ROADMAP.md](docs/ROADMAP.md) | PM | 현재 상태, 향후 계획, Known Issues |
+| [engines/README.md](engines/README.md) | 개발자 | 처리 엔진 가이드 |
 
 ## Development
 
