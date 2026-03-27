@@ -37,7 +37,7 @@ import DashboardView from './components/Dashboard/DashboardView';
 
 
 // --- 1. CONSTANTS ---
-const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역', '제주 권역'];
+const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역'];
 const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
 
 // Status mapping for display
@@ -1683,7 +1683,7 @@ function Dashboard() {
             }} className="p-6 space-y-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">폴더 이름</label>
-                <input type="text" name="name" defaultValue={editingGroup?.name || ''} className="w-full border border-slate-200 p-3 rounded-lg text-sm" placeholder="예: 경기권역 2026" required autoFocus />
+                <input type="text" name="name" defaultValue={editingGroup?.name || ''} className="w-full border border-slate-200 p-3 rounded-lg text-sm" placeholder="예: 수도권북부 2026" required autoFocus />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">색상</label>
