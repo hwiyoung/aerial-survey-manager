@@ -247,8 +247,6 @@ export function TiTilerOrthoLayer({
             opacity={opacity}
             tileSize={256}
             zoomOffset={0}
-            maxNativeZoom={getTileConfig().maxZoom}
-            minNativeZoom={MAP_CONFIG.minZoom}
             maxZoom={getTileConfig().maxZoom}
             updateWhenZooming={false}
             updateWhenIdle={true}
@@ -777,7 +775,7 @@ function SheetSearchFitBounds({ searchResult }) {
         if (searchResult?.found && searchResult.mapid !== lastMapidRef.current) {
             lastMapidRef.current = searchResult.mapid;
             const b = searchResult.bounds_wgs84;
-            map.fitBounds([[b[0][0], b[0][1]], [b[1][0], b[1][1]]], { padding: [50, 50], maxZoom: 18 });
+            map.fitBounds([[b[0][0], b[0][1]], [b[1][0], b[1][1]]], { padding: [50, 50], maxZoom: 19 });
         }
     }, [searchResult, map]);
     return null;
@@ -1233,6 +1231,7 @@ export function FootprintMap({
                                 attribution={tileConfig.attribution}
                                 url={tileConfig.url}
                                 {...(tileConfig.subdomains ? { subdomains: tileConfig.subdomains } : {})}
+                                maxNativeZoom={tileConfig.maxNativeZoom}
                                 maxZoom={tileConfig.maxZoom}
                                 minZoom={MAP_CONFIG.minZoom}
                             />
