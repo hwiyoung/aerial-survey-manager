@@ -220,13 +220,110 @@ docker run --rm aerial-prod-worker-engine:latest find /app/engines -name "*.py" 
 
 ---
 
+## GPU 진단
+
+### 증상: 처리가 극도로 느림
+GPU가 컨테이너에 전달되지 않으면 Metashape가 CPU only로 동작합니다. 오류 없이 정상 시작되지만 **처리 시간이 10배 이상 증가**합니다.
+
+### 확인
+```bash
+docker exec aerial-worker-engine nvidia-smi
+```
+`Failed to initialize NVML` 오류 시 GPU가 컨테이너에 전달되지 않고 있습니다.
+
+### 자동 복구
+```bash
+sudo bash scripts/fix-gpu.sh
+```
+
+### 수동 복구 (간단한 경우)
+컨테이너를 재생성(down/up)하거나 Docker 데몬을 재시작한 후 nvidia runtime 연결이 끊어진 경우:
+```bash
+sudo systemctl restart docker
+# restart: always 설정으로 모든 컨테이너 자동 복구
+docker exec aerial-worker-engine nvidia-smi   # 확인
+```
+
+위 방법으로 해결되지 않으면 NVIDIA Container Toolkit이 설치되지 않았거나 Docker runtime에 등록되지 않은 것입니다.
+상세 절차는 [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md#gpu-미인식-진단) 참조.
+
+> GPU 복구 후 현재 진행 중인 처리는 이미 CPU 모드로 시작된 것이므로, **처리를 중단하고 다시 시작**해야 GPU를 활용합니다.
+
+---
+
+## 서비스 상태 점검
+
+### 전체 헬스체크
+```bash
+./scripts/healthcheck.sh
+```
+Docker 서비스, API, DB, Redis, GPU, Celery 워커를 한 번에 점검합니다. 결과를 PASS/WARN/FAIL로 요약합니다.
+
+### 로그 수집 (지원팀 전달용)
+```bash
+./scripts/collect-logs.sh
+```
+모든 서비스 로그, 시스템 정보, GPU 상태를 수집하여 `logs_YYYYMMDD_HHMMSS.tar.gz`로 압축합니다. 비밀번호/키는 자동 제외됩니다.
+
+### 시스템 정보 확인
+```bash
+./scripts/system-info.sh
+```
+OS, CPU, RAM, 디스크, GPU, Docker, 네트워크 정보를 출력합니다.
+
+---
+
+## Metashape 안전 종료
+
+라이선스를 비활성화한 후 종료해야 하는 경우 (서버 이전 등):
+```bash
+./scripts/shutdown-metashape.sh
+```
+1. 라이선스 비활성화
+2. worker-engine 종료
+3. 전체 시스템 종료 (선택)
+
+> 일반적인 재시작/업그레이드에서는 라이선스 비활성화 불필요. 서버 교체 시에만 사용하세요.
+
+---
+
 ## 시스템 재시작
 
 모든 서비스에 `restart: always` 설정. 시스템 재부팅 시 자동 시작.
 ```bash
-# Docker 자동 시작 확인
+# Docker 자동 시작 확인/설정
 sudo systemctl is-enabled docker
+# 비활성 상태라면: sudo bash scripts/setup-autostart.sh
 
 # 재부팅 후 상태 확인
 docker compose ps
+
+# GPU 전달 확인 (재부팅 후 반드시 확인)
+docker exec aerial-worker-engine nvidia-smi
 ```
+
+### 보안 설정 (선택)
+```bash
+sudo bash scripts/secure-deployment.sh
+```
+.env 파일 권한 제한, systemd 서비스 등록, 일반 사용자용 관리 명령어(`aerial-status`, `aerial-restart`, `aerial-logs`) 생성.
+
+---
+
+## 스크립트 레퍼런스
+
+| 스크립트 | 용도 | 실행 권한 |
+|----------|------|----------|
+| `install.sh` | 신규 설치 (GPU 검증 포함) | 일반 |
+| `build-release.sh` | 배포 패키지 생성 | 일반 |
+| `reload-env.sh` | .env 변경 후 서비스 반영 | 일반 |
+| `inject-cog.sh` | 외부 정사영상 COG 삽입 | 일반 |
+| `cleanup-storage.sh` | 중복 파일 정리 (dry-run 기본) | 일반 |
+| `check-processing-ops.sh` | 큐/워커/정책 점검 | 일반 |
+| `fix-gpu.sh` | GPU 진단 및 자동 복구 | sudo |
+| `healthcheck.sh` | 전체 서비스 헬스체크 | 일반 |
+| `collect-logs.sh` | 로그 수집 (지원팀 전달용) | 일반 |
+| `shutdown-metashape.sh` | 라이선스 비활성화 후 안전 종료 | 일반 |
+| `system-info.sh` | 시스템 정보 출력 | 일반 |
+| `setup-autostart.sh` | Docker 자동 시작 설정/확인 | sudo |
+| `secure-deployment.sh` | 보안 설정 (권한, systemd) | sudo |

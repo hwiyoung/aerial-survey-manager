@@ -48,7 +48,7 @@
 | api | FastAPI + Uvicorn | REST API, WebSocket |
 | db | PostgreSQL 15 + PostGIS 3.3 | DB, 공간 데이터 |
 | redis | Redis 7 | Celery 브로커/백엔드 |
-| worker-engine | Celery + Metashape | GPU 정사영상 처리 |
+| worker-engine | Celery + Metashape | GPU 정사영상 처리 (GPU 미인식 시 CPU fallback, 10배+ 느림) |
 | celery-worker | Celery | 파일 관리, COG 인제스트 |
 | celery-worker-thumbnail | Celery | 썸네일 전용 워커 |
 | celery-beat | Celery Beat | 스케줄러 |
@@ -716,12 +716,37 @@ deactivate_metashape_license.py
 
 **설치 흐름:**
 1. 시스템 요구사항 확인 (Docker, NVIDIA)
-2. `.env` 생성 (비밀번호 자동 생성)
-3. nginx 설정 (도메인)
-4. SSL 설정 (선택)
-5. Docker 이미지 로드 또는 빌드
-6. 서비스 시작
-7. 헬스체크
+2. **Docker GPU 전달 검증** — nvidia runtime 등록 확인 + 실제 컨테이너 GPU 테스트. 실패 시 자동 복구 시도
+3. `.env` 생성 (비밀번호 자동 생성)
+4. nginx 설정 (도메인)
+5. SSL 설정 (선택)
+6. Docker 이미지 로드 또는 빌드
+7. 서비스 시작
+8. 헬스체크
+
+### 5.5 scripts/fix-gpu.sh
+
+**GPU 진단 및 복구 스크립트.** 컨테이너에서 GPU가 인식되지 않을 때 사용.
+
+**실행:** `sudo bash scripts/fix-gpu.sh`
+
+**동작:**
+1. 호스트 GPU 드라이버 확인 (`nvidia-smi`)
+2. NVIDIA Container Toolkit 확인 → 없으면 자동 설치
+3. Docker GPU 전달 테스트 (`docker run --gpus all`) → 실패 시 Docker 재시작
+4. worker-engine 재시작
+5. 최종 확인 (`docker exec aerial-worker-engine nvidia-smi`)
+
+### 5.6 기타 운영 스크립트
+
+| 스크립트 | 용도 |
+|----------|------|
+| `healthcheck.sh` | 전체 서비스 상태 점검 (Docker, API, DB, Redis, GPU, Celery) → PASS/WARN/FAIL 요약 |
+| `collect-logs.sh` | 모든 서비스 로그 + 시스템 정보 수집 → `logs_*.tar.gz` (비밀번호 자동 제외) |
+| `shutdown-metashape.sh` | Metashape 라이선스 비활성화 → worker-engine 종료 → 전체 종료 (선택) |
+| `system-info.sh` | OS/CPU/RAM/디스크/GPU/Docker/네트워크 정보 출력 |
+| `setup-autostart.sh` | `systemctl enable docker` + restart 정책 확인 |
+| `secure-deployment.sh` | .env 권한 제한, systemd 서비스 등록, 사용자 관리 명령어 생성 |
 
 ---
 

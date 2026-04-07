@@ -80,6 +80,27 @@ check_requirements() {
                 exit 1
             fi
         fi
+
+        # Docker 컨테이너 GPU 전달 검증
+        if docker info 2>/dev/null | grep -qi "nvidia"; then
+            log_info "Docker GPU 전달 테스트 중..."
+            if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null; then
+                log_info "Docker GPU 전달: 정상"
+            else
+                log_warn "Docker에서 GPU를 사용할 수 없습니다."
+                log_warn "nvidia runtime 재등록을 시도합니다..."
+                nvidia-ctk runtime configure --runtime=docker 2>/dev/null && systemctl restart docker 2>/dev/null
+                if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null; then
+                    log_info "Docker GPU 전달: 복구 완료"
+                else
+                    log_warn "Docker GPU 전달 실패. 처리 속도가 매우 느릴 수 있습니다."
+                    read -p "GPU 없이 계속 진행하시겠습니까? (y/N): " continue_without_gpu_docker
+                    if [[ ! "$continue_without_gpu_docker" =~ ^[Yy]$ ]]; then
+                        exit 1
+                    fi
+                fi
+            fi
+        fi
     fi
 
     # 디스크 용량 확인

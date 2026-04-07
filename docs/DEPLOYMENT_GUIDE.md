@@ -20,6 +20,13 @@
 > Docker 설치: https://docs.docker.com/engine/install/ubuntu/
 > NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 
+**필수 사전 설치 (순서대로):**
+1. NVIDIA 드라이버 (`nvidia-smi`로 확인)
+2. NVIDIA Container Toolkit (`nvidia-ctk --version`으로 확인)
+3. Docker runtime에 nvidia 등록 (`docker info | grep -i nvidia`로 확인)
+
+> Container Toolkit이 없으면 GPU가 컨테이너에 전달되지 않아 처리 속도가 10배 이상 느려집니다. 시스템은 오류 없이 CPU 모드로 동작하므로 반드시 사전에 확인하세요.
+
 ---
 
 ## 신규 설치
@@ -52,14 +59,21 @@ cd aerial-survey-manager
 
 > 전체 변수 목록: `.env.example` 참조
 
-### 3. 서비스 시작 및 확인
+### 3. GPU 연결 확인
+```bash
+# 컨테이너에서 GPU 인식 확인 (필수)
+docker exec aerial-worker-engine nvidia-smi
+```
+실패 시 → [문제 해결 > GPU 미인식](#문제-해결) 참조
+
+### 4. 서비스 시작 및 확인
 ```bash
 docker compose up -d
 docker compose ps              # 모든 서비스 Up 확인
 curl http://localhost:8081/health   # API 응답 확인
 ```
 
-### 4. 접속
+### 5. 접속
 - 웹 UI: `http://서버IP:8081`
 - 기본 계정: `admin` / `siqms`
 
@@ -168,11 +182,49 @@ sudo ufw enable
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| GPU 미인식 | NVIDIA 드라이버/Container Toolkit | `nvidia-smi` 확인, toolkit 재설치 |
+| GPU 미인식 | NVIDIA 드라이버/Container Toolkit | 아래 GPU 진단 절차 참조 |
+| 처리가 극도로 느림 | GPU 미사용 (CPU only) | 아래 GPU 진단 절차 참조 |
 | 처리 실패 | 라이선스/이미지 문제 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) 참조 |
 | MinIO 507 | 디스크 부족 | `df -h`, 임시 파일 정리 |
 | 타일맵 안 보임 | bind mount 끊김 | `docker compose restart nginx` |
 | DB 연결 실패 | 컨테이너 미시작 | `docker compose logs db` |
+
+### GPU 미인식 진단
+
+컨테이너에서 GPU가 인식되지 않으면 Metashape가 CPU only로 동작합니다. 오류 없이 정상 시작되므로 알아차리기 어렵지만, **처리 속도가 10배 이상 느려집니다.**
+
+```bash
+# 1단계: 컨테이너 GPU 확인
+docker exec aerial-worker-engine nvidia-smi
+# → 성공하면 GPU 정상. 아래 단계 불필요.
+# → "Failed to initialize NVML" 등 오류 시 계속 진행
+
+# 2단계: 호스트 GPU 확인
+nvidia-smi
+# → 실패하면 NVIDIA 드라이버 설치 필요:
+#   sudo apt-get install -y nvidia-driver-535 && sudo reboot
+
+# 3단계: Container Toolkit 확인
+nvidia-ctk --version
+# → 없으면 설치:
+#   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+#   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+#     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+#     sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+#   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+
+# 4단계: Docker runtime에 nvidia 등록 확인
+docker info | grep -i nvidia
+# → 없으면:
+#   sudo nvidia-ctk runtime configure --runtime=docker
+#   sudo systemctl restart docker
+
+# 5단계: 확인
+docker exec aerial-worker-engine nvidia-smi
+```
+
+> 또는 `scripts/fix-gpu.sh`를 사용하면 위 과정을 자동으로 수행합니다:
+> `sudo bash scripts/fix-gpu.sh`
 
 > 상세 운영 문제는 [ADMIN_GUIDE.md](ADMIN_GUIDE.md) 참조
 
