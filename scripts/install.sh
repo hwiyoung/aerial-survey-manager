@@ -206,22 +206,13 @@ setup_environment() {
         log_info "온라인 지도를 사용합니다. (인터넷 연결 필요)"
     fi
 
-    # 처리 엔진 사용 여부
+    # 처리 엔진 라이선스
     echo ""
     echo -e "${YELLOW}GPU 처리 엔진 설정${NC}"
-    echo "GPU 기반 고품질 정사영상 처리를 제공합니다."
-    read -p "처리 엔진을 사용하시겠습니까? (y/N): " use_engine
-
-    if [[ "$use_engine" =~ ^[Yy]$ ]]; then
-        USE_ENGINE="true"
-        read -p "처리 엔진 라이선스 키: " engine_license
-        if [ -z "$engine_license" ]; then
-            log_warn "라이선스 키가 없으면 처리 엔진이 작동하지 않습니다."
-        fi
-    else
-        USE_ENGINE="false"
-        engine_license=""
-        log_info "처리 엔진 없이 설치합니다. (나중에 활성화 가능)"
+    echo "정사영상 처리에 필요합니다. 나중에 .env에서 설정할 수도 있습니다."
+    read -p "처리 엔진 라이선스 키 (나중에 설정하려면 Enter): " engine_license
+    if [ -z "$engine_license" ]; then
+        log_warn "라이선스 키 없이 설치합니다. 처리 기능은 .env의 ENGINE_LICENSE_KEY 설정 후 사용 가능합니다."
     fi
 
     # 비밀번호 자동 생성
@@ -347,15 +338,6 @@ start_services() {
         compose_file="docker-compose.prod.yml"
     fi
 
-    # 처리 엔진 profile 설정
-    profile_option=""
-    if [ "$USE_ENGINE" = "true" ]; then
-        profile_option="--profile engine"
-        log_info "처리 엔진 포함 모드로 설치합니다."
-    else
-        log_info "처리 엔진 제외 모드로 설치합니다."
-    fi
-
     # 배포 패키지인지 확인 (images 디렉토리 존재)
     if [ -d "images" ]; then
         # 배포 패키지: 이미지 로드 확인
@@ -372,29 +354,72 @@ start_services() {
     else
         # 소스 코드: 이미지 빌드
         log_info "Docker 이미지 빌드 중... (최초 실행 시 시간이 소요됩니다)"
-        docker compose -f "$compose_file" $profile_option build
+        docker compose -f "$compose_file" build
     fi
 
     log_info "서비스 시작 중..."
-    docker compose -f "$compose_file" $profile_option up -d
+    docker compose -f "$compose_file" up -d
 
     log_info "서비스 초기화 대기 중..."
     sleep 10
+}
 
-    # USE_ENGINE 설정 저장 (.env에 추가)
-    if ! grep -q "^USE_ENGINE=" .env 2>/dev/null; then
-        echo "USE_ENGINE=$USE_ENGINE" >> .env
-    else
-        sed -i "s|^USE_ENGINE=.*|USE_ENGINE=$USE_ENGINE|" .env
+# 별도 드라이브 사용 시 Docker 부팅 순서 설정
+setup_mount_dependency() {
+    storage_path=$(grep "^LOCAL_STORAGE_PATH=" .env | cut -d'=' -f2)
+    if [ -z "$storage_path" ]; then
+        return
     fi
 
-    # 엔진 사용 시 COMPOSE_PROFILES 설정 (docker compose up -d만으로 엔진 포함)
-    if [ "$USE_ENGINE" = "true" ]; then
-        if ! grep -q "^COMPOSE_PROFILES=" .env 2>/dev/null; then
-            echo "COMPOSE_PROFILES=engine" >> .env
-        else
-            sed -i "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=engine|" .env
-        fi
+    # 상대경로면 스킵 (별도 드라이브가 아님)
+    if [[ ! "$storage_path" = /* ]]; then
+        return
+    fi
+
+    # 루트 파티션과 같은 파티션이면 스킵
+    storage_device=$(df "$storage_path" 2>/dev/null | awk 'NR==2 {print $1}')
+    root_device=$(df / 2>/dev/null | awk 'NR==2 {print $1}')
+    if [ "$storage_device" = "$root_device" ]; then
+        return
+    fi
+
+    # 마운트 포인트 추출
+    mount_point=$(df "$storage_path" 2>/dev/null | awk 'NR==2 {print $6}')
+    if [ -z "$mount_point" ] || [ "$mount_point" = "/" ]; then
+        return
+    fi
+
+    echo ""
+    log_info "저장소가 별도 드라이브에 있습니다: $mount_point ($storage_device)"
+    log_info "시스템 재부팅 시 드라이브 마운트 후 Docker가 시작되도록 설정합니다."
+
+    # 이미 설정되어 있는지 확인
+    if systemctl cat docker.service 2>/dev/null | grep -q "RequiresMountsFor.*$mount_point"; then
+        log_info "Docker 부팅 순서: 이미 설정됨"
+        return
+    fi
+
+    # systemd override 생성 (sudo 필요)
+    override_dir="/etc/systemd/system/docker.service.d"
+    override_file="$override_dir/mount-dependency.conf"
+
+    # systemd override 생성 (root 권한 필요)
+    if [ "$(id -u)" = "0" ]; then
+        mkdir -p "$override_dir"
+        cat > "$override_file" << EOF
+[Unit]
+RequiresMountsFor=$mount_point
+EOF
+        systemctl daemon-reload
+        log_info "Docker 부팅 순서 설정 완료: $mount_point 마운트 후 Docker 시작"
+    else
+        log_warn "Docker 부팅 순서 설정에 root 권한이 필요합니다."
+        log_warn "다음 명령을 실행하세요:"
+        echo ""
+        echo "  sudo mkdir -p $override_dir"
+        echo "  echo -e '[Unit]\nRequiresMountsFor=$mount_point' | sudo tee $override_file"
+        echo "  sudo systemctl daemon-reload"
+        echo ""
     fi
 }
 
@@ -449,19 +474,11 @@ print_completion() {
     domain=$(grep "^DOMAIN=" .env | cut -d'=' -f2)
     web_port=$(grep "^WEB_PORT=" .env | cut -d'=' -f2)
     web_port=${web_port:-8081}
-    use_engine=$(grep "^USE_ENGINE=" .env | cut -d'=' -f2)
 
     echo ""
     echo -e "${GREEN}=============================================="
     echo "         설치가 완료되었습니다!"
     echo "==============================================${NC}"
-    echo ""
-    echo -e "${BLUE}설치 모드:${NC}"
-    if [ "$use_engine" = "true" ]; then
-        echo "  처리 엔진 포함 (GPU 처리 활성화)"
-    else
-        echo "  처리 엔진 제외 (테스트 모드)"
-    fi
     echo ""
     echo -e "${BLUE}접속 정보:${NC}"
     echo "  웹 UI: http://$domain:$web_port"
@@ -475,19 +492,19 @@ print_completion() {
     echo "  2. 테스트 프로젝트 생성 및 이미지 업로드 테스트"
     echo "  3. 처리 기능 테스트"
     echo ""
+    engine_license=$(grep "^ENGINE_LICENSE_KEY=" .env | cut -d'=' -f2)
+    if [ -z "$engine_license" ]; then
+        echo -e "${YELLOW}처리 엔진 라이선스 설정:${NC}"
+        echo "  .env 파일에서 ENGINE_LICENSE_KEY를 설정한 후:"
+        echo "  ./scripts/reload-env.sh worker-engine"
+        echo ""
+    fi
+
     echo -e "${BLUE}유용한 명령어:${NC}"
     echo "  서비스 상태: docker compose ps"
     echo "  로그 확인: docker compose logs -f"
-    echo "  서비스 재시작: docker compose restart"
+    echo "  환경변수 변경 반영: ./scripts/reload-env.sh"
     echo "  서비스 중지: docker compose down"
-    echo "  네트워크 설정: ./scripts/configure-network.sh"
-
-    if [ "$use_engine" != "true" ]; then
-        echo ""
-        echo -e "${YELLOW}처리 엔진 활성화 방법:${NC}"
-        echo "  1. .env 파일에 ENGINE_LICENSE_KEY 설정"
-        echo "  2. docker compose -f docker-compose.prod.yml --profile engine up -d"
-    fi
     echo ""
 }
 
@@ -503,6 +520,7 @@ main() {
     setup_nginx
     setup_ssl
     start_services
+    setup_mount_dependency
     run_healthcheck
     setup_network
     print_completion

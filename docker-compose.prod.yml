@@ -4,14 +4,22 @@
 # ============================================================
 #
 # 사용법:
-#   기본 (처리 엔진 제외): docker compose -f docker-compose.prod.yml up -d
-#   처리 엔진 포함:        docker compose -f docker-compose.prod.yml --profile engine up -d
+#   docker compose up -d
 #
 # 개발용과 차이점:
 # - 소스 코드 마운트 제거 (이미지에 내장)
 # - 보안 강화 (내부 포트 노출 제한)
 # - 프로덕션용 nginx 설정 사용
 # - restart: always 설정
+#
+# ⚠️  별도 드라이브에 데이터를 저장하는 경우:
+#   시스템 재부팅 시 드라이브가 마운트되기 전에 Docker가 시작되면
+#   빈 디렉토리가 생성되어 기존 데이터가 보이지 않습니다.
+#   이를 방지하려면:
+#     sudo systemctl edit docker.service
+#     [Unit]
+#     RequiresMountsFor=/data    # ← LOCAL_STORAGE_PATH의 마운트 포인트
+#   자세한 내용: docs/DEPLOYMENT_GUIDE.md
 #
 
 version: '3.8'
@@ -100,13 +108,10 @@ services:
     logging: *default-logging
 
   # ============================================================
-  # Celery Worker - GPU Processing Engine
-  # 선택적 서비스: --profile engine 옵션으로 활성화
+  # 처리 엔진 (Metashape)
   # ============================================================
   worker-engine:
     container_name: aerial-worker-engine
-    profiles:
-      - engine
     build:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod

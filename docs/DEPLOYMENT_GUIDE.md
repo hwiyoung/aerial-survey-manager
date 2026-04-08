@@ -178,6 +178,44 @@ sudo ufw enable
 
 ---
 
+## 별도 드라이브 사용 시 부팅 순서 설정
+
+`LOCAL_STORAGE_PATH`나 `PROCESSING_DATA_PATH`가 별도 드라이브(SSD, NAS 등)에 있는 경우, **시스템 재부팅 시 드라이브가 마운트되기 전에 Docker가 먼저 시작**될 수 있습니다. 이 경우 Docker가 빈 디렉토리를 자동 생성하여 기존 데이터가 보이지 않게 됩니다.
+
+### 증상
+- 재부팅 후 정사영상이 지도에 표시되지 않음
+- 내보내기 시 "정사영상을 찾을 수 없습니다" 에러
+- `docker exec aerial-survey-manager-api-1 ls /data/storage/projects/` 결과가 비어있음
+
+### 해결: Docker가 드라이브 마운트 이후에 시작되도록 설정
+
+```bash
+# 1. 데이터 드라이브의 마운트 포인트 확인
+df -h /data    # 또는 LOCAL_STORAGE_PATH의 상위 경로
+
+# 2. Docker 서비스에 마운트 의존성 추가
+sudo systemctl edit docker.service
+
+# 아래 내용 입력 후 저장:
+[Unit]
+RequiresMountsFor=/data
+# ↑ LOCAL_STORAGE_PATH의 마운트 포인트로 변경
+# 예: /mnt/storage, /media/data 등
+
+# 3. systemd 반영
+sudo systemctl daemon-reload
+
+# 4. 확인 (재부팅 후)
+sudo reboot
+docker exec aerial-survey-manager-api-1 ls /data/storage/projects/
+```
+
+> `RequiresMountsFor`는 systemd 표준 기능으로, 지정한 경로가 마운트될 때까지 Docker 시작을 지연시킵니다. 드라이브가 고장 등으로 마운트되지 않으면 Docker가 시작되지 않으므로, 빈 디렉토리에서 잘못 동작하는 것보다 문제를 즉시 인지할 수 있습니다.
+
+> **참고**: `install.sh`는 별도 드라이브를 자동 감지하여 이 설정을 적용합니다. 이미 설치된 환경에서는 위 절차를 수동으로 실행하세요.
+
+---
+
 ## 문제 해결
 
 | 증상 | 원인 | 해결 |
@@ -185,6 +223,8 @@ sudo ufw enable
 | GPU 미인식 | NVIDIA 드라이버/Container Toolkit | 아래 GPU 진단 절차 참조 |
 | 처리가 극도로 느림 | GPU 미사용 (CPU only) | 아래 GPU 진단 절차 참조 |
 | 처리 실패 | 라이선스/이미지 문제 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) 참조 |
+| 재부팅 후 데이터 안 보임 | 드라이브 마운트 순서 | 위 [별도 드라이브 사용 시 부팅 순서 설정](#별도-드라이브-사용-시-부팅-순서-설정) 참조 |
+| 내보내기 실패 | 정사영상 경로 불일치 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) 참조 |
 | MinIO 507 | 디스크 부족 | `df -h`, 임시 파일 정리 |
 | 타일맵 안 보임 | bind mount 끊김 | `docker compose restart nginx` |
 | DB 연결 실패 | 컨테이너 미시작 | `docker compose logs db` |

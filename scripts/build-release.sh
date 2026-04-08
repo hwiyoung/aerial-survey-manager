@@ -64,8 +64,7 @@ echo "2. Docker 이미지 빌드 중 (캐시 없이)..."
 # 프로덕션 이미지 빌드
 # -p: 개발 이미지(aerial-survey-manager-*)와 분리된 프로젝트명 사용
 # --no-cache: 항상 최신 코드 반영
-# --profile engine: worker-engine 서비스 포함
-docker compose -p ${PROD_PROJECT} -f docker-compose.prod.yml --profile engine build --no-cache
+docker compose -p ${PROD_PROJECT} -f docker-compose.prod.yml build --no-cache
 
 # 이미지 태깅 (버전 포함)
 # 소스: aerial-prod-* (프로덕션 빌드)

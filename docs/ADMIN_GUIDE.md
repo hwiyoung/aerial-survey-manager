@@ -302,6 +302,54 @@ docker compose ps
 docker exec aerial-worker-engine nvidia-smi
 ```
 
+> **별도 드라이브 사용 시**: 재부팅 후 데이터가 보이지 않으면 드라이브 마운트 순서 문제입니다.
+> [DEPLOYMENT_GUIDE.md > 별도 드라이브 사용 시 부팅 순서 설정](DEPLOYMENT_GUIDE.md#별도-드라이브-사용-시-부팅-순서-설정) 참조.
+
+---
+
+## 내보내기 실패 대응
+
+### 증상: "정사영상을 찾을 수 없습니다"
+
+내보내기 시 API가 `LOCAL_STORAGE_PATH/projects/{uuid}/ortho/result_cog.tif` 경로에서 파일을 찾습니다. 파일이 없으면 404 에러가 발생합니다.
+
+### 진단
+```bash
+# 1. 컨테이너 내부에서 파일 확인
+docker exec aerial-survey-manager-api-1 ls /data/storage/projects/
+
+# 2. 호스트에서 result_cog.tif 위치 찾기
+find / -name "result_cog.tif" -not -path "/proc/*" 2>/dev/null
+
+# 3. 컨테이너의 /data/storage 마운트 소스 확인
+docker inspect aerial-survey-manager-api-1 \
+  --format '{{range .Mounts}}{{if eq .Destination "/data/storage"}}{{.Source}}{{end}}{{end}}'
+```
+
+### 원인별 해결
+
+**마운트 순서 문제** (재부팅 후 빈 디렉토리):
+→ [별도 드라이브 사용 시 부팅 순서 설정](DEPLOYMENT_GUIDE.md#별도-드라이브-사용-시-부팅-순서-설정) 적용 후 `docker compose down && docker compose up -d`
+
+**잘못된 경로에 파일이 생성된 경우** (다른 폴더에서 docker compose up 실행):
+```bash
+# 올바른 폴더에서 컨테이너 재생성
+cd /path/to/aerial-survey-manager
+docker compose down
+docker compose up -d
+
+# 잘못된 위치의 파일을 올바른 위치로 이동
+# (DB에는 상대경로만 저장되므로 파일 이동만으로 인식됨)
+mv /wrong/path/projects/{uuid}/ortho/result_cog.tif \
+   $(grep LOCAL_STORAGE_PATH .env | cut -d= -f2)/projects/{uuid}/ortho/result_cog.tif
+```
+
+**이전 버전 폴더가 남아있는 경우** (실수 방지):
+```bash
+# 이전 폴더의 docker-compose.yml 비활성화
+mv /old/aerial-survey-manager/docker-compose.yml /old/aerial-survey-manager/docker-compose.yml.disabled
+```
+
 ### 보안 설정 (선택)
 ```bash
 sudo bash scripts/secure-deployment.sh
