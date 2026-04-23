@@ -98,7 +98,7 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
                     if delimiter is None:
                         delimiter = _detect_delimiter(raw, path)
                     parts = raw.split(",") if delimiter == "," else raw.split()
-                    if not parts:
+                    if len(parts) < 7:
                         continue
                     token = os.path.basename(parts[0].strip())
                     lower = token.lower()
@@ -267,6 +267,9 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
         if camera.reference and camera.reference.rotation is not None:
             camera.reference.rotation_enabled = True
 
+    # EO 적용 결과를 즉시 디스크에 반영 (정렬 전에 .psx에서 검증 가능)
+    doc.save()
+
     # --- Step 3: Align Photos ---
     try:
         print("🛠 Aligning photos...")
@@ -293,11 +296,48 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
         if unaligned_cameras > 0:
             unaligned_labels = [c.label for c in chunk.cameras if not c.transform]
             print(f"⚠️ 정렬 실패 카메라 ({unaligned_cameras}개):")
-            # 최대 20개까지만 출력
             for label in unaligned_labels[:20]:
                 print(f"   - {label}")
             if unaligned_cameras > 20:
                 print(f"   ... 외 {unaligned_cameras - 20}개")
+
+            # --- Step 3-1: 미정합 카메라 재정합 (1회 시도) ---
+            print(f"\n🔄 미정합 카메라 {unaligned_cameras}장 재정합 시도...")
+            unaligned_cams = [c for c in chunk.cameras if c.transform is None]
+
+            chunk.matchPhotos(
+                downscale=mp_downscale,
+                keypoint_limit=40000,
+                tiepoint_limit=4000,
+                generic_preselection=True,
+                reference_preselection=True,
+                reset_matches=False,
+            )
+            chunk.alignCameras(
+                cameras=unaligned_cams,
+                min_image=2,
+                adaptive_fitting=True,
+                reset_alignment=False,
+            )
+            doc.save(output_path + '/project.psx')
+
+            still_unaligned = len([c for c in chunk.cameras if c.transform is None])
+            newly_aligned = unaligned_cameras - still_unaligned
+            print(f"   → 새로 정합: {newly_aligned}장 | 여전히 실패: {still_unaligned}장")
+
+            if still_unaligned > 0:
+                still_labels = [c.label for c in chunk.cameras if c.transform is None]
+                print(f"⚠️ 최종 미정합 카메라 ({still_unaligned}개):")
+                for label in still_labels[:20]:
+                    print(f"   - {label}")
+                if still_unaligned > 20:
+                    print(f"   ... 외 {still_unaligned - 20}개")
+                print("   → 오버랩/텍스처 부족 등 근본적 문제일 수 있습니다.")
+
+            # 최종 정합률 갱신
+            aligned_cameras = total_cameras - still_unaligned
+            alignment_ratio = aligned_cameras / total_cameras * 100 if total_cameras > 0 else 0
+            print(f"📊 최종 Alignment: {aligned_cameras}/{total_cameras} ({alignment_ratio:.1f}%)")
 
         progress_callback_wrapper(99.9)
         print("✅ Cameras aligned successfully.")

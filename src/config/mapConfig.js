@@ -33,10 +33,16 @@ export const MAP_CONFIG = {
     defaultZoom: 7,
     minZoom: 5,
 
-    // maxZoom: 오프라인은 실제 타일 최대 줌에 맞춤
+    // maxZoom: 지도 줌 최대 레벨
     maxZoom: {
+        offline: 19,
+        online: 19,
+    },
+
+    // maxNativeZoom: 실제 타일 데이터가 존재하는 최대 줌 레벨
+    maxNativeZoom: {
         offline: 16,
-        online: 18,
+        online: 19,
     },
 };
 
@@ -47,6 +53,7 @@ export const MAP_CONFIG = {
 export const getTileConfig = () => {
     const isOffline = MAP_CONFIG.offline;
     const maxZoom = isOffline ? MAP_CONFIG.maxZoom.offline : MAP_CONFIG.maxZoom.online;
+    const maxNativeZoom = isOffline ? MAP_CONFIG.maxNativeZoom.offline : MAP_CONFIG.maxNativeZoom.online;
 
     // 환경변수로 커스텀 URL이 설정된 경우 우선 사용
     const customUrl = import.meta.env.VITE_TILE_URL;
@@ -58,6 +65,7 @@ export const getTileConfig = () => {
             attribution: import.meta.env.VITE_TILE_ATTRIBUTION || MAP_CONFIG.attribution.offline,
             subdomains: undefined,
             maxZoom: maxZoom,
+            maxNativeZoom: maxNativeZoom,
             minZoom: MAP_CONFIG.minZoom,
         };
     } else {
@@ -66,6 +74,7 @@ export const getTileConfig = () => {
             attribution: isOffline ? MAP_CONFIG.attribution.offline : MAP_CONFIG.attribution.online,
             subdomains: isOffline ? undefined : MAP_CONFIG.subdomains,
             maxZoom: maxZoom,
+            maxNativeZoom: maxNativeZoom,
             minZoom: MAP_CONFIG.minZoom,
         };
     }

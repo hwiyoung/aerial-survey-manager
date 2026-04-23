@@ -18,7 +18,7 @@ function FitBounds({ images, projectBounds, projectId, maxZoom }) {
         if (images && images.length > 0) {
             const bounds = L.latLngBounds(images.map(img => [img.wy, img.wx]));
             if (bounds.isValid()) {
-                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 18 });
+                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 19 });
                 fittedProjectRef.current = projectId;
                 return;
             }
@@ -27,7 +27,7 @@ function FitBounds({ images, projectBounds, projectId, maxZoom }) {
         if (projectBounds && projectBounds.length > 0) {
             const bounds = L.latLngBounds(projectBounds);
             if (bounds.isValid()) {
-                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 18 });
+                map.fitBounds(bounds, { padding: [50, 50], maxZoom: maxZoom || 19 });
                 fittedProjectRef.current = projectId;
             }
         }
@@ -145,6 +145,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         attribution={tileConfig.attribution}
                         url={tileConfig.url}
                         {...(tileConfig.subdomains ? { subdomains: tileConfig.subdomains } : {})}
+                        maxNativeZoom={tileConfig.maxNativeZoom}
                         maxZoom={tileConfig.maxZoom}
                         minZoom={MAP_CONFIG.minZoom}
                     />

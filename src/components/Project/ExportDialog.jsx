@@ -23,6 +23,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
     const [isDeleting, setIsDeleting] = useState(false);
     const progressIntervalRef = useRef(null);
     const wasOpenRef = useRef(false);
+    const abortControllerRef = useRef(null);
 
     const targets = useMemo(() => {
         return allProjects.filter(p => targetProjectIds.includes(p.id));
@@ -61,11 +62,14 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         wasOpenRef.current = isOpen;
     }, [isOpen, targets, resultGsd]);
 
-    // 컴포넌트 언마운트 시 interval 정리
+    // 컴포넌트 언마운트 시 interval 및 abort 정리
     useEffect(() => {
         return () => {
             if (progressIntervalRef.current) {
                 clearInterval(progressIntervalRef.current);
+            }
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
             }
         };
     }, []);
@@ -87,6 +91,9 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         setIsExporting(true);
         setProgress(5);
 
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         let currentProgress = 5;
         progressIntervalRef.current = setInterval(() => {
             currentProgress += Math.random() * 3 + 1;
@@ -102,7 +109,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                 crs: crs.match(/EPSG:(\d+)/)?.[0] || 'EPSG:5186',
                 gsd: gsd,
                 custom_filename: filename || null,
-            });
+            }, controller.signal);
 
             clearInterval(progressIntervalRef.current);
             api.triggerDirectDownload(result.download_id);
@@ -118,10 +125,26 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             }
         } catch (err) {
             clearInterval(progressIntervalRef.current);
+            if (err.name === 'AbortError') {
+                setIsExporting(false);
+                setProgress(0);
+                return;
+            }
             console.error('Batch export failed:', err);
             alert('내보내기 실패: ' + err.message);
             setIsExporting(false);
             setProgress(0);
+        } finally {
+            abortControllerRef.current = null;
+        }
+    };
+
+    const handleExportCancel = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
         }
     };
 
@@ -247,6 +270,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                                     <option value="TM중부 (EPSG:5186)">TM 중부 (EPSG:5186)</option>
                                     <option value="TM서부 (EPSG:5185)">TM 서부 (EPSG:5185)</option>
                                     <option value="TM동부 (EPSG:5187)">TM 동부 (EPSG:5187)</option>
+                                    <option value="TM동해 (EPSG:5188)">TM 동해 (EPSG:5188)</option>
                                     <option value="UTM-K (EPSG:5179)">UTM-K (EPSG:5179)</option>
                                     <option value="WGS84 (EPSG:4326)">WGS84 (EPSG:4326)</option>
                                 </select>
@@ -289,9 +313,12 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                             </button>
                         </>
                     ) : (
-                        <button disabled className="px-6 py-2 bg-slate-300 text-white rounded-lg font-bold text-sm cursor-wait">
-                            처리 중...
-                        </button>
+                        <>
+                            <button onClick={handleExportCancel} className="px-4 py-2 text-red-500 font-bold hover:bg-red-50 rounded-lg text-sm">취소</button>
+                            <button disabled className="px-6 py-2 bg-slate-300 text-white rounded-lg font-bold text-sm cursor-wait">
+                                처리 중...
+                            </button>
+                        </>
                     )}
                 </div>
             </div>
