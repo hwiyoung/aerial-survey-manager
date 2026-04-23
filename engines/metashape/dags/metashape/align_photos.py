@@ -98,7 +98,7 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
                     if delimiter is None:
                         delimiter = _detect_delimiter(raw, path)
                     parts = raw.split(",") if delimiter == "," else raw.split()
-                    if not parts:
+                    if len(parts) < 7:
                         continue
                     token = os.path.basename(parts[0].strip())
                     lower = token.lower()
@@ -266,6 +266,9 @@ def align_photos(input_images, image_folder, output_path, run_id, process_mode="
     for camera in chunk.cameras:
         if camera.reference and camera.reference.rotation is not None:
             camera.reference.rotation_enabled = True
+
+    # EO 적용 결과를 즉시 디스크에 반영 (정렬 전에 .psx에서 검증 가능)
+    doc.save()
 
     # --- Step 3: Align Photos ---
     try:
