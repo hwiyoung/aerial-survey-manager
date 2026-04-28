@@ -18,11 +18,14 @@
 
 - EO 업로드 시 파싱된 데이터가 자동으로 `data/processing/{project_id}/images/metadata.txt`에 저장됩니다.
 - Metashape `align_photos.py`는 위 파일을 우선 탐색해 `importReference`에 사용합니다.
+- 기본 정합 모드는 EO-only입니다. EO reference와 매칭된 이미지만 chunk에 추가하고, EO 미매칭 이미지는 non-EO incremental 정합에 사용하지 않습니다.
+- EO-only 모드는 1차 EO 정합 후 실패한 EO 카메라만 `reference_preselection=False`로 한 번 재시도하고, 그래도 실패한 카메라는 제거합니다.
 - `metadata.txt`는 **이미지 파일명과 매칭된 행만** 저장됩니다. 매칭이 0건이면 `importReference`가 수행되지 않습니다.
-- 매칭이 실패하면 `reference_normalized.txt`가 생성되지 않으며, 이후 DEM 단계에서 `Empty DEM` 오류가 발생할 수 있습니다.
+- EO-only 모드에서 매칭이 실패하면 전체 이미지 fallback 없이 align 단계에서 실패합니다.
 - 필요 시 명시 경로를 사용하려면:
   - 스크립트 인자: `--reference_path /path/to/eo.txt`
   - 환경변수: `EO_REFERENCE_PATH` 또는 `METASHAPE_REFERENCE_PATH`
+- 기존 non-EO incremental 정합을 테스트하려면 `align_photos.py`에 `--allow_non_eo_incremental`을 전달하거나 API options의 `eo_only_align`을 `false`로 설정합니다.
 
 ## Metashape 출력 파일 (GSD 이름 복사)
 

@@ -205,6 +205,7 @@ class ProcessingOptions(BaseModel):
     output_format: str = "GeoTiff"
     process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
     # Advanced options
+    eo_only_align: bool = True  # EO reference와 매칭된 이미지만 정합
     build_point_cloud: bool = False  # Point cloud 생성 여부 (3D Tiles 출력 시 필요)
 
 

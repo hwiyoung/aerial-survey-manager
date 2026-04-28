@@ -3,6 +3,21 @@ from common_args import parse_arguments, print_debug_info
 from common_utils import activate_metashape_license, progress_callback, change_task_status_in_ortho
 
 
+def _count_depth_maps(chunk):
+    depth_maps = getattr(chunk, "depth_maps", None)
+    if not depth_maps:
+        return 0
+    try:
+        return len(list(depth_maps.keys()))
+    except Exception:
+        pass
+    try:
+        return len(list(depth_maps.items()))
+    except Exception:
+        pass
+    return 0
+
+
 def build_depth_maps( output_path, run_id, process_mode="Normal"):
     """
     Generate an orthophoto and other outputs with progress tracking and refined seamlines.
@@ -41,9 +56,15 @@ def build_depth_maps( output_path, run_id, process_mode="Normal"):
             max_workgroup_size=100,
             progress=progress_callback_wrapper
         )
+        depth_map_count = _count_depth_maps(chunk)
+        if depth_map_count <= 0:
+            raise RuntimeError(
+                "Depth map이 0개 생성되었습니다. "
+                "카메라 간 tie point/neighbor 연결이 부족합니다."
+            )
         doc.save(output_path + '/project.psx')
         progress_callback_wrapper(100)
-        print(f"✅ Depth maps built successfully.")
+        print(f"✅ Depth maps built successfully. ({depth_map_count}개)")
     except Exception as e:
         change_task_status_in_ortho(run_id,"Fail")
         progress_callback_wrapper(1000)

@@ -1,6 +1,18 @@
 import sys
 import argparse
 
+
+def _parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
+
 def parse_arguments():
     """
     공통 명령줄 인자를 처리하는 함수.
@@ -64,6 +76,20 @@ def parse_arguments():
         required=False,
         help="Optional path to EO reference file (.txt/.csv) or a directory containing it."
     )
+    parser.add_argument(
+        "--eo_only_align",
+        nargs="?",
+        const=True,
+        default=True,
+        type=_parse_bool,
+        help="Align only photos that match the EO reference. Default: true."
+    )
+    parser.add_argument(
+        "--allow_non_eo_incremental",
+        dest="eo_only_align",
+        action="store_false",
+        help="Opt into the legacy non-EO incremental alignment pass."
+    )
 
 
 
@@ -90,4 +116,5 @@ def print_debug_info(args, input_images):
     print(f"Image Folder: {args.image_folder}")
     print(f"Output Path: {args.output_path}")
     print(f"Process Mode: {args.process_mode}")
+    print(f"EO-only Align: {args.eo_only_align}")
     print(f"Found {len(input_images)} images.")
