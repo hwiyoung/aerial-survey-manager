@@ -612,7 +612,7 @@ class ApiClient {
      * @param {object} options - 내보내기 옵션
      * @returns {Promise<{download_id: string, filename: string, file_size: number}>}
      */
-    async prepareBatchExport(projectIds, options = {}) {
+    async prepareBatchExport(projectIds, options = {}, signal) {
         return this.request('/download/batch/prepare', {
             method: 'POST',
             body: JSON.stringify({
@@ -622,6 +622,7 @@ class ApiClient {
                 gsd: options.gsd ? parseFloat(options.gsd) : null,
                 custom_filename: options.custom_filename || null,
             }),
+            signal,
         });
     }
 

@@ -1,6 +1,8 @@
 """Download API endpoints with resumable download support."""
+import asyncio
 import os
 import re
+import threading
 import time
 import logging
 from urllib.parse import quote
@@ -554,67 +556,100 @@ class BatchExportRequest(BaseModel):
 
 
 
-def _warp_if_needed(source_path: str, target_crs: str, target_gsd_cm: float | None) -> str:
-    """Re-project/resample a GeoTIFF if CRS or GSD differs. Returns final file path."""
+def _warp_if_needed_sync(
+    source_path: str,
+    target_crs: str,
+    target_gsd_cm: float | None,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    """Re-project/resample a GeoTIFF if CRS or GSD differs. Returns final file path.
+
+    Runs gdalwarp via Popen so it can be terminated when cancel_event is set.
+    """
     import subprocess
 
     # Validate CRS format to prevent command injection
     if not re.match(r'^EPSG:\d{4,5}$', target_crs):
         raise ValueError(f"Invalid CRS format: {target_crs}")
 
+    source_gsd_m, source_epsg = get_source_gsd_and_crs(source_path)
+    source_gsd_cm = source_gsd_m * 100 if source_gsd_m else None
+
+    target_res = target_gsd_cm / 100.0 if target_gsd_cm else None
+
+    crs_changed = (target_crs != source_epsg)
+    gsd_changed = False
+    if target_gsd_cm is not None and source_gsd_cm is not None:
+        gsd_changed = abs(target_gsd_cm - source_gsd_cm) > 0.1
+
+    if not crs_changed and not gsd_changed:
+        return source_path
+
+    print(f"Export warp: {source_epsg} -> {target_crs}, GSD: {source_gsd_cm} -> {target_gsd_cm} cm/px", flush=True)
+
+    warped_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{target_crs.replace(":", "_")}.tif')
+    warped_file.close()
+
+    warp_cmd = [
+        "gdalwarp",
+        "-t_srs", target_crs,
+        "-r", "bilinear",
+        "-overwrite",
+        "-co", "COMPRESS=LZW",
+    ]
+
+    if target_res:
+        if target_crs == "EPSG:4326":
+            deg_res = target_res / 111320.0
+            warp_cmd.extend(["-tr", f"{deg_res:.12f}", f"{deg_res:.12f}"])
+        else:
+            warp_cmd.extend(["-tr", str(target_res), str(target_res)])
+
+    warp_cmd.extend([source_path, warped_file.name])
+
+    proc = subprocess.Popen(warp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        source_gsd_m, source_epsg = get_source_gsd_and_crs(source_path)
-        source_gsd_cm = source_gsd_m * 100 if source_gsd_m else None
-
-        target_res = target_gsd_cm / 100.0 if target_gsd_cm else None
-
-        crs_changed = (target_crs != source_epsg)
-        gsd_changed = False
-        if target_gsd_cm is not None and source_gsd_cm is not None:
-            gsd_changed = abs(target_gsd_cm - source_gsd_cm) > 0.1
-
-        if not crs_changed and not gsd_changed:
-            return source_path
-
-        print(f"Export warp: {source_epsg} -> {target_crs}, GSD: {source_gsd_cm} -> {target_gsd_cm} cm/px", flush=True)
-
-        warped_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{target_crs.replace(":", "_")}.tif')
-        warped_file.close()
-
-        warp_cmd = [
-            "gdalwarp",
-            "-t_srs", target_crs,
-            "-r", "bilinear",
-            "-overwrite",
-            "-co", "COMPRESS=LZW",
-        ]
-
-        if target_res:
-            if target_crs == "EPSG:4326":
-                deg_res = target_res / 111320.0
-                warp_cmd.extend(["-tr", f"{deg_res:.12f}", f"{deg_res:.12f}"])
+        # Poll so we can react to cancellation
+        while proc.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                proc.terminate()
+                proc.wait(timeout=10)
+                print("Export warp cancelled by user", flush=True)
+                try: os.unlink(warped_file.name)
+                except Exception: pass
+                raise _ExportCancelled()
+            if cancel_event:
+                cancel_event.wait(0.5)
             else:
-                warp_cmd.extend(["-tr", str(target_res), str(target_res)])
+                time.sleep(0.5)
 
-        warp_cmd.extend([source_path, warped_file.name])
-
-        result = subprocess.run(warp_cmd, capture_output=True, text=True)
-
-        if result.returncode == 0:
+        if proc.returncode == 0:
             # Clean up source if it was a temp file
             if source_path.startswith(tempfile.gettempdir()):
                 try: os.unlink(source_path)
                 except Exception: pass
             return warped_file.name
         else:
-            print(f"gdalwarp failed: {result.stderr}", flush=True)
+            stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            print(f"gdalwarp failed (rc={proc.returncode}): {stderr}", flush=True)
             try: os.unlink(warped_file.name)
             except Exception: pass
-            return source_path
+            raise RuntimeError(f"좌표계 변환 실패: {stderr[:200]}")
+    except _ExportCancelled:
+        raise
+    except RuntimeError:
+        raise
+    except Exception:
+        proc.kill()
+        proc.wait()
+        try: os.unlink(warped_file.name)
+        except Exception: pass
+        raise
 
-    except Exception as e:
-        print(f"Re-projection failed: {e}", flush=True)
-        return source_path
+
+class _ExportCancelled(Exception):
+    """Raised when the user cancels an export."""
+    pass
 
 
 async def _collect_export_files(
@@ -623,6 +658,7 @@ async def _collect_export_files(
     target_gsd_cm: float | None,
     current_user: User,
     db: AsyncSession,
+    cancel_event: threading.Event | None = None,
 ) -> list[dict]:
     """Collect ortho files for batch export with optional re-projection.
 
@@ -633,6 +669,9 @@ async def _collect_export_files(
     projects_with_files = []
 
     for project_id in project_ids:
+        if cancel_event and cancel_event.is_set():
+            break
+
         permission_checker = PermissionChecker("view")
         if not await permission_checker.check(str(project_id), current_user, db):
             continue
@@ -679,7 +718,9 @@ async def _collect_export_files(
         else:
             continue
 
-        final_file_path = _warp_if_needed(source_path, target_crs, target_gsd_cm)
+        final_file_path = await asyncio.to_thread(
+            _warp_if_needed_sync, source_path, target_crs, target_gsd_cm, cancel_event,
+        )
         projects_with_files.append({
             "project": project,
             "file_path": final_file_path,
@@ -791,6 +832,7 @@ async def batch_download(
 @router.post("/batch/prepare")
 async def prepare_batch_download(
     request: BatchExportRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -804,9 +846,35 @@ async def prepare_batch_download(
     if len(request.project_ids) > 20:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Maximum 20 projects allowed per batch export")
 
-    projects_with_files = await _collect_export_files(
-        request.project_ids, request.crs, request.gsd, current_user, db,
-    )
+    # Cancel event: set when the client disconnects (user clicks cancel)
+    cancel_event = threading.Event()
+
+    async def _watch_disconnect():
+        while not cancel_event.is_set():
+            if await http_request.is_disconnected():
+                cancel_event.set()
+                return
+            await asyncio.sleep(0.5)
+
+    watch_task = asyncio.create_task(_watch_disconnect())
+
+    projects_with_files = []
+    try:
+        projects_with_files = await _collect_export_files(
+            request.project_ids, request.crs, request.gsd, current_user, db,
+            cancel_event=cancel_event,
+        )
+    except _ExportCancelled:
+        # Clean up any temp files created before cancellation
+        for item in projects_with_files:
+            fp = item.get("file_path", "")
+            if fp.startswith(tempfile.gettempdir()):
+                try: os.unlink(fp)
+                except Exception: pass
+        return Response(status_code=499)  # Client Closed Request
+    finally:
+        cancel_event.set()
+        watch_task.cancel()
 
     if not projects_with_files:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completed orthoimages found for the selected projects")

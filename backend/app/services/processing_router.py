@@ -462,6 +462,13 @@ class MetashapeEngine(ProcessingEngine):
                 
             # Point cloud 생성 여부 (기본값: False, advanced 옵션)
             build_point_cloud = options.get("build_point_cloud", False)
+            eo_only_align = options.get("eo_only_align", True)
+            if eo_only_align is None:
+                eo_only_align = True
+            elif isinstance(eo_only_align, str):
+                eo_only_align = eo_only_align.strip().lower() not in {"0", "false", "no", "n", "off"}
+            else:
+                eo_only_align = bool(eo_only_align)
 
             steps = [
                 ("align_photos.py", "이미지 정렬 중..."),
@@ -476,7 +483,10 @@ class MetashapeEngine(ProcessingEngine):
                 ("convert_cog.py", "COG 변환 중..."),
             ])
 
-            logger.info(f"[Metashape] build_point_cloud={build_point_cloud}, total steps={len(steps)}")
+            logger.info(
+                f"[Metashape] build_point_cloud={build_point_cloud}, "
+                f"eo_only_align={eo_only_align}, total steps={len(steps)}"
+            )
 
             # status.json 초기화 - 실행할 단계만 포함
             script_to_task_name = {
@@ -546,8 +556,13 @@ class MetashapeEngine(ProcessingEngine):
                     cmd.extend(["--reference_path", str(reference_path)])
 
                 if script_name == "align_photos.py":
+                    if eo_only_align:
+                        cmd.extend(["--eo_only_align", "true"])
+                    else:
+                        cmd.append("--allow_non_eo_incremental")
                     metadata_path = input_dir / "metadata.txt"
                     logger.info(f"[Metashape] EO metadata path: {metadata_path} (exists={metadata_path.exists()})")
+                    logger.info(f"[Metashape] EO-only align mode: {eo_only_align}")
                     if reference_path:
                         logger.info(f"[Metashape] EO reference_path option: {reference_path}")
 

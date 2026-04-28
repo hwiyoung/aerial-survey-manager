@@ -12,6 +12,7 @@ class PresetOptionsSchema(BaseModel):
     process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
+    eo_only_align: bool = True  # EO reference와 매칭된 이미지만 정합
 
 
 class PresetBase(BaseModel):
