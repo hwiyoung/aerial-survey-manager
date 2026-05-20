@@ -85,9 +85,9 @@ class MinIOStorageBackend(StorageBackend):
         expires: int = 3600,
         response_headers: Optional[dict] = None,
     ) -> str:
-        # Objects under projects/ are publicly accessible (bucket policy set)
+        # Public artifacts are served through nginx /storage/.
         # Use nginx /storage/ proxy to avoid exposing MinIO port directly
-        if object_name.startswith("projects/"):
+        if object_name.startswith(("projects/", "orthomosaic/")):
             return f"/storage/{object_name}"
 
         # For private objects, generate presigned URL via nginx proxy

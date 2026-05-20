@@ -52,7 +52,7 @@ docker compose exec worker-engine ls /data/processing/{project-id}/images/metada
 해결: EO 재업로드 또는 프로젝트 재생성
 
 ### 외부 COG 삽입 (처리 우회)
-Metashape 처리가 반복 실패할 때, 외부 정사영상을 직접 삽입:
+내장 처리 엔진 작업이 반복 실패할 때, 외부 정사영상을 직접 삽입:
 ```bash
 ./scripts/inject-cog.sh <project_id> /path/to/orthomosaic.tif
 
@@ -65,34 +65,30 @@ Metashape 처리가 반복 실패할 때, 외부 정사영상을 직접 삽입:
 
 ---
 
-## 라이선스 관리 (Metashape)
+## 처리 엔진 라이선스 관리
 
 ### 정상 동작
 처리 시작 시 로컬 `.lic` 파일로 검증. 이미 활성화되어 있으면 서버 호출 없음.
 
 ### "Key Already In Use" 오류
-1. Agisoft 지원팀에 라이선스 초기화(Deactivation) 요청
-2. 승인 후:
+1. 지원팀에 라이선스 초기화(Deactivation) 요청
+2. 승인 후 워커를 재생성:
 ```bash
 docker compose up -d --force-recreate worker-engine
-docker exec worker-engine python3 /app/engines/metashape/dags/metashape/activate.py
 ```
 
 ### 라이선스 수동 비활성화
 ```bash
-# 개발 환경
-docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.py
-# 배포 환경
-docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.pyc
+./scripts/shutdown-engine.sh
 ```
 
 ### 라이선스 볼륨 초기화
 ```bash
-docker volume rm aerial-survey-manager_metashape-license
+docker volume rm aerial-survey-manager_engine-license
 docker compose up -d worker-engine
 ```
 
-> `docker-compose.yml`의 MAC 주소(`02:42:AC:17:00:64`)를 변경하면 Agisoft가 새 컴퓨터로 인식합니다. 절대 변경하지 마세요.
+> `docker-compose.yml`의 MAC 주소(`02:42:AC:17:00:64`)를 변경하면 라이선스 서버가 새 컴퓨터로 인식할 수 있습니다. 절대 변경하지 마세요.
 
 ---
 
@@ -190,7 +186,7 @@ docker compose exec api python /app/scripts/seed_camera_models.py -f /app/io.csv
 
 ```bash
 # Redis 큐 잔여량
-docker compose exec redis redis-cli llen metashape
+./scripts/check-processing-ops.sh
 docker compose exec redis redis-cli llen thumbnail
 docker compose exec redis redis-cli llen celery
 
@@ -223,7 +219,7 @@ docker run --rm aerial-prod-worker-engine:latest find /app/engines -name "*.py" 
 ## GPU 진단
 
 ### 증상: 처리가 극도로 느림
-GPU가 컨테이너에 전달되지 않으면 Metashape가 CPU only로 동작합니다. 오류 없이 정상 시작되지만 **처리 시간이 10배 이상 증가**합니다.
+GPU가 컨테이너에 전달되지 않으면 처리 엔진이 CPU only로 동작합니다. 오류 없이 정상 시작되지만 **처리 시간이 10배 이상 증가**합니다.
 
 ### 확인
 ```bash
@@ -273,11 +269,11 @@ OS, CPU, RAM, 디스크, GPU, Docker, 네트워크 정보를 출력합니다.
 
 ---
 
-## Metashape 안전 종료
+## 처리 엔진 안전 종료
 
 라이선스를 비활성화한 후 종료해야 하는 경우 (서버 이전 등):
 ```bash
-./scripts/shutdown-metashape.sh
+./scripts/shutdown-engine.sh
 ```
 1. 라이선스 비활성화
 2. worker-engine 종료
@@ -371,7 +367,7 @@ sudo bash scripts/secure-deployment.sh
 | `fix-gpu.sh` | GPU 진단 및 자동 복구 | sudo |
 | `healthcheck.sh` | 전체 서비스 헬스체크 | 일반 |
 | `collect-logs.sh` | 로그 수집 (지원팀 전달용) | 일반 |
-| `shutdown-metashape.sh` | 라이선스 비활성화 후 안전 종료 | 일반 |
+| `shutdown-engine.sh` | 라이선스 비활성화 후 안전 종료 | 일반 |
 | `system-info.sh` | 시스템 정보 출력 | 일반 |
 | `setup-autostart.sh` | Docker 자동 시작 설정/확인 | sudo |
 | `secure-deployment.sh` | 보안 설정 (권한, systemd) | sudo |

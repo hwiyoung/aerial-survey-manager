@@ -1,6 +1,7 @@
 """Celery application and async tasks."""
 import os
 import json
+import shutil
 import time
 from datetime import datetime
 from datetime import timedelta
@@ -18,12 +19,29 @@ from app.auth.jwt import create_internal_token
 from app.utils.checksum import calculate_file_checksum
 from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
+from app.utils.storage_paths import (
+    legacy_processing_work_dir,
+    normalize_crs_label,
+    orthomosaic_key,
+    processing_exclusion_path,
+    processing_images_dir,
+    processing_log_path,
+    processing_metadata_path,
+    processing_status_path,
+    processing_work_dir,
+    project_preview_key,
+    project_root_dir,
+    source_images_prefix,
+    source_thumbnail_key,
+    source_thumbnail_prefix,
+)
 
 settings = get_settings()
 
 QUEUE_WAIT_WARN_SECONDS = float(os.getenv("PROCESSING_QUEUE_WAIT_WARN_SECONDS", "300"))
 PROCESSING_TOTAL_WARN_SECONDS = float(os.getenv("PROCESSING_TOTAL_WARN_SECONDS", "7200"))
 PROCESSING_MEMORY_WARN_MB = float(os.getenv("PROCESSING_MEMORY_WARN_MB", "8192"))
+PROCESSING_ENGINE_QUEUE = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
 ENABLE_EXTERNAL_COG_INGEST = (
     os.getenv("ENABLE_EXTERNAL_COG_INGEST", "false").strip().lower() == "true"
 )
@@ -49,8 +67,9 @@ celery_app.conf.update(
     # prefetch=1: worker가 queue에서 1개 task만 가져옴.
     # prefetch>1이면 대기 task들도 Redis에서 in-flight로 카운트되어 visibility_timeout 소비.
     worker_prefetch_multiplier=1,
+    broker_connection_retry_on_startup=True,
     task_routes={
-        "app.workers.tasks.process_orthophoto": {"queue": "metashape"},
+        "app.workers.tasks.process_orthophoto": {"queue": PROCESSING_ENGINE_QUEUE},
         # 썸네일 태스크는 전용 워커에서 처리 (처리 중에도 동시 실행)
         "app.workers.tasks.generate_thumbnail": {"queue": "thumbnail"},
         "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "thumbnail"},
@@ -58,6 +77,7 @@ celery_app.conf.update(
         "app.workers.tasks.save_eo_metadata": {"queue": "celery"},
         "app.workers.tasks.delete_source_images": {"queue": "celery"},
         "app.workers.tasks.inject_external_cog": {"queue": "celery"},
+        "app.workers.tasks.inspect_worker_gpu": {"queue": PROCESSING_ENGINE_QUEUE},
     },
 )
 
@@ -125,6 +145,14 @@ def _get_process_memory_mb() -> Optional[float]:
         return None
 
 
+@celery_app.task(name="app.workers.tasks.inspect_worker_gpu")
+def inspect_worker_gpu():
+    """Inspect GPU visibility from the worker-engine container."""
+    from app.services.system_status import get_gpu_status
+
+    return get_gpu_status()
+
+
 def _convert_to_cog(input_path: str, output_path: str) -> None:
     """Convert a GeoTIFF to Cloud Optimized GeoTIFF using gdal_translate."""
     import subprocess
@@ -135,6 +163,28 @@ def _convert_to_cog(input_path: str, output_path: str) -> None:
         "-co", "OVERVIEW_RESAMPLING=AVERAGE",
         "-co", "BIGTIFF=YES",
         input_path, output_path
+    ]
+    subprocess.run(gdal_cmd, check=True, capture_output=True)
+
+
+def _warp_to_cog(input_path: str, output_path: str, target_crs: str) -> None:
+    """Warp a raster and write it as a Cloud Optimized GeoTIFF."""
+    import subprocess
+
+    gdal_cmd = [
+        "gdalwarp",
+        "-of", "COG",
+        "-t_srs", target_crs,
+        "-r", "bilinear",
+        "-overwrite",
+        "-multi",
+        "-wo", "NUM_THREADS=ALL_CPUS",
+        "-co", "COMPRESS=LZW",
+        "-co", "BLOCKSIZE=1024",
+        "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+        "-co", "BIGTIFF=YES",
+        input_path,
+        output_path,
     ]
     subprocess.run(gdal_cmd, check=True, capture_output=True)
 
@@ -198,7 +248,7 @@ def _prepare_images(storage, images, input_dir: Path, update_progress) -> int:
             src_path = image.original_path
 
             # Determine if this is an absolute local path (local-import)
-            # or a storage object key (e.g. "images/{project_id}/file.jpg")
+            # or a storage object key (e.g. "projects/{project_id}/source/images/file.jpg")
             if os.path.isabs(src_path):
                 # Local-import: use the absolute path directly
                 if not os.path.exists(src_path):
@@ -235,6 +285,38 @@ def _prepare_images(storage, images, input_dir: Path, update_progress) -> int:
             update_progress(download_progress, f"{i + 1}/{len(images)} 이미지 준비 완료")
 
     return total_source_size
+
+
+def _image_merge_key(image_name: str) -> str:
+    basename = os.path.basename(str(image_name or "").strip())
+    return os.path.splitext(basename)[0].lower()
+
+
+def _load_processing_excluded_image_keys(input_dir: Path) -> set[str]:
+    exclusion_path = input_dir / ".excluded_images.txt"
+    if not exclusion_path.exists():
+        root_exclusion_path = input_dir.parent / ".excluded_images.txt"
+        if not root_exclusion_path.exists():
+            return set()
+        exclusion_path = root_exclusion_path
+    try:
+        with open(exclusion_path, "r", encoding="utf-8") as f:
+            return {
+                line.strip().lower()
+                for line in f
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+    except OSError:
+        return set()
+
+
+def _filter_excluded_processing_images(images, excluded_keys: set[str]):
+    if not excluded_keys:
+        return images
+    return [
+        image for image in images
+        if _image_merge_key(image.filename) not in excluded_keys
+    ]
 
 
 
@@ -301,11 +383,18 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     )
             
             # Setup directories
-            base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id)
-            input_dir = base_dir / "images"
-            output_dir = base_dir / ".work"
+            base_dir = project_root_dir(project_id)
+            input_dir = processing_images_dir(project_id)
+            output_dir = processing_work_dir(project_id)
+            legacy_output_dir = legacy_processing_work_dir(project_id)
             input_dir.mkdir(parents=True, exist_ok=True)
             output_dir.mkdir(parents=True, exist_ok=True)
+            if legacy_output_dir.exists() and legacy_output_dir != output_dir:
+                try:
+                    shutil.rmtree(legacy_output_dir)
+                    print(f"Cleaned up legacy processing directory: {legacy_output_dir}")
+                except Exception as cleanup_err:
+                    print(f"Failed to clean up legacy processing directory {legacy_output_dir}: {cleanup_err}")
             
             # Download images from storage
             storage = get_storage()
@@ -313,8 +402,41 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 Image.project_id == project_id,
                 Image.upload_status == "completed",
             ).all()
+
+            excluded_image_keys = _load_processing_excluded_image_keys(input_dir)
+            if excluded_image_keys:
+                before_count = len(images)
+                images = _filter_excluded_processing_images(images, excluded_image_keys)
+                skipped_count = before_count - len(images)
+                print(
+                    f"[Processing] EO preview excluded images skipped: "
+                    f"{skipped_count}/{before_count} project_id={project_id}"
+                )
+            if not images:
+                raise RuntimeError("처리 대상 이미지가 없습니다. EO 위치 preview의 제외 상태를 확인해주세요.")
             
-            status_file = base_dir / "processing_status.json"
+            metadata_path = processing_metadata_path(project_id)
+            if metadata_path.exists():
+                compat_metadata_path = input_dir / "metadata.txt"
+                if not compat_metadata_path.exists():
+                    try:
+                        os.symlink(metadata_path, compat_metadata_path)
+                    except OSError:
+                        import shutil
+                        shutil.copy2(metadata_path, compat_metadata_path)
+
+            exclusion_path = processing_exclusion_path(project_id)
+            if exclusion_path.exists():
+                compat_exclusion_path = input_dir / ".excluded_images.txt"
+                if not compat_exclusion_path.exists():
+                    try:
+                        os.symlink(exclusion_path, compat_exclusion_path)
+                    except OSError:
+                        import shutil
+                        shutil.copy2(exclusion_path, compat_exclusion_path)
+
+            status_file = processing_status_path(project_id)
+            status_file.parent.mkdir(parents=True, exist_ok=True)
 
             def write_status_file(
                 progress: int,
@@ -414,12 +536,20 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             t0 = time.time()
             update_progress(90, "클라우드 최적화 GeoTIFF 변환 중...")
             cog_path = output_dir / "result_cog.tif"
-            result_object_name = f"projects/{project_id}/ortho/result_cog.tif"
+            target_ortho_crs = (
+                options.get("export_target_crs")
+                or settings.AUTO_EXPORT_TARGET_CRS
+                or "EPSG:5186"
+            )
+            if str(target_ortho_crs).strip().isdigit():
+                target_ortho_crs = f"EPSG:{str(target_ortho_crs).strip()}"
+            result_object_name = orthomosaic_key(project_id, str(target_ortho_crs))
+            orthomosaic_cog_path = output_dir / Path(result_object_name).name
 
             try:
                 import shutil
 
-                # 엔진(Metashape 등)이 이미 COG를 생성한 경우 변환 스킵
+                # 엔진이 이미 COG를 생성한 경우 변환 스킵
                 if cog_path.exists():
                     print(f"COG already created by engine, skipping conversion: {cog_path}")
                 else:
@@ -435,18 +565,19 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
                 update_progress(92, "결과물 저장 중...")
 
-                result_path = _upload_cog_to_storage(cog_path, result_object_name, storage)
+                _warp_to_cog(str(cog_path), str(orthomosaic_cog_path), str(target_ortho_crs))
+                result_path = _upload_cog_to_storage(orthomosaic_cog_path, result_object_name, storage)
                 if not is_local_storage:
                     # MinIO: COG를 output/으로 이동 (체크섬/bounds 추출용)
                     final_output_dir = base_dir / "output"
                     final_output_dir.mkdir(parents=True, exist_ok=True)
-                    final_cog_path = final_output_dir / "result_cog.tif"
-                    shutil.move(str(cog_path), str(final_cog_path))
+                    final_cog_path = final_output_dir / Path(result_object_name).name
+                    shutil.move(str(orthomosaic_cog_path), str(final_cog_path))
                     result_path = final_cog_path
 
-                # Clean up intermediate files in .work/ (숨김 폴더)
+                # Clean up intermediate files in processing/.work/
                 update_progress(93, "중간 파일 정리 중...")
-                files_to_keep = {"status.json", ".processing.log"}
+                files_to_keep = {"status.json"}
 
                 for item in output_dir.iterdir():
                     if item.name not in files_to_keep:
@@ -470,8 +601,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
             except Exception as cog_error:
                 print(f"COG conversion failed: {cog_error}")
-                result_object_name = f"projects/{project_id}/ortho/result.tif"
-                storage.upload_file(str(result_path), result_object_name, "image/tiff")
+                raise
             phase_timings.append(("COG/저장/정리", time.time() - t0))
 
             # Phase 4: 체크섬 계산 + 영역 정보 추출
@@ -541,8 +671,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             print(summary_text)
 
             # .processing.log에도 요약 추가
-            log_file_path = output_dir / ".processing.log"
+            log_file_path = processing_log_path(project_id)
             try:
+                log_file_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(log_file_path, 'a') as log_f:
                     log_f.write(f"\n{summary_text}\n")
             except Exception:
@@ -550,11 +681,15 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
             # Final status update
             job.status = "completed"
+            job.progress = 100
             job.completed_at = datetime.utcnow()
             project.status = "completed"
             project.progress = 100
             project.ortho_path = result_object_name  # Store ortho path in project
             project.ortho_size = file_size
+            job.result_path = result_object_name
+            job.result_checksum = checksum
+            job.result_size = file_size
             db.commit()
             final_metrics = {
                 "queue_wait_seconds": queue_wait_seconds,
@@ -736,7 +871,7 @@ def generate_thumbnail(self, image_id: str, force: bool = False):
                 print(f"[thumbnail] GDAL 실패 ({gdal_err}), PIL 폴백")
                 _generate_thumbnail_pil(temp_path, thumb_path)
 
-            thumb_object_name = f"projects/{image.project_id}/thumbnails/{image.filename}.jpg"
+            thumb_object_name = source_thumbnail_key(image.project_id, image.filename)
             storage.upload_file(thumb_path, thumb_object_name, "image/jpeg")
             image.thumbnail_path = thumb_object_name
             db.commit()
@@ -808,7 +943,7 @@ def delete_project_data(self, project_id: str):
     """프로젝트의 로컬 처리 데이터를 삭제합니다."""
     import shutil
 
-    local_path = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id
+    local_path = project_root_dir(project_id)
 
     if local_path.exists():
         try:
@@ -835,9 +970,8 @@ def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: 
         reference_crs: 좌표계 (예: "EPSG:5186")
         reference_rows: [(name, x, y, z, omega, phi, kappa), ...] 형식의 데이터
     """
-    reference_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id / "images"
-    reference_dir.mkdir(parents=True, exist_ok=True)
-    reference_path = reference_dir / "metadata.txt"
+    reference_path = processing_metadata_path(project_id)
+    reference_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         with open(reference_path, "w", encoding="utf-8") as f:
@@ -873,8 +1007,8 @@ def delete_source_images(self, project_id: str):
         deleted_count = 0
 
         try:
-            # 원본 이미지 삭제 (images/{project_id}/)
-            images_prefix = f"images/{project_id}/"
+            # 원본 이미지 삭제
+            images_prefix = source_images_prefix(project_id)
             objects = storage.list_objects(prefix=images_prefix, recursive=True)
             if objects:
                 storage.delete_recursive(images_prefix)
@@ -884,7 +1018,7 @@ def delete_source_images(self, project_id: str):
                 print(f"ℹ 원본 이미지 없음: {images_prefix}")
 
             # 썸네일도 삭제
-            thumbnails_prefix = f"projects/{project_id}/thumbnails/"
+            thumbnails_prefix = source_thumbnail_prefix(project_id)
             thumb_objects = storage.list_objects(prefix=thumbnails_prefix, recursive=True)
             if thumb_objects:
                 storage.delete_recursive(thumbnails_prefix)
@@ -996,13 +1130,17 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
                     print("⚠ geoTransform pixel_size가 0 → GSD 추출 불가")
 
         # Setup directories
-        base_dir = Path(settings.LOCAL_DATA_PATH) / "processing" / project_id
-        output_dir = base_dir / "output"
-        work_dir = base_dir / ".work"
+        base_dir = project_root_dir(project_id)
+        output_dir = base_dir / "exports"
+        work_dir = processing_work_dir(project_id)
         output_dir.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        final_cog_path = output_dir / "result_cog.tif"
+        target_ortho_crs = settings.AUTO_EXPORT_TARGET_CRS or "EPSG:5186"
+        if str(target_ortho_crs).strip().isdigit():
+            target_ortho_crs = f"EPSG:{str(target_ortho_crs).strip()}"
+        cog_object_name = orthomosaic_key(project_id, str(target_ortho_crs))
+        final_cog_path = output_dir / Path(cog_object_name).name
 
         # 소스가 이미 최종 경로에 있으면 복사/이동 불필요
         source_is_final = source.resolve() == final_cog_path.resolve()
@@ -1042,9 +1180,17 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
             except Exception as e:
                 return {"status": "error", "message": f"COG 변환 실패: {e}"}
 
+        # Ensure the stored orthomosaic is a COG in the configured target CRS.
+        warped_cog_path = output_dir / f"_warped_{Path(cog_object_name).name}"
+        try:
+            _warp_to_cog(str(final_cog_path), str(warped_cog_path), str(target_ortho_crs))
+            shutil.move(str(warped_cog_path), str(final_cog_path))
+        except Exception as e:
+            warped_cog_path.unlink(missing_ok=True)
+            return {"status": "error", "message": f"정사영상 COG/CRS 변환 실패: {e}"}
+
         # Upload / move to storage
         storage = get_storage()
-        cog_object_name = f"projects/{project_id}/ortho/result_cog.tif"
 
         print("📤 스토리지로 이동/업로드 중...")
         final_cog_path = _upload_cog_to_storage(final_cog_path, cog_object_name, storage)
@@ -1075,7 +1221,7 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         job.status = "completed"
         job.completed_at = datetime.utcnow()
         job.result_gsd = gsd_cm
-        job.result_path = str(final_cog_path)
+        job.result_path = cog_object_name
         job.result_checksum = checksum
         job.result_size = file_size
         job.progress = 100

@@ -19,9 +19,13 @@ def build_orthomosaic(output_path, run_id, input_epsg="4326"):
     try:
         print("🛠 Building orthomosaic...")
         task_name = "Build Orthomosaic"
+        blending_mode = Metashape.BlendingMode.AverageBlending
+        print(f"🧩 Orthomosaic blending mode: {blending_mode}")
         chunk.buildOrthomosaic(
             surface_data=Metashape.DataSource.ElevationData,
-            refine_seamlines=True,
+            blending_mode=blending_mode,
+        # Average blending에서는 seamline refine 비활성
+        refine_seamlines=False,
             progress=progress_callback_wrapper
         )
         doc.save(output_path + '/project.psx')

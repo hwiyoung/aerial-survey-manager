@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # Storage Backend: "minio" (multi-server) or "local" (single server, no MinIO)
     STORAGE_BACKEND: str = "minio"
     LOCAL_STORAGE_PATH: str = "/data/storage"
+    PROCESSING_DATA_PATH: str = "/data/processing"
+    EXPORT_ROOT_PATH: str = "/data/exports"
+    AUTO_EXPORT_ENABLED: bool = False
+    AUTO_EXPORT_TARGET_CRS: str = "EPSG:5186"
 
     # MinIO/S3 (only used when STORAGE_BACKEND=minio)
     MINIO_ENDPOINT: str = "localhost:9000"

@@ -21,7 +21,7 @@ def deactivate_license():
 dag = DAG(
     'deactivate_metashape_license',
     default_args=default_args,
-    description='A DAG to deactivate Metashape license',
+    description='A DAG to deactivate processing engine license',
     schedule_interval=None,
     concurrency=1,
     max_active_runs=1,

@@ -35,6 +35,7 @@
 ```bash
 tar -xzf aerial-survey-manager.tar.gz
 cd aerial-survey-manager
+./load-images.sh
 ./scripts/install.sh
 ```
 
@@ -45,9 +46,13 @@ cd aerial-survey-manager
 | `POSTGRES_PASSWORD` | DB 비밀번호 | `openssl rand -hex 16` |
 | `JWT_SECRET_KEY` | JWT 서명 키 (32자+) | `openssl rand -hex 32` |
 | `STORAGE_BACKEND` | `local` 또는 `minio` | `local` |
-| `LOCAL_STORAGE_PATH` | 파일 저장 경로 (로컬 모드) | `/data/aerial-survey/storage` |
-| `PROCESSING_DATA_PATH` | 처리 데이터 경로 | `/data/aerial-survey/processing` |
-| `METASHAPE_LICENSE_KEY` | Metashape 라이선스 키 | |
+| `AERIAL_DATA_ROOT` | 신규 설치용 데이터 기준 경로 | `/data/aerial-survey` |
+| `LOCAL_STORAGE_PATH` | 로컬 스토리지 기준 경로 | `/data/aerial-survey` |
+| `PROCESSING_DATA_PATH` | 프로젝트별 소스/처리 데이터 경로 | `/data/aerial-survey/projects` |
+| `EXPORT_ROOT_PATH` | 최종 COG 정사영상 경로 | `/data/aerial-survey/orthomosaic` |
+| `AUTO_EXPORT_ENABLED` | 별도 자동 내보내기 활성화 | `false` |
+| `AUTO_EXPORT_TARGET_CRS` | 최종 COG 목표 좌표계 | `EPSG:5186` |
+| `ENGINE_LICENSE_KEY` | 처리 엔진 라이선스 키 | |
 
 **오프라인 타일맵 (선택):**
 
@@ -57,6 +62,7 @@ cd aerial-survey-manager
 | `VITE_TILE_URL` | `/tiles/{z}/{x}/{y}` |
 | `TILES_PATH` | 호스트 타일 디렉토리 경로 |
 
+> 신규 설치는 `AERIAL_DATA_ROOT`를 먼저 정하고 프로젝트 데이터는 `AERIAL_DATA_ROOT/projects`, 최종 정사영상은 `AERIAL_DATA_ROOT/orthomosaic` 또는 별도 `EXPORT_ROOT_PATH`로 정리하는 방식을 권장합니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
 > 전체 변수 목록: `.env.example` 참조
 
 ### 3. GPU 연결 확인
@@ -146,6 +152,14 @@ docker compose up -d
 
 ## 보안 설정 (선택)
 
+서비스가 정상 기동된 것을 확인한 뒤 실행하세요.
+
+```bash
+docker compose ps
+curl http://localhost:8081/health
+sudo bash scripts/secure-deployment.sh
+```
+
 ### CORS 제한
 ```nginx
 # nginx.conf — 프로덕션에서는 특정 도메인만 허용
@@ -180,12 +194,12 @@ sudo ufw enable
 
 ## 별도 드라이브 사용 시 부팅 순서 설정
 
-`LOCAL_STORAGE_PATH`나 `PROCESSING_DATA_PATH`가 별도 드라이브(SSD, NAS 등)에 있는 경우, **시스템 재부팅 시 드라이브가 마운트되기 전에 Docker가 먼저 시작**될 수 있습니다. 이 경우 Docker가 빈 디렉토리를 자동 생성하여 기존 데이터가 보이지 않게 됩니다.
+`AERIAL_DATA_ROOT`, `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 중 하나라도 별도 드라이브(SSD, NAS 등)에 있는 경우, **시스템 재부팅 시 드라이브가 마운트되기 전에 Docker가 먼저 시작**될 수 있습니다. 이 경우 Docker가 빈 디렉토리를 자동 생성하여 기존 데이터가 보이지 않게 됩니다.
 
 ### 증상
 - 재부팅 후 정사영상이 지도에 표시되지 않음
 - 내보내기 시 "정사영상을 찾을 수 없습니다" 에러
-- `docker exec aerial-survey-manager-api-1 ls /data/storage/projects/` 결과가 비어있음
+- `docker exec aerial-survey-manager-api-1 ls /data/storage/projects/` 또는 `/data/storage/orthomosaic/` 결과가 비어있음
 
 ### 해결: Docker가 드라이브 마운트 이후에 시작되도록 설정
 
@@ -199,7 +213,7 @@ sudo systemctl edit docker.service
 # 아래 내용 입력 후 저장:
 [Unit]
 RequiresMountsFor=/data
-# ↑ LOCAL_STORAGE_PATH의 마운트 포인트로 변경
+# ↑ AERIAL_DATA_ROOT 또는 실제 데이터 경로들의 마운트 포인트로 변경
 # 예: /mnt/storage, /media/data 등
 
 # 3. systemd 반영
@@ -231,7 +245,7 @@ docker exec aerial-survey-manager-api-1 ls /data/storage/projects/
 
 ### GPU 미인식 진단
 
-컨테이너에서 GPU가 인식되지 않으면 Metashape가 CPU only로 동작합니다. 오류 없이 정상 시작되므로 알아차리기 어렵지만, **처리 속도가 10배 이상 느려집니다.**
+컨테이너에서 GPU가 인식되지 않으면 처리 엔진이 CPU only로 동작합니다. 오류 없이 정상 시작되므로 알아차리기 어렵지만, **처리 속도가 10배 이상 느려집니다.**
 
 ```bash
 # 1단계: 컨테이너 GPU 확인
@@ -241,8 +255,10 @@ docker exec aerial-worker-engine nvidia-smi
 
 # 2단계: 호스트 GPU 확인
 nvidia-smi
-# → 실패하면 NVIDIA 드라이버 설치 필요:
-#   sudo apt-get install -y nvidia-driver-535 && sudo reboot
+# → 실패하면 현재 커널에 맞는 NVIDIA 드라이버 설치 필요:
+#   ubuntu-drivers devices
+#   sudo ubuntu-drivers install
+#   sudo reboot
 
 # 3단계: Container Toolkit 확인
 nvidia-ctk --version
@@ -265,6 +281,9 @@ docker exec aerial-worker-engine nvidia-smi
 
 > 또는 `scripts/fix-gpu.sh`를 사용하면 위 과정을 자동으로 수행합니다:
 > `sudo bash scripts/fix-gpu.sh`
+>
+> 배포 설치 후 `scripts/setup-autostart.sh` 또는 `scripts/secure-deployment.sh`를 실행하면
+> NVIDIA Persistence Mode와 GPU watchdog도 함께 설정됩니다.
 
 > 상세 운영 문제는 [ADMIN_GUIDE.md](ADMIN_GUIDE.md) 참조
 

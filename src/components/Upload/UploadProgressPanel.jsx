@@ -31,31 +31,36 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
             return {
                 completedCount: 0,
                 errorCount: 0,
+                excludedCount: 0,
                 interruptedCount: 0,
                 isAllDone: true,
                 totalProgress: 0,
                 hasErrors: false,
+                hasExcluded: false,
                 hasInterrupted: false,
             };
         }
         const completedCount = uploads.filter(u => u.status === 'completed').length;
         const errorCount = uploads.filter(u => u.status === 'error').length;
+        const excludedCount = uploads.filter(u => u.status === 'excluded').length;
         const interruptedCount = uploads.filter(u => u.status === 'interrupted').length;
-        const isAllDone = completedCount + errorCount + interruptedCount === uploads.length;
+        const isAllDone = completedCount + errorCount + excludedCount + interruptedCount === uploads.length;
         const totalProgress = uploads.reduce((acc, u) => acc + (u.progress || 0), 0) / uploads.length;
 
         return {
             completedCount,
             errorCount,
+            excludedCount,
             interruptedCount,
             isAllDone,
             totalProgress,
             hasErrors: errorCount > 0,
+            hasExcluded: excludedCount > 0,
             hasInterrupted: interruptedCount > 0,
         };
     }, [uploads]);
 
-    const { completedCount, errorCount, interruptedCount, isAllDone, totalProgress, hasErrors, hasInterrupted } = uploadStats;
+    const { completedCount, errorCount, excludedCount, interruptedCount, isAllDone, totalProgress, hasErrors, hasExcluded, hasInterrupted } = uploadStats;
 
     // 업로드 완료 시 실패한 이미지가 있으면 알림 표시
     useEffect(() => {
@@ -63,19 +68,20 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
 
         if (isAllDone && !hasNotified.current) {
             hasNotified.current = true;
-            if (errorCount > 0) {
+            if (errorCount > 0 || excludedCount > 0) {
                 setTimeout(() => {
                     alert(
                         `업로드가 완료되었습니다.\n\n` +
-                        `✅ 성공: ${completedCount}개\n` +
-                        `❌ 실패: ${errorCount}개\n\n` +
-                        `실패한 이미지는 처리에서 제외됩니다.\n` +
+                        `성공: ${completedCount}개\n` +
+                        (excludedCount > 0 ? `제외: ${excludedCount}개\n` : '') +
+                        (errorCount > 0 ? `실패: ${errorCount}개\n` : '') +
+                        `\n제외되거나 실패한 이미지는 처리에서 제외됩니다.\n` +
                         `${completedCount}개의 이미지만으로 처리를 진행할 수 있습니다.`
                     );
                 }, 500);
             }
         }
-    }, [uploads, isAllDone, errorCount, completedCount]);
+    }, [uploads, isAllDone, errorCount, excludedCount, completedCount]);
 
     // uploads가 리셋되면 알림 상태도 리셋
     useEffect(() => {
@@ -88,7 +94,7 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
     if (!uploads || uploads.length === 0) return null;
 
     const headerBgClass = isAllDone
-        ? (hasErrors ? "bg-red-600" : (hasInterrupted ? "bg-amber-600" : "bg-green-600"))
+        ? (hasErrors ? "bg-red-600" : (hasInterrupted || hasExcluded ? "bg-amber-600" : "bg-green-600"))
         : "bg-slate-900";
 
     const toggleProjectCollapse = (projectId) => {
@@ -107,10 +113,12 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
     const getProjectStats = (projectUploads) => {
         const completed = projectUploads.filter(u => u.status === 'completed').length;
         const errors = projectUploads.filter(u => u.status === 'error').length;
+        const excluded = projectUploads.filter(u => u.status === 'excluded').length;
+        const interrupted = projectUploads.filter(u => u.status === 'interrupted').length;
         const total = projectUploads.length;
         const progress = projectUploads.reduce((acc, u) => acc + (u.progress || 0), 0) / total;
-        const isDone = completed + errors === total;
-        return { completed, errors, total, progress, isDone };
+        const isDone = completed + errors + excluded + interrupted === total;
+        return { completed, errors, excluded, interrupted, total, progress, isDone };
     };
 
     return (
@@ -118,7 +126,7 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
             <div className={`${headerBgClass} px-4 py-3 flex items-center justify-between`}>
                 <div className="flex items-center gap-2 text-white min-w-0">
                     {isAllDone ? (
-                        hasErrors ? (
+                        hasErrors || hasExcluded || hasInterrupted ? (
                             <AlertTriangle size={18} className="text-white shrink-0" />
                         ) : (
                             <CheckCircle2 size={18} className="text-white shrink-0" />
@@ -138,7 +146,9 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
                                     ? `업로드 완료 (${errorCount}개 실패)`
                                     : (hasInterrupted
                                         ? `업로드 중단됨 (${interruptedCount}개)`
-                                        : `업로드 완료 (${completedCount}개)`))
+                                        : (hasExcluded
+                                            ? `업로드 완료 (${excludedCount}개 제외)`
+                                            : `업로드 완료 (${completedCount}개)`)))
                                 : `이미지 업로드 중 (${completedCount}/${uploads.length})`
                             }
                         </span>
@@ -166,13 +176,25 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
                         <span className="font-semibold">⚠️ {errorCount}개 이미지 업로드 실패</span>
                         <p className="mt-1 text-red-700">
                             실패한 이미지는 처리에서 제외됩니다.
+                            {hasExcluded && ` 제외된 이미지 ${excludedCount}개도 처리에 사용되지 않습니다.`}
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {isAllDone && hasExcluded && !hasErrors && !hasInterrupted && (
+                <div className="bg-amber-50 px-4 py-2 border-b border-amber-200">
+                    <div className="text-xs text-amber-800">
+                        <span className="font-semibold">⚠️ {excludedCount}개 이미지 처리 제외</span>
+                        <p className="mt-1 text-amber-700">
+                            제외된 이미지는 처리에 사용되지 않습니다.
                         </p>
                     </div>
                 </div>
             )}
 
             {/* 업로드 중단됨 메시지 */}
-            {isAllDone && hasInterrupted && !hasErrors && (
+            {isAllDone && hasInterrupted && !hasErrors && !hasExcluded && (
                 <div className="bg-amber-50 px-4 py-2 border-b border-amber-200">
                     <div className="text-xs text-amber-800">
                         <span className="font-semibold">⚠️ 페이지 새로고침으로 업로드가 중단되었습니다</span>
@@ -211,10 +233,11 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
                                         <div className="text-[10px] text-slate-500">
                                             {stats.completed}/{stats.total} 완료
                                             {stats.errors > 0 && <span className="text-red-500 ml-1">({stats.errors} 실패)</span>}
+                                            {stats.excluded > 0 && <span className="text-amber-600 ml-1">({stats.excluded} 제외)</span>}
                                         </div>
                                     </div>
                                     {stats.isDone ? (
-                                        stats.errors > 0 ? (
+                                        stats.errors > 0 || stats.excluded > 0 || stats.interrupted > 0 ? (
                                             <AlertTriangle size={14} className="text-amber-500 shrink-0" />
                                         ) : (
                                             <CheckCircle2 size={14} className="text-green-500 shrink-0" />
@@ -236,12 +259,19 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
                                                     <div className="text-[10px] text-slate-600 truncate flex-1">{upload.name}</div>
                                                     {upload.status === 'completed' && <CheckCircle2 size={12} className="text-green-500 shrink-0" />}
                                                     {upload.status === 'error' && <AlertTriangle size={12} className="text-red-500 shrink-0" />}
-                                                    {upload.status === 'uploading' && (
+                                                    {upload.status === 'excluded' && <AlertTriangle size={12} className="text-amber-500 shrink-0" />}
+                                                    {upload.status === 'interrupted' && <AlertTriangle size={12} className="text-amber-500 shrink-0" />}
+                                                    {(upload.status === 'uploading' || upload.status === 'validating') && (
                                                         <span className="text-[10px] text-blue-600">{upload.progress || 0}%</span>
                                                     )}
                                                     {upload.status === 'waiting' && <Loader2 size={12} className="text-slate-300 animate-spin shrink-0" />}
                                                 </div>
-                                                {upload.status === 'uploading' && (
+                                                {(upload.status === 'error' || upload.status === 'excluded') && upload.error && (
+                                                    <div className={`mt-1 text-[10px] ${upload.status === 'error' ? 'text-red-600' : 'text-amber-700'} line-clamp-2`}>
+                                                        {upload.error}
+                                                    </div>
+                                                )}
+                                                {(upload.status === 'uploading' || upload.status === 'validating') && (
                                                     <div className="mt-1 h-1 w-full bg-slate-100 rounded-full overflow-hidden">
                                                         <div
                                                             className="h-full bg-blue-500 transition-all duration-300"
@@ -263,25 +293,38 @@ export default function UploadProgressPanel({ uploads, onAbortAll, onRestore }) 
                             <div className="flex items-start justify-between gap-2 mb-2">
                                 <div className="flex-1 min-w-0">
                                     <div className="text-xs font-semibold text-slate-700 truncate">{upload.name}</div>
-                                    {upload.status === 'uploading' && (
+                                    {(upload.status === 'uploading' || upload.status === 'validating') && (
                                         <div className="text-[10px] text-slate-500 flex gap-2">
-                                            <span>{upload.speed || '0 KB/s'}</span>
-                                            <span>•</span>
-                                            <span>ETA {upload.eta || '--:--'}</span>
+                                            {upload.status === 'validating' ? (
+                                                <span>확인 중</span>
+                                            ) : (
+                                                <>
+                                                    <span>{upload.speed || '0 KB/s'}</span>
+                                                    <span>•</span>
+                                                    <span>ETA {upload.eta || '--:--'}</span>
+                                                </>
+                                            )}
                                         </div>
                                     )}
                                 </div>
                                 {upload.status === 'completed' && <CheckCircle2 size={14} className="text-green-500 shrink-0" />}
                                 {upload.status === 'error' && <AlertTriangle size={14} className="text-red-500 shrink-0" />}
+                                {upload.status === 'excluded' && <AlertTriangle size={14} className="text-amber-500 shrink-0" />}
                                 {upload.status === 'interrupted' && <AlertTriangle size={14} className="text-amber-500 shrink-0" />}
-                                {upload.status === 'waiting' && <Loader2 size={14} className="text-slate-300 animate-spin shrink-0" />}
+                                {(upload.status === 'waiting' || upload.status === 'validating') && <Loader2 size={14} className="text-slate-300 animate-spin shrink-0" />}
                             </div>
+
+                            {(upload.status === 'error' || upload.status === 'excluded') && upload.error && (
+                                <div className={`mb-2 text-[10px] ${upload.status === 'error' ? 'text-red-600' : 'text-amber-700'} break-words`}>
+                                    {upload.error}
+                                </div>
+                            )}
 
                             <div className="relative h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
                                 <div
                                     className={`absolute top-0 left-0 h-full transition-all duration-300 ${upload.status === 'error' ? 'bg-red-500' :
                                         upload.status === 'completed' ? 'bg-green-500' :
-                                        upload.status === 'interrupted' ? 'bg-amber-500' : 'bg-blue-500'
+                                            upload.status === 'excluded' || upload.status === 'interrupted' ? 'bg-amber-500' : 'bg-blue-500'
                                         }`}
                                     style={{ width: `${upload.progress || 0}%` }}
                                 />

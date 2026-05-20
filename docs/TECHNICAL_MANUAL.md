@@ -10,7 +10,7 @@
 1. [아키텍처 개요](#1-아키텍처-개요)
 2. [프론트엔드 (React)](#2-프론트엔드)
 3. [백엔드 (FastAPI)](#3-백엔드)
-4. [처리 엔진 (Metashape)](#4-처리-엔진)
+4. [처리 엔진](#4-처리-엔진)
 5. [인프라 (Docker)](#5-인프라)
 6. [데이터 흐름](#6-데이터-흐름)
 
@@ -37,7 +37,7 @@
                         ┌─────▼─────┐ ┌────▼────┐ ┌─────▼──────┐
                         │worker-    │ │celery-  │ │celery-     │
                         │engine     │ │worker   │ │worker-     │
-                        │(Metashape)│ │(파일)    │ │thumbnail   │
+                        │(GPU Engine)│ │(파일)    │ │thumbnail   │
                         └───────────┘ └─────────┘ └────────────┘
 ```
 
@@ -48,7 +48,7 @@
 | api | FastAPI + Uvicorn | REST API, WebSocket |
 | db | PostgreSQL 15 + PostGIS 3.3 | DB, 공간 데이터 |
 | redis | Redis 7 | Celery 브로커/백엔드 |
-| worker-engine | Celery + Metashape | GPU 정사영상 처리 (GPU 미인식 시 CPU fallback, 10배+ 느림) |
+| worker-engine | Celery + GPU 처리 엔진 | GPU 정사영상 처리 (GPU 미인식 시 CPU fallback, 10배+ 느림) |
 | celery-worker | Celery | 파일 관리, COG 인제스트 |
 | celery-worker-thumbnail | Celery | 썸네일 전용 워커 |
 | celery-beat | Celery Beat | 스케줄러 |
@@ -565,13 +565,13 @@ getTileConfig() → {
 - Broker/Backend: Redis
 - `visibility_timeout`: 604800초 (7일) — 장시간 처리 시 Redis 재전달 방지
 - `worker_prefetch_multiplier`: 1 — 한 번에 1개만 가져옴
-- `task_routes`: 엔진별 큐 분리 (metashape, thumbnail, celery)
+- `task_routes`: 엔진별 큐 분리 (gpu-engine, thumbnail, celery)
 
 **주요 태스크:**
 
 | 태스크 | 큐 | 설명 |
 |--------|-----|------|
-| `process_orthophoto` | metashape | 메인 처리 파이프라인 |
+| `process_orthophoto` | gpu-engine | 메인 처리 파이프라인 |
 | `generate_thumbnail` | thumbnail | 이미지 썸네일 생성 (GDAL 우선 → PIL 폴백) |
 | `delete_project_data` | celery | 프로젝트 데이터 삭제 |
 | `save_eo_metadata` | celery | EO 메타데이터 저장 |
@@ -604,10 +604,10 @@ getTileConfig() → {
 
 ## 4. 처리 엔진
 
-### 4.1 처리 파이프라인 (Metashape DAGs)
+### 4.1 처리 파이프라인 (GPU 처리 스크립트)
 
 ```
-activate_metashape_license.py
+activate_engine_license.py
          ↓
     align_photos.py          ← 사진 정렬 (downscale: Preview=4, Normal=2, High=1)
          ↓
@@ -621,7 +621,7 @@ activate_metashape_license.py
          ↓
      convert_cog.py          ← COG 변환 (BLOCKSIZE=1024, COMPRESS=LZW, BIGTIFF=YES)
          ↓
-deactivate_metashape_license.py
+deactivate_engine_license.py
 ```
 
 ### 4.2 common_utils.py — 공유 유틸리티
@@ -635,7 +635,7 @@ deactivate_metashape_license.py
 ### 4.3 align_photos.py — 사진 정렬
 
 **동작:**
-1. Metashape Document/Chunk 생성
+1. 처리 프로젝트 생성
 2. CRS 설정 (기본 EPSG:4326)
 3. 사진 추가 + EO 데이터 임포트
 4. 드론 제조사 감지 → EulerAnglesOPK 설정
@@ -646,7 +646,7 @@ deactivate_metashape_license.py
 
 **동작:**
 1. project.psx 오픈
-2. `chunk.buildOrthomosaic(surface_data=ElevationData, refine_seamlines=True)`
+2. `chunk.buildOrthomosaic(surface_data=ElevationData, blending_mode=AverageBlending, refine_seamlines=True)`
 3. 결과 GSD 저장
 
 ### 4.5 convert_cog.py — COG 변환
@@ -657,11 +657,11 @@ deactivate_metashape_license.py
 3. alignment ≥ 80%이면 project.files 삭제 (저장소 절약)
 4. 실패 시 파일 보존 (디버깅용)
 
-### 4.6 engines/metashape/entrypoint.sh — 워커 시작
+### 4.6 처리 엔진 워커 시작
 
 **동작:**
 1. SIGTERM/SIGINT 신호 처리
-2. `METASHAPE_LICENSE_KEY` 환경변수로 자동 활성화
+2. 처리 엔진 라이선스 키로 자동 활성화
 3. Celery 워커 실행 (백그라운드)
 4. 종료 시 자식 프로세스만 정리 (라이선스는 유지)
 
@@ -678,7 +678,7 @@ deactivate_metashape_license.py
 | 소스 마운트 | 있음 (핫 리로드) | 없음 (이미지 내장) |
 | DB 포트 | 5434 노출 | 미노출 (보안) |
 | Redis 포트 | 6380 노출 | 미노출 |
-| worker-engine | `--profile engine` | `--profile engine` |
+| worker-engine | 기본 실행 | 기본 실행 |
 | restart | unless-stopped | always |
 
 **호스트 파일시스템 마운트:**
@@ -705,7 +705,7 @@ deactivate_metashape_license.py
 
 **배포 패키지 빌드 흐름:**
 1. 기존 배포 이미지 삭제
-2. `docker compose -p aerial-prod -f docker-compose.prod.yml --profile engine build --no-cache`
+2. `docker compose -p aerial-prod -f docker-compose.prod.yml build --no-cache`
 3. 이미지 태깅 (`aerial-survey-manager:{service}-{version}`)
 4. docker-compose.prod.yml → docker-compose.yml 변환 (Python: build → image 치환)
 5. Docker 이미지 tar.gz 저장
@@ -743,7 +743,7 @@ deactivate_metashape_license.py
 |----------|------|
 | `healthcheck.sh` | 전체 서비스 상태 점검 (Docker, API, DB, Redis, GPU, Celery) → PASS/WARN/FAIL 요약 |
 | `collect-logs.sh` | 모든 서비스 로그 + 시스템 정보 수집 → `logs_*.tar.gz` (비밀번호 자동 제외) |
-| `shutdown-metashape.sh` | Metashape 라이선스 비활성화 → worker-engine 종료 → 전체 종료 (선택) |
+| `shutdown-engine.sh` | 처리 엔진 라이선스 비활성화 → worker-engine 종료 → 전체 종료 (선택) |
 | `system-info.sh` | OS/CPU/RAM/디스크/GPU/Docker/네트워크 정보 출력 |
 | `setup-autostart.sh` | `systemctl enable docker` + restart 정책 확인 |
 | `secure-deployment.sh` | .env 권한 제한, systemd 서비스 등록, 사용자 관리 명령어 생성 |
@@ -765,10 +765,10 @@ deactivate_metashape_license.py
 ```
 사용자 → "처리 시작" → api.startProcessing()
   → backend: ProcessingJob 생성(queued)
-  → process_orthophoto.delay() → metashape 큐
+  → process_orthophoto.delay() → gpu-engine 큐
   → Celery worker:
     1. _prepare_images() → symlink 생성
-    2. processing_router.py → Metashape DAG 실행
+    2. processing_router.py → GPU 처리 스크립트 실행
        → align → depth → DEM → orthomosaic → export
     3. _convert_to_cog() → COG 변환
     4. _upload_cog_to_storage() → 결과 저장

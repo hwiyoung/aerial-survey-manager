@@ -2,14 +2,15 @@
 import os
 import re
 import logging
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, extract
+from sqlalchemy import select, func, delete, extract, or_
 from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
@@ -33,15 +34,25 @@ from app.schemas.project import (
 )
 from app.auth.jwt import (
     get_current_user,
-    get_current_active_manager,
     PermissionChecker,
     is_admin_role,
 )
 from app.config import get_settings
 from app.services.eo_parser import EOParserService
 from app.services.quota import ensure_organization_quota
-from app.utils.geo import get_region_for_point, get_region_for_point_db
+from app.utils.geo import get_region_for_point_db
 from app.utils.audit import log_audit_event
+from app.utils.storage_paths import (
+    processing_exclusion_path,
+    processing_images_dir,
+    processing_metadata_path,
+    project_preview_key,
+)
+from app.services.processing_runtime import (
+    get_active_processing_tasks,
+    progress_from_step_status,
+    read_step_status_file,
+)
 from pyproj import Transformer
 import json
 
@@ -181,7 +192,7 @@ async def _collect_project_image_paths(
     return [row[0] for row in image_result.fetchall()]
 
 
-def _cleanup_project_storage(project_id: UUID, original_paths: list[str]) -> None:
+def _cleanup_project_storage(project_id: UUID, original_paths: list[str], ortho_path: str | None = None) -> None:
     """Delete project files from object storage."""
     try:
         from app.services.storage import get_storage
@@ -204,6 +215,12 @@ def _cleanup_project_storage(project_id: UUID, original_paths: list[str]) -> Non
                     pass
             except Exception as e:
                 print(f"Failed to delete uploaded file {path}: {e}")
+
+        if ortho_path:
+            try:
+                storage.delete_object(ortho_path)
+            except Exception as e:
+                print(f"Failed to delete orthomosaic {ortho_path}: {e}")
 
         storage.delete_recursive(f"projects/{project_id}/")
     except Exception as e:
@@ -241,6 +258,226 @@ def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) ->
     return ProjectResponse.model_validate(d)
 
 
+async def _get_project_image_counts(db: AsyncSession, project_id: UUID) -> dict[str, int | bool]:
+    """Return total, upload, and processing-target image counts for a project."""
+    count_result = await db.execute(
+        select(func.count()).where(Image.project_id == project_id)
+    )
+    image_count = count_result.scalar() or 0
+
+    upload_status_result = await db.execute(
+        select(
+            Image.upload_status,
+            func.count(Image.id).label("count")
+        )
+        .where(Image.project_id == project_id)
+        .group_by(Image.upload_status)
+    )
+    status_counts = {row.upload_status: row.count for row in upload_status_result}
+    upload_completed_count = status_counts.get("completed", 0)
+    upload_uploading_count = status_counts.get("uploading", 0)
+    upload_excluded_count = status_counts.get("excluded", 0)
+
+    eo_count_result = await db.execute(
+        select(func.count(func.distinct(Image.id)))
+        .select_from(Image)
+        .join(ExteriorOrientation, ExteriorOrientation.image_id == Image.id)
+        .where(
+            Image.project_id == project_id,
+            Image.upload_status == "completed",
+        )
+    )
+    eo_count = eo_count_result.scalar() or 0
+
+    return {
+        "image_count": image_count,
+        "upload_completed_count": upload_completed_count,
+        "upload_excluded_count": upload_excluded_count,
+        "upload_uploading_count": upload_uploading_count,
+        "processing_image_count": eo_count if eo_count > 0 else upload_completed_count,
+        "eo_count": eo_count,
+    }
+
+
+def _empty_project_image_counts() -> dict[str, int | bool]:
+    return {
+        "image_count": 0,
+        "upload_completed_count": 0,
+        "upload_excluded_count": 0,
+        "upload_uploading_count": 0,
+        "processing_image_count": 0,
+        "eo_count": 0,
+    }
+
+
+async def _get_project_image_counts_map(
+    db: AsyncSession,
+    project_ids: list[UUID],
+) -> dict[UUID, dict[str, int | bool]]:
+    """Bulk image count lookup for project list responses."""
+    counts = {project_id: _empty_project_image_counts() for project_id in project_ids}
+    if not project_ids:
+        return counts
+
+    total_result = await db.execute(
+        select(Image.project_id, func.count(Image.id))
+        .where(Image.project_id.in_(project_ids))
+        .group_by(Image.project_id)
+    )
+    for project_id, count in total_result.all():
+        counts[project_id]["image_count"] = count or 0
+
+    status_result = await db.execute(
+        select(Image.project_id, Image.upload_status, func.count(Image.id))
+        .where(Image.project_id.in_(project_ids))
+        .group_by(Image.project_id, Image.upload_status)
+    )
+    for project_id, upload_status, count in status_result.all():
+        if upload_status == "completed":
+            counts[project_id]["upload_completed_count"] = count or 0
+        elif upload_status == "excluded":
+            counts[project_id]["upload_excluded_count"] = count or 0
+        elif upload_status == "uploading":
+            counts[project_id]["upload_uploading_count"] = count or 0
+
+    eo_result = await db.execute(
+        select(Image.project_id, func.count(func.distinct(Image.id)))
+        .select_from(Image)
+        .join(ExteriorOrientation, ExteriorOrientation.image_id == Image.id)
+        .where(
+            Image.project_id.in_(project_ids),
+            Image.upload_status == "completed",
+        )
+        .group_by(Image.project_id)
+    )
+    for project_id, count in eo_result.all():
+        counts[project_id]["eo_count"] = count or 0
+
+    for count_data in counts.values():
+        eo_count = count_data["eo_count"]
+        upload_completed_count = count_data["upload_completed_count"]
+        count_data["processing_image_count"] = eo_count if eo_count > 0 else upload_completed_count
+
+    return counts
+
+
+async def _get_project_job_maps(
+    db: AsyncSession,
+    project_ids: list[UUID],
+) -> tuple[dict[UUID, ProcessingJob], dict[UUID, ProcessingJob], dict[UUID, ProcessingJob]]:
+    """Bulk latest job lookup.
+
+    Returns (display_job_by_project, latest_any_by_project, job_by_id). display
+    preserves the previous behavior: latest completed job first, latest any job
+    as fallback.
+    """
+    if not project_ids:
+        return {}, {}, {}
+
+    result = await db.execute(
+        select(ProcessingJob)
+        .where(ProcessingJob.project_id.in_(project_ids))
+        .order_by(
+            ProcessingJob.project_id,
+            ProcessingJob.started_at.desc().nullslast(),
+            ProcessingJob.id.desc(),
+        )
+    )
+    jobs = result.scalars().all()
+
+    latest_any: dict[UUID, ProcessingJob] = {}
+    latest_completed: dict[UUID, ProcessingJob] = {}
+    job_by_id: dict[UUID, ProcessingJob] = {}
+    for job in jobs:
+        job_by_id[job.id] = job
+        latest_any.setdefault(job.project_id, job)
+        if job.status == "completed":
+            latest_completed.setdefault(job.project_id, job)
+
+    display = {
+        project_id: latest_completed.get(project_id) or latest_any.get(project_id)
+        for project_id in project_ids
+        if latest_completed.get(project_id) or latest_any.get(project_id)
+    }
+    return display, latest_any, job_by_id
+
+
+def _uuid_or_none(value: object) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except Exception:
+        return None
+
+
+async def _apply_active_project_overrides(
+    db: AsyncSession,
+    projects: list[Project],
+    latest_any_job_map: dict[UUID, ProcessingJob],
+    job_by_id: dict[UUID, ProcessingJob],
+    active_tasks: dict[str, dict],
+) -> dict[UUID, ProcessingJob]:
+    """Promote DB/API project state when Celery is actually processing."""
+    active_job_map: dict[UUID, ProcessingJob] = {}
+    changed = False
+    for project in projects:
+        active_task = active_tasks.get(str(project.id))
+        if not active_task:
+            continue
+
+        active_job_id = _uuid_or_none(active_task.get("job_id"))
+        active_job = job_by_id.get(active_job_id) if active_job_id else None
+        if active_job is None:
+            active_job = latest_any_job_map.get(project.id)
+        if active_job:
+            active_job_map[project.id] = active_job
+
+        progress = progress_from_step_status(
+            read_step_status_file(project.id),
+            (active_job.progress if active_job else project.progress) or project.progress or 0,
+        )
+        if project.status != "processing":
+            project.status = "processing"
+            changed = True
+        if project.progress != progress:
+            project.progress = progress
+            changed = True
+        if active_job:
+            if active_job.status != "processing":
+                active_job.status = "processing"
+                changed = True
+            if active_job.progress != progress:
+                active_job.progress = progress
+                changed = True
+            if active_job.error_message:
+                active_job.error_message = None
+                changed = True
+            if active_job.completed_at is not None:
+                active_job.completed_at = None
+                changed = True
+
+    if changed:
+        await db.commit()
+    return active_job_map
+
+
+def _processing_job_fields(
+    project_id: UUID,
+    display_job_map: dict[UUID, ProcessingJob],
+    active_job_map: dict[UUID, ProcessingJob],
+) -> dict:
+    display_job = display_job_map.get(project_id)
+    active_job = active_job_map.get(project_id)
+    timing_job = active_job or display_job
+    return {
+        "result_gsd": display_job.result_gsd if display_job else None,
+        "process_mode": (active_job.process_mode if active_job else None) or (display_job.process_mode if display_job else None),
+        "processing_started_at": timing_job.started_at if timing_job else None,
+        "processing_completed_at": None if active_job else (display_job.completed_at if display_job else None),
+    }
+
+
 @router.get("", response_model=ProjectListResponse)
 async def list_projects(
     page: int = Query(1, ge=1),
@@ -252,6 +489,13 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
 ):
     """List projects accessible by the current user."""
+    active_tasks = get_active_processing_tasks()
+    active_project_ids = [
+        project_id
+        for project_id in (_uuid_or_none(value) for value in active_tasks.keys())
+        if project_id is not None
+    ]
+
     # Build query based on user's access - include ST_AsText for bounds
     query = select(
         Project,
@@ -262,7 +506,10 @@ async def list_projects(
     
     # Apply filters
     if status_filter:
-        query = query.where(Project.status == status_filter)
+        if status_filter == "processing" and active_project_ids:
+            query = query.where(or_(Project.status == status_filter, Project.id.in_(active_project_ids)))
+        else:
+            query = query.where(Project.status == status_filter)
     if region:
         query = query.where(Project.region == region)
     if search:
@@ -272,7 +519,10 @@ async def list_projects(
     count_subquery = select(Project.id)
     count_subquery = _apply_project_access_scope(count_subquery, current_user)
     if status_filter:
-        count_subquery = count_subquery.where(Project.status == status_filter)
+        if status_filter == "processing" and active_project_ids:
+            count_subquery = count_subquery.where(or_(Project.status == status_filter, Project.id.in_(active_project_ids)))
+        else:
+            count_subquery = count_subquery.where(Project.status == status_filter)
     if region:
         count_subquery = count_subquery.where(Project.region == region)
     if search:
@@ -288,11 +538,22 @@ async def list_projects(
     
     result = await db.execute(query)
     rows = result.all()
+    projects = [row[0] for row in rows]
+    project_ids = [project.id for project in projects]
 
     explicit_permission_map = await _get_explicit_permission_map(
         db,
         current_user,
-        [row[0].id for row in rows],
+        project_ids,
+    )
+    image_counts_map = await _get_project_image_counts_map(db, project_ids)
+    display_job_map, latest_any_job_map, job_by_id = await _get_project_job_maps(db, project_ids)
+    active_job_map = await _apply_active_project_overrides(
+        db,
+        projects,
+        latest_any_job_map,
+        job_by_id,
+        active_tasks,
     )
     
     # Add image count to each project
@@ -300,59 +561,17 @@ async def list_projects(
     for row in rows:
         project = row[0]
         bounds_wkt = row[1]
-        
-        # 이미지 수 및 업로드 상태 집계
-        count_result = await db.execute(
-            select(func.count()).where(Image.project_id == project.id)
-        )
-        image_count = count_result.scalar()
-
-        # 업로드 상태별 집계
-        upload_status_result = await db.execute(
-            select(
-                Image.upload_status,
-                func.count(Image.id).label("count")
-            )
-            .where(Image.project_id == project.id)
-            .group_by(Image.upload_status)
-        )
-        status_counts = {row.upload_status: row.count for row in upload_status_result}
-        upload_completed_count = status_counts.get("completed", 0)
-        upload_uploading_count = status_counts.get("uploading", 0)
-
-        # Get latest COMPLETED processing job for result_gsd and process_mode
-        # (Filter by status='completed' to avoid getting cancelled/error jobs with no GSD)
-        job_result = await db.execute(
-            select(ProcessingJob)
-            .where(ProcessingJob.project_id == project.id)
-            .where(ProcessingJob.status == "completed")
-            .order_by(ProcessingJob.started_at.desc())
-            .limit(1)
-        )
-        latest_job = job_result.scalar_one_or_none()
-
-        # Fallback to any job for process_mode if no completed job
-        if not latest_job:
-            fallback_result = await db.execute(
-                select(ProcessingJob)
-                .where(ProcessingJob.project_id == project.id)
-                .order_by(ProcessingJob.started_at.desc())
-                .limit(1)
-            )
-            latest_job = fallback_result.scalar_one_or_none()
-
-        result_gsd = latest_job.result_gsd if latest_job else None
-        process_mode = latest_job.process_mode if latest_job else None
-        processing_started_at = latest_job.started_at if latest_job else None
-        processing_completed_at = latest_job.completed_at if latest_job else None
+        image_counts = image_counts_map.get(project.id, _empty_project_image_counts())
+        job_fields = _processing_job_fields(project.id, display_job_map, active_job_map)
 
         response = _build_project_response(
-            project, bounds_wkt=bounds_wkt, image_count=image_count,
-            upload_completed_count=upload_completed_count,
-            upload_in_progress=upload_uploading_count > 0,
-            result_gsd=result_gsd, process_mode=process_mode,
-            processing_started_at=processing_started_at,
-            processing_completed_at=processing_completed_at,
+            project, bounds_wkt=bounds_wkt, image_count=image_counts["image_count"],
+            processing_image_count=image_counts["processing_image_count"],
+            eo_count=image_counts["eo_count"],
+            upload_completed_count=image_counts["upload_completed_count"],
+            upload_excluded_count=image_counts["upload_excluded_count"],
+            upload_in_progress=image_counts["upload_uploading_count"] > 0,
+            **job_fields,
             **_build_project_access_fields(
                 project,
                 current_user,
@@ -462,42 +681,26 @@ async def get_project(
         [project.id],
     )
 
-    # Get image count
-    count_result = await db.execute(
-        select(func.count()).where(Image.project_id == project.id)
+    image_counts = await _get_project_image_counts(db, project.id)
+    active_tasks = get_active_processing_tasks()
+    display_job_map, latest_any_job_map, job_by_id = await _get_project_job_maps(db, [project.id])
+    active_job_map = await _apply_active_project_overrides(
+        db,
+        [project],
+        latest_any_job_map,
+        job_by_id,
+        active_tasks,
     )
-    image_count = count_result.scalar()
-
-    # Get latest COMPLETED processing job for result_gsd and process_mode
-    job_result = await db.execute(
-        select(ProcessingJob)
-        .where(ProcessingJob.project_id == project.id)
-        .where(ProcessingJob.status == "completed")
-        .order_by(ProcessingJob.started_at.desc())
-        .limit(1)
-    )
-    latest_job = job_result.scalar_one_or_none()
-
-    # Fallback to any job for process_mode if no completed job
-    if not latest_job:
-        fallback_result = await db.execute(
-            select(ProcessingJob)
-            .where(ProcessingJob.project_id == project.id)
-            .order_by(ProcessingJob.started_at.desc())
-            .limit(1)
-        )
-        latest_job = fallback_result.scalar_one_or_none()
-
-    result_gsd = latest_job.result_gsd if latest_job else None
-    process_mode = latest_job.process_mode if latest_job else None
-    processing_started_at = latest_job.started_at if latest_job else None
-    processing_completed_at = latest_job.completed_at if latest_job else None
+    job_fields = _processing_job_fields(project.id, display_job_map, active_job_map)
 
     return _build_project_response(
-        project, bounds_wkt=bounds_wkt, image_count=image_count,
-        result_gsd=result_gsd, process_mode=process_mode,
-        processing_started_at=processing_started_at,
-        processing_completed_at=processing_completed_at,
+        project, bounds_wkt=bounds_wkt, image_count=image_counts["image_count"],
+        processing_image_count=image_counts["processing_image_count"],
+        eo_count=image_counts["eo_count"],
+        upload_completed_count=image_counts["upload_completed_count"],
+        upload_excluded_count=image_counts["upload_excluded_count"],
+        upload_in_progress=image_counts["upload_uploading_count"] > 0,
+        **job_fields,
         **_build_project_access_fields(
             project,
             current_user,
@@ -557,23 +760,7 @@ async def update_project(
         [project.id],
     )
     
-    # Get image count and upload status
-    count_result = await db.execute(
-        select(func.count()).where(Image.project_id == project.id)
-    )
-    image_count = count_result.scalar()
-
-    upload_status_result = await db.execute(
-        select(
-            Image.upload_status,
-            func.count(Image.id).label("count")
-        )
-        .where(Image.project_id == project.id)
-        .group_by(Image.upload_status)
-    )
-    status_counts = {row.upload_status: row.count for row in upload_status_result}
-    upload_completed_count = status_counts.get("completed", 0)
-    upload_uploading_count = status_counts.get("uploading", 0)
+    image_counts = await _get_project_image_counts(db, project.id)
 
     # Get latest COMPLETED processing job for result_gsd and process_mode
     job_result = await db.execute(
@@ -620,9 +807,12 @@ async def update_project(
         )
 
     return _build_project_response(
-        project, bounds_wkt=bounds_wkt, image_count=image_count,
-        upload_completed_count=upload_completed_count,
-        upload_in_progress=upload_uploading_count > 0,
+        project, bounds_wkt=bounds_wkt, image_count=image_counts["image_count"],
+        processing_image_count=image_counts["processing_image_count"],
+        eo_count=image_counts["eo_count"],
+        upload_completed_count=image_counts["upload_completed_count"],
+        upload_excluded_count=image_counts["upload_excluded_count"],
+        upload_in_progress=image_counts["upload_uploading_count"] > 0,
         result_gsd=result_gsd, process_mode=process_mode,
         processing_started_at=processing_started_at,
         processing_completed_at=processing_completed_at,
@@ -696,6 +886,7 @@ async def batch_projects(
             project_title = project.title
             if payload.action == "delete":
                 original_paths = await _collect_project_image_paths(project_id, db)
+                ortho_path = project.ortho_path
 
                 async with db.begin_nested():
                     await db.delete(project)
@@ -706,7 +897,7 @@ async def batch_projects(
                     delete_project_data.delay(str(project_id))
                 except Exception as e:
                     print(f"Failed to queue delete task for {project_id}: {e}")
-                _cleanup_project_storage(project_id, original_paths)
+                _cleanup_project_storage(project_id, original_paths, ortho_path)
                 log_audit_event(
                     "project_batch_deleted",
                     actor=current_user,
@@ -919,7 +1110,7 @@ async def _generate_ortho_thumbnail(storage, ortho_path: str, project_id: str) -
         os.chmod(thumb_file.name, 0o644)
 
         # 스토리지에 업로드 (projects/ 하위에 저장하여 nginx 직접 서빙)
-        thumbnail_key = f"projects/{project_id}/ortho/ortho_thumb.png"
+        thumbnail_key = project_preview_key(project_id)
         storage.upload_file(thumb_file.name, thumbnail_key, "image/png")
 
         # 업로드된 파일도 퍼미션 보장
@@ -952,19 +1143,149 @@ def _parse_eo_config(config_json: str) -> EOConfig:
         return EOConfig()
 
 
+async def _decode_eo_upload(upload: UploadFile) -> str:
+    """Decode EO uploads from common Korean Windows or UTF-8 encodings."""
+    raw = await upload.read()
+    for encoding in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"EO 파일 인코딩을 읽을 수 없습니다: {upload.filename}",
+    )
+
+
+def _collect_effective_eo_crs(parsed_rows, configured_crs: str) -> tuple[list[str], str]:
+    """Return detected effective CRS values and the single CRS to use."""
+    fallback_crs = EOParserService.normalize_crs(configured_crs) or configured_crs
+    effective_crs_values = {
+        EOParserService.normalize_crs(row.crs) or fallback_crs
+        for row in parsed_rows
+    }
+    detected_crs = sorted(crs for crs in effective_crs_values if crs)
+
+    if len(detected_crs) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "MIXED_EO_CRS",
+                "message": (
+                    "EO 파일 안에 서로 다른 좌표계가 섞여 있습니다. "
+                    f"감지된 좌표계: {', '.join(detected_crs)}. "
+                    "좌표계별로 파일을 분리하거나 하나의 좌표계로 변환한 뒤 다시 업로드하세요."
+                ),
+                "detected_crs": detected_crs,
+            },
+        )
+
+    return detected_crs, detected_crs[0] if detected_crs else fallback_crs
+
+
+def _eo_image_merge_key(image_name: str) -> str:
+    """Normalize EO image names for merge conflict detection."""
+    basename = os.path.basename(str(image_name or "").strip())
+    stem = os.path.splitext(basename)[0]
+    return stem.lower()
+
+
+def _find_duplicate_eo_images(parsed_rows) -> list[dict]:
+    """Find EO rows that would target the same source image after merging."""
+    occurrences = {}
+    display_names = {}
+
+    for row in parsed_rows:
+        key = _eo_image_merge_key(row.image_name)
+        if not key:
+            continue
+        display_names.setdefault(key, os.path.basename(row.image_name))
+        occurrences.setdefault(key, []).append(row)
+
+    duplicates = []
+    for key, rows in occurrences.items():
+        if len(rows) <= 1:
+            continue
+        files = sorted({row.source_file or "unknown" for row in rows})
+        duplicates.append({
+            "image_name": display_names.get(key, key),
+            "count": len(rows),
+            "files": files,
+        })
+
+    duplicates.sort(key=lambda item: item["image_name"].lower())
+    return duplicates
+
+
+def _filter_excluded_eo_rows(parsed_rows, excluded_image_names: list[str]) -> tuple[list, list[dict]]:
+    """Drop user-excluded EO rows by normalized image stem."""
+    excluded_keys = {
+        _eo_image_merge_key(name)
+        for name in (excluded_image_names or [])
+        if _eo_image_merge_key(name)
+    }
+    if not excluded_keys:
+        return parsed_rows, []
+
+    kept_rows = []
+    excluded_rows = []
+    seen_excluded = set()
+
+    for row in parsed_rows:
+        row_key = _eo_image_merge_key(row.image_name)
+        if row_key in excluded_keys:
+            if row_key not in seen_excluded:
+                excluded_rows.append({
+                    "image_name": os.path.basename(row.image_name),
+                    "source_file": row.source_file,
+                })
+                seen_excluded.add(row_key)
+            continue
+        kept_rows.append(row)
+
+    return kept_rows, excluded_rows
+
+
+def _write_processing_exclusion_file(project_id: UUID, excluded_image_names: list[str]) -> tuple[Path, int]:
+    """Persist user-excluded image stems so workers skip them entirely."""
+    exclusion_path = processing_exclusion_path(project_id)
+    exclusion_path.parent.mkdir(parents=True, exist_ok=True)
+    compat_dir = processing_images_dir(project_id)
+    compat_dir.mkdir(parents=True, exist_ok=True)
+    compat_exclusion_path = compat_dir / ".excluded_images.txt"
+    excluded_keys = sorted({
+        _eo_image_merge_key(name)
+        for name in (excluded_image_names or [])
+        if _eo_image_merge_key(name)
+    })
+
+    if not excluded_keys:
+        for path in (exclusion_path, compat_exclusion_path):
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        return exclusion_path, 0
+
+    with open(exclusion_path, "w", encoding="utf-8") as f:
+        for key in excluded_keys:
+            f.write(f"{key}\n")
+    try:
+        if compat_exclusion_path.exists() or compat_exclusion_path.is_symlink():
+            compat_exclusion_path.unlink()
+        os.symlink(exclusion_path, compat_exclusion_path)
+    except OSError:
+        with open(compat_exclusion_path, "w", encoding="utf-8") as f:
+            for key in excluded_keys:
+                f.write(f"{key}\n")
+    return exclusion_path, len(excluded_keys)
+
+
 def _setup_crs_transformer(source_crs_raw: str):
     """Setup CRS transformer if source CRS differs from WGS84.
 
     Returns (transformer_or_None, clean_source_crs).
     """
     target_crs = "EPSG:4326"
-    source_crs = source_crs_raw.upper()
-
-    epsg_match = re.search(r'EPSG[:\s]+(\d+)', source_crs)
-    if epsg_match:
-        source_code = f"EPSG:{epsg_match.group(1)}"
-        if source_code != target_crs:
-            source_crs = source_code
+    source_crs = EOParserService.normalize_crs(source_crs_raw) or source_crs_raw.upper()
 
     if "WGS84" in source_crs or source_crs == "EPSG:4326":
         return None, "EPSG:4326"
@@ -1045,10 +1366,51 @@ def _match_eo_rows(parsed_rows, image_map, image_stem_map, transformer, source_c
     return eo_objects, reference_rows, source_crs, matched_count, errors
 
 
+async def _clear_project_eo_state(db: AsyncSession, images: list[Image]) -> None:
+    """Remove stale EO records and image map locations before saving a new EO merge."""
+    image_ids = [image.id for image in images]
+    if image_ids:
+        await db.execute(
+            delete(ExteriorOrientation).where(ExteriorOrientation.image_id.in_(image_ids))
+        )
+    for image in images:
+        image.location = None
+
+
+def _write_eo_metadata_file(project_id: UUID, reference_crs: str, reference_rows: list) -> Path:
+    """Write the processing reference file synchronously before processing can start."""
+    reference_path = processing_metadata_path(project_id)
+    reference_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(reference_path, "w", encoding="utf-8") as f:
+        if reference_crs:
+            f.write(f"# CRS {reference_crs}\n")
+        for row in reference_rows:
+            name, x_val, y_val, z_val, omega, phi, kappa = row
+            f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
+
+    compat_dir = processing_images_dir(project_id)
+    compat_dir.mkdir(parents=True, exist_ok=True)
+    compat_reference_path = compat_dir / "metadata.txt"
+    try:
+        if compat_reference_path.exists() or compat_reference_path.is_symlink():
+            compat_reference_path.unlink()
+        os.symlink(reference_path, compat_reference_path)
+    except OSError:
+        with open(compat_reference_path, "w", encoding="utf-8") as f:
+            if reference_crs:
+                f.write(f"# CRS {reference_crs}\n")
+            for row in reference_rows:
+                name, x_val, y_val, z_val, omega, phi, kappa = row
+                f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
+
+    return reference_path
+
+
 @router.post("/{project_id}/eo", response_model=EOUploadResponse)
 async def upload_eo_data(
     project_id: UUID,
-    file: UploadFile = File(...),
+    request: Request,
     config: str = Query("{}"),  # JSON string of EOConfig
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1064,25 +1426,89 @@ async def upload_eo_data(
 
     project = scoped_project
 
-    eo_config = _parse_eo_config(config)
+    form = await request.form()
+    form_config = form.get("config")
+    config_payload = str(form_config) if form_config is not None else config
+    eo_config = _parse_eo_config(config_payload)
 
-    content = (await file.read()).decode("utf-8")
+    upload_files = [
+        item
+        for key in ("files", "file")
+        for item in form.getlist(key)
+        if isinstance(item, UploadFile) or (hasattr(item, "filename") and hasattr(item, "read"))
+    ]
+    if not upload_files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="EO 파일을 선택하세요.")
+
     delimiter = eo_config.delimiter
     if delimiter == "space":
         delimiter = " "
     elif delimiter == "tab":
         delimiter = "\t"
 
+    parsed_rows = []
+    file_summaries = []
     try:
-        parsed_rows = EOParserService.parse_eo_file(
-            content=content, delimiter=delimiter,
-            has_header=eo_config.has_header, columns=eo_config.columns,
-        )
+        for upload in upload_files:
+            content = await _decode_eo_upload(upload)
+            file_rows = EOParserService.parse_eo_file(
+                content=content,
+                delimiter=delimiter,
+                has_header=eo_config.has_header,
+                columns=eo_config.columns,
+                source_file=upload.filename,
+            )
+            file_summaries.append({
+                "filename": upload.filename,
+                "parsed_count": len(file_rows),
+            })
+            parsed_rows.extend(file_rows)
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to parse EO file: {str(e)}")
 
     if not parsed_rows:
-        return EOUploadResponse(parsed_count=0, matched_count=0, errors=["No valid data found in file"])
+        return EOUploadResponse(
+            parsed_count=0,
+            matched_count=0,
+            errors=["No valid data found in file"],
+            file_count=len(upload_files),
+            file_summaries=file_summaries,
+        )
+
+    parsed_rows, excluded_images = _filter_excluded_eo_rows(
+        parsed_rows,
+        eo_config.excluded_image_names,
+    )
+    if excluded_images:
+        logger.info(
+            "EO Upload: user excluded EO rows: project_id=%s excluded=%s",
+            project_id,
+            len(excluded_images),
+        )
+
+    if not parsed_rows:
+        return EOUploadResponse(
+            parsed_count=0,
+            matched_count=0,
+            errors=["사용자가 모든 EO 행을 처리 제외했습니다."],
+            file_count=len(upload_files),
+            file_summaries=file_summaries,
+            excluded_count=len(excluded_images),
+            excluded_images=excluded_images[:50],
+        )
+
+    detected_crs, effective_source_crs = _collect_effective_eo_crs(parsed_rows, eo_config.crs)
+    duplicate_eo_images = _find_duplicate_eo_images(parsed_rows)
+    duplicate_ignored_count = sum(item["count"] - 1 for item in duplicate_eo_images)
+    if duplicate_eo_images:
+        logger.info(
+            "EO Upload: duplicate image names ignored with first-wins policy: project_id=%s duplicates=%s ignored_rows=%s",
+            project_id,
+            len(duplicate_eo_images),
+            duplicate_ignored_count,
+        )
 
     # Build image lookup maps
     result = await db.execute(select(Image).where(Image.project_id == project_id))
@@ -1096,7 +1522,7 @@ async def upload_eo_data(
             image_stem_map[stem] = img
 
     # Setup CRS transformer
-    transformer, source_crs = _setup_crs_transformer(eo_config.crs)
+    transformer, source_crs = _setup_crs_transformer(effective_source_crs)
 
     # Match EO rows to images
     eo_objects, reference_rows, reference_crs, matched_count, errors = _match_eo_rows(
@@ -1105,10 +1531,12 @@ async def upload_eo_data(
 
     try:
         if matched_count > 0:
-            await db.execute(
-                delete(ExteriorOrientation).where(ExteriorOrientation.image_id.in_(list(eo_objects.keys())))
-            )
+            await _clear_project_eo_state(db, images)
+            image_by_id = {image.id: image for image in images}
             for eo in eo_objects.values():
+                image = image_by_id.get(eo.image_id)
+                if image:
+                    image.location = f"SRID=4326;POINT({eo.x} {eo.y})"
                 db.add(eo)
 
             # Calculate project bounds from matched coordinates
@@ -1135,13 +1563,31 @@ async def upload_eo_data(
                 detail=f"EO 파일의 이미지명이 업로드된 이미지와 일치하지 않습니다. (matched 0/{len(parsed_rows)})",
             )
 
-        # Save reference file via Celery task
+        # Save reference file synchronously.  The processing job reads this file
+        # immediately at align time, so queuing this as a separate Celery task
+        # can race with auto-scheduled processing.
         if reference_rows:
             try:
-                from app.workers.tasks import save_eo_metadata
-                save_eo_metadata.delay(str(project_id), reference_crs, reference_rows)
+                exclusion_path, excluded_key_count = _write_processing_exclusion_file(
+                    project_id,
+                    eo_config.excluded_image_names,
+                )
+                reference_path = _write_eo_metadata_file(project_id, reference_crs, reference_rows)
+                logger.info(
+                    "EO metadata written: project_id=%s path=%s rows=%s excluded_file=%s excluded_keys=%s",
+                    project_id,
+                    reference_path,
+                    len(reference_rows),
+                    exclusion_path,
+                    excluded_key_count,
+                )
             except Exception as e:
-                logger.warning(f"EO Upload: Failed to queue save task: {e}")
+                logger.error(f"EO Upload: Failed to write metadata file: {e}")
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"EO metadata 파일 저장 실패: {str(e)}",
+                )
 
         await db.commit()
     except HTTPException:
@@ -1160,6 +1606,13 @@ async def upload_eo_data(
         parsed_count=len(parsed_rows),
         matched_count=matched_count,
         errors=errors[:10],
+        file_count=len(upload_files),
+        detected_crs=detected_crs,
+        file_summaries=file_summaries,
+        duplicate_ignored_count=duplicate_ignored_count,
+        duplicate_ignored_images=duplicate_eo_images[:50],
+        excluded_count=len(excluded_images),
+        excluded_images=excluded_images[:50],
     )
 
 

@@ -45,6 +45,6 @@ echo ""
 
 # 변경된 주요 환경변수 표시
 echo "현재 적용된 주요 설정:"
-echo "  - METASHAPE_LICENSE_KEY: $(docker exec aerial-worker-engine printenv METASHAPE_LICENSE_KEY 2>/dev/null | cut -c1-10)..."
+echo "  - ENGINE_LICENSE_KEY: $(docker exec aerial-worker-engine printenv ENGINE_LICENSE_KEY 2>/dev/null | cut -c1-10)..."
 echo "  - MINIO_PUBLIC_ENDPOINT: $(docker exec aerial-survey-manager-api-1 printenv MINIO_PUBLIC_ENDPOINT 2>/dev/null)"
 echo ""

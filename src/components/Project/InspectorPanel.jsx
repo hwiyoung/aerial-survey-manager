@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { FileImage, Download, Loader2, X, CheckCircle2, Trash2, Camera, Calendar } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
+import { formatKstDateTime } from '../../utils/dateTime';
 
 const PROCESS_MODE_LABEL = {
     'Normal': '정밀 처리',
@@ -71,6 +72,15 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                 : (project.status === '진행중' || project.status === 'processing')
                     ? 'bg-blue-100 text-blue-700'
                     : 'bg-slate-100 text-slate-600';
+        const processingStartedAt = project.processingStartedAt || project.processing_started_at;
+        const processingCompletedAt = project.processingCompletedAt || project.processing_completed_at;
+        const processingStartedLabel = project.processingStartedAtDisplay || formatKstDateTime(processingStartedAt);
+        const processingCompletedLabel = project.processingCompletedAtDisplay || formatKstDateTime(processingCompletedAt);
+        const processingImageCount = project.processingImageCount
+            ?? project.processing_image_count
+            ?? project.upload_completed_count
+            ?? project.imageCount
+            ?? 0;
 
         return (
             <div className="flex h-full w-full bg-white text-slate-800">
@@ -140,16 +150,18 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
                                 <Calendar size={14} className="text-slate-400" />기본 정보
                             </h4>
-                            {project.createdDate && <div className="flex justify-between border-b border-slate-100 pb-2.5 text-sm"><span className="text-slate-500">생성일</span><span className="font-semibold">{project.createdDate}</span></div>}
-                            {project.completedDate && <div className="flex justify-between border-b border-slate-100 pb-2.5 text-sm"><span className="text-slate-500">처리완료일</span><span className="font-semibold">{project.completedDate}</span></div>}
+                            {(project.createdDateTime || project.createdDate) && <div className="flex justify-between gap-4 border-b border-slate-100 pb-2.5 text-sm"><span className="text-slate-500">생성일</span><span className="font-semibold text-right">{project.createdDateTime || project.createdDate}</span></div>}
+                            {processingStartedAt && <div className="flex justify-between gap-4 border-b border-slate-100 pb-2.5 text-sm"><span className="text-slate-500">처리 시작</span><span className="font-semibold text-right">{processingStartedLabel}</span></div>}
+                            {processingCompletedAt && <div className="flex justify-between gap-4 border-b border-slate-100 pb-2.5 text-sm"><span className="text-slate-500">처리 완료</span><span className="font-semibold text-right">{processingCompletedLabel}</span></div>}
+                            {project.processingDurationDisplay && <div className="flex justify-between gap-4 border-b border-slate-100 pb-2.5 text-sm"><span className="text-slate-500">소요 시간</span><span className="font-semibold text-right">{project.processingDurationDisplay}</span></div>}
                         </div>
                         <div className="flex-1 space-y-3">
                             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
                                 <Camera size={14} className="text-slate-400" />원본 데이터
                             </h4>
                             <div className="flex justify-between border-b border-slate-100 pb-2.5 text-sm">
-                                <span className="text-slate-500">원본 사진</span>
-                                <span className="font-semibold">{project.imageCount || 0}장</span>
+                                <span className="text-slate-500">처리 대상 사진</span>
+                                <span className="font-semibold">{processingImageCount}장</span>
                             </div>
                             {project.eo_count > 0 && (
                                 <div className="flex justify-between border-b border-slate-100 pb-2.5 text-sm">

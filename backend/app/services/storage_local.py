@@ -71,8 +71,8 @@ class LocalStorageBackend(StorageBackend):
         expires: int = 3600,
         response_headers: Optional[dict] = None,
     ) -> str:
-        # Public paths (projects/) are served by nginx /storage/ alias
-        if object_name.startswith("projects/"):
+        # Public paths are served by nginx /storage/ alias.
+        if object_name.startswith(("projects/", "orthomosaic/")):
             return f"/storage/{object_name}"
         # Private paths served via authenticated API endpoint
         return f"/api/v1/storage/files/{object_name}"

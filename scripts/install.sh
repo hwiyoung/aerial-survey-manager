@@ -36,6 +36,48 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+find_packaged_worker_engine_image() {
+    local compose_image
+    if [ -f docker-compose.yml ]; then
+        compose_image=$(docker compose config --images 2>/dev/null \
+            | grep -E '^aerial-survey-manager:worker-engine-' \
+            | head -n 1 || true)
+        if [ -n "$compose_image" ]; then
+            echo "$compose_image"
+            return 0
+        fi
+    fi
+
+    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+        | grep -E '^(aerial-survey-manager:worker-engine-|aerial-prod-worker-engine:latest$)' \
+        | sort -r \
+        | head -n 1
+}
+
+test_docker_gpu_runtime() {
+    local test_image
+    test_image=$(find_packaged_worker_engine_image || true)
+
+    if [ -n "$test_image" ]; then
+        log_info "Docker GPU 전달 테스트 이미지: $test_image"
+        docker run --rm --gpus all --entrypoint nvidia-smi "$test_image" -L &>/dev/null
+        return $?
+    fi
+
+    # Fallback for source installs where release images were not loaded.
+    docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null
+}
+
+upsert_env() {
+    local key="$1"
+    local value="$2"
+    if grep -q "^${key}=" .env; then
+        sed -i "s|^${key}=.*|${key}=${value}|" .env
+    else
+        echo "${key}=${value}" >> .env
+    fi
+}
+
 # 시스템 요구사항 확인
 check_requirements() {
     log_info "시스템 요구사항 확인 중..."
@@ -84,13 +126,13 @@ check_requirements() {
         # Docker 컨테이너 GPU 전달 검증
         if docker info 2>/dev/null | grep -qi "nvidia"; then
             log_info "Docker GPU 전달 테스트 중..."
-            if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null; then
+            if test_docker_gpu_runtime; then
                 log_info "Docker GPU 전달: 정상"
             else
                 log_warn "Docker에서 GPU를 사용할 수 없습니다."
                 log_warn "nvidia runtime 재등록을 시도합니다..."
-                nvidia-ctk runtime configure --runtime=docker 2>/dev/null && systemctl restart docker 2>/dev/null
-                if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null; then
+                sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null && sudo systemctl restart docker 2>/dev/null
+                if test_docker_gpu_runtime; then
                     log_info "Docker GPU 전달: 복구 완료"
                 else
                     log_warn "Docker GPU 전달 실패. 처리 속도가 매우 느릴 수 있습니다."
@@ -101,6 +143,10 @@ check_requirements() {
                 fi
             fi
         fi
+
+        log_info "NVIDIA Persistence Mode 설정 중..."
+        sudo systemctl enable --now nvidia-persistenced 2>/dev/null || true
+        sudo nvidia-smi -pm 1 2>/dev/null || true
     fi
 
     # 디스크 용량 확인
@@ -161,11 +207,21 @@ setup_environment() {
     # 저장소 경로 설정
     echo ""
     echo -e "${YELLOW}저장소 경로 설정 (대용량 디스크 경로 권장)${NC}"
-    read -p "처리 데이터 경로 [./data/processing]: " processing_path
-    processing_path=${processing_path:-./data/processing}
+    echo "신규 설치는 기준 경로 하나를 정하면 하위 폴더가 자동으로 정리됩니다."
+    read -p "데이터 기준 경로 [./data]: " data_root
+    data_root=${data_root:-./data}
 
-    read -p "저장소 경로 [./data/storage]: " storage_path
-    storage_path=${storage_path:-./data/storage}
+    read -p "프로젝트/처리 데이터 경로 [$data_root/projects]: " processing_path
+    processing_path=${processing_path:-$data_root/projects}
+
+    read -p "로컬 스토리지 기준 경로 [$data_root]: " storage_path
+    storage_path=${storage_path:-$data_root}
+
+    read -p "최종 정사영상 경로 [$data_root/orthomosaic]: " export_path
+    export_path=${export_path:-$data_root/orthomosaic}
+
+    read -p "MinIO 데이터 경로 [$data_root/minio]: " minio_path
+    minio_path=${minio_path:-$data_root/minio}
 
     # 오프라인 타일맵 설정
     echo ""
@@ -175,9 +231,9 @@ setup_environment() {
 
     if [[ "$use_offline_tiles" =~ ^[Yy]$ ]]; then
         USE_OFFLINE_TILES="true"
-        read -p "타일 데이터 경로 (예: /data/tiles 또는 ./data/tiles): " tiles_path
+        read -p "타일 데이터 경로 [$data_root/tiles]: " tiles_path
         if [ -z "$tiles_path" ]; then
-            tiles_path="./data/tiles"
+            tiles_path="$data_root/tiles"
             log_warn "기본 경로 사용: $tiles_path"
         fi
 
@@ -202,7 +258,7 @@ setup_environment() {
         fi
     else
         USE_OFFLINE_TILES="false"
-        tiles_path="./data/tiles"
+        tiles_path="$data_root/tiles"
         log_info "온라인 지도를 사용합니다. (인터넷 연결 필요)"
     fi
 
@@ -222,37 +278,33 @@ setup_environment() {
     postgres_password=$(generate_password)
     jwt_secret=$(generate_secret)
     # .env 파일 업데이트
-    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$postgres_password|" .env
-    sed -i "s|^JWT_SECRET_KEY=.*|JWT_SECRET_KEY=$jwt_secret|" .env
-    sed -i "s|^PROCESSING_DATA_PATH=.*|PROCESSING_DATA_PATH=$processing_path|" .env
-    sed -i "s|^LOCAL_STORAGE_PATH=.*|LOCAL_STORAGE_PATH=$storage_path|" .env
-    sed -i "s|^ENGINE_LICENSE_KEY=.*|ENGINE_LICENSE_KEY=$engine_license|" .env
-    sed -i "s|^WEB_PORT=.*|WEB_PORT=$web_port|" .env
+    upsert_env "POSTGRES_PASSWORD" "$postgres_password"
+    upsert_env "JWT_SECRET_KEY" "$jwt_secret"
+    upsert_env "AERIAL_DATA_ROOT" "$data_root"
+    upsert_env "PROCESSING_DATA_PATH" "$processing_path"
+    upsert_env "LOCAL_STORAGE_PATH" "$storage_path"
+    upsert_env "EXPORT_ROOT_PATH" "$export_path"
+    upsert_env "AUTO_EXPORT_ENABLED" "false"
+    upsert_env "AUTO_EXPORT_TARGET_CRS" "EPSG:5186"
+    upsert_env "MINIO_DATA_PATH" "$minio_path"
+    upsert_env "ENGINE_LICENSE_KEY" "$engine_license"
+    upsert_env "WEB_PORT" "$web_port"
 
     # 도메인 설정
-    if ! grep -q "^DOMAIN=" .env; then
-        echo "DOMAIN=$domain" >> .env
-    else
-        sed -i "s|^DOMAIN=.*|DOMAIN=$domain|" .env
-    fi
+    upsert_env "DOMAIN" "$domain"
 
     # 타일 경로 설정
-    if ! grep -q "^TILES_PATH=" .env; then
-        echo "TILES_PATH=$tiles_path" >> .env
-    else
-        sed -i "s|^TILES_PATH=.*|TILES_PATH=$tiles_path|" .env
-    fi
+    upsert_env "TILES_PATH" "$tiles_path"
 
     # 오프라인 지도 사용 여부 설정
-    if ! grep -q "^USE_OFFLINE_TILES=" .env; then
-        echo "USE_OFFLINE_TILES=$USE_OFFLINE_TILES" >> .env
-    else
-        sed -i "s|^USE_OFFLINE_TILES=.*|USE_OFFLINE_TILES=$USE_OFFLINE_TILES|" .env
-    fi
+    upsert_env "USE_OFFLINE_TILES" "$USE_OFFLINE_TILES"
 
     # 저장소 디렉토리 생성
     mkdir -p "$processing_path"
     mkdir -p "$storage_path"
+    mkdir -p "$export_path"
+    mkdir -p "$minio_path"
+    mkdir -p "$tiles_path"
 
     echo ""
     log_info "환경 설정 완료"
@@ -366,58 +418,79 @@ start_services() {
 
 # 별도 드라이브 사용 시 Docker 부팅 순서 설정
 setup_mount_dependency() {
-    storage_path=$(grep "^LOCAL_STORAGE_PATH=" .env | cut -d'=' -f2)
-    if [ -z "$storage_path" ]; then
-        return
-    fi
-
-    # 상대경로면 스킵 (별도 드라이브가 아님)
-    if [[ ! "$storage_path" = /* ]]; then
-        return
-    fi
-
-    # 루트 파티션과 같은 파티션이면 스킵
-    storage_device=$(df "$storage_path" 2>/dev/null | awk 'NR==2 {print $1}')
+    mount_points=()
     root_device=$(df / 2>/dev/null | awk 'NR==2 {print $1}')
-    if [ "$storage_device" = "$root_device" ]; then
+
+    for key in AERIAL_DATA_ROOT LOCAL_STORAGE_PATH PROCESSING_DATA_PATH EXPORT_ROOT_PATH TILES_PATH MINIO_DATA_PATH; do
+        path=$(grep "^${key}=" .env | cut -d'=' -f2-)
+        if [ -z "$path" ] || [[ ! "$path" = /* ]]; then
+            continue
+        fi
+
+        device=$(df "$path" 2>/dev/null | awk 'NR==2 {print $1}')
+        if [ -z "$device" ] || [ "$device" = "$root_device" ]; then
+            continue
+        fi
+
+        mount_point=$(df "$path" 2>/dev/null | awk 'NR==2 {print $6}')
+        if [ -z "$mount_point" ] || [ "$mount_point" = "/" ]; then
+            continue
+        fi
+
+        duplicate=false
+        for existing in "${mount_points[@]}"; do
+            if [ "$existing" = "$mount_point" ]; then
+                duplicate=true
+                break
+            fi
+        done
+        if [ "$duplicate" = "false" ]; then
+            mount_points+=("$mount_point")
+        fi
+    done
+
+    if [ "${#mount_points[@]}" -eq 0 ]; then
         return
     fi
 
-    # 마운트 포인트 추출
-    mount_point=$(df "$storage_path" 2>/dev/null | awk 'NR==2 {print $6}')
-    if [ -z "$mount_point" ] || [ "$mount_point" = "/" ]; then
-        return
-    fi
+    requires_mounts="${mount_points[*]}"
 
     echo ""
-    log_info "저장소가 별도 드라이브에 있습니다: $mount_point ($storage_device)"
+    log_info "데이터 경로가 별도 드라이브에 있습니다: $requires_mounts"
     log_info "시스템 재부팅 시 드라이브 마운트 후 Docker가 시작되도록 설정합니다."
 
     # 이미 설정되어 있는지 확인
-    if systemctl cat docker.service 2>/dev/null | grep -q "RequiresMountsFor.*$mount_point"; then
+    all_configured=true
+    for mount_point in "${mount_points[@]}"; do
+        if ! systemctl cat docker.service 2>/dev/null | grep -q "RequiresMountsFor.*$mount_point"; then
+            all_configured=false
+            break
+        fi
+    done
+    if [ "$all_configured" = "true" ]; then
         log_info "Docker 부팅 순서: 이미 설정됨"
         return
     fi
 
     # systemd override 생성 (sudo 필요)
     override_dir="/etc/systemd/system/docker.service.d"
-    override_file="$override_dir/mount-dependency.conf"
+    override_file="$override_dir/aerial-survey-mounts.conf"
 
     # systemd override 생성 (root 권한 필요)
     if [ "$(id -u)" = "0" ]; then
         mkdir -p "$override_dir"
         cat > "$override_file" << EOF
 [Unit]
-RequiresMountsFor=$mount_point
+RequiresMountsFor=$requires_mounts
 EOF
         systemctl daemon-reload
-        log_info "Docker 부팅 순서 설정 완료: $mount_point 마운트 후 Docker 시작"
+        log_info "Docker 부팅 순서 설정 완료: $requires_mounts 마운트 후 Docker 시작"
     else
         log_warn "Docker 부팅 순서 설정에 root 권한이 필요합니다."
         log_warn "다음 명령을 실행하세요:"
         echo ""
         echo "  sudo mkdir -p $override_dir"
-        echo "  echo -e '[Unit]\nRequiresMountsFor=$mount_point' | sudo tee $override_file"
+        echo "  echo -e '[Unit]\nRequiresMountsFor=$requires_mounts' | sudo tee $override_file"
         echo "  sudo systemctl daemon-reload"
         echo ""
     fi

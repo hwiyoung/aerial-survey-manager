@@ -1,9 +1,8 @@
 #!/bin/bash
 # ============================================================
-# Metashape Worker Entrypoint
+# GPU Processing Worker Entrypoint
 # 컨테이너 종료 시 라이센스를 비활성화하지 않음 (오프라인 환경 지원)
-# 라이센스 비활성화가 필요하면 수동으로 실행:
-#   docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/deactivate.py
+# 라이센스 비활성화가 필요하면 scripts/shutdown-engine.sh를 사용합니다.
 # ============================================================
 
 # 종료 신호 핸들러 — 자식 프로세스만 정리 (라이센스 유지)
@@ -20,20 +19,20 @@ cleanup() {
 trap cleanup SIGTERM SIGINT
 
 echo "========================================"
-echo "[Entrypoint] Metashape Worker 시작..."
+echo "[Entrypoint] GPU 처리 워커 시작..."
 echo "[Entrypoint] PID: $$"
 echo "[Entrypoint] 명령어: $@"
 echo "========================================"
 
 # 라이센스 자동 활성화 (키가 있고 아직 활성화 안 된 경우)
-if [ -n "$METASHAPE_LICENSE_KEY" ]; then
+if [ -n "${ENGINE_LICENSE_KEY:-${METASHAPE_LICENSE_KEY:-}}" ]; then
     python3 -c "
 import Metashape
 if Metashape.app.activated:
     print('[Entrypoint] 라이센스 이미 활성화됨')
 else:
     import os
-    key = os.environ.get('METASHAPE_LICENSE_KEY', '')
+    key = os.environ.get('ENGINE_LICENSE_KEY') or os.environ.get('METASHAPE_LICENSE_KEY', '')
     try:
         Metashape.License().activate(key)
         print('[Entrypoint] 라이센스 활성화 완료')

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, useMap, ImageOverlay } from 'react-leaflet';
 import L from 'leaflet';
-import { Loader2, Camera, Layers, Map as MapIcon, Crosshair, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Camera, Layers, Map as MapIcon, Crosshair, Eye, EyeOff, AlertTriangle } from 'lucide-react';
 import { TiTilerOrthoLayer, RegionBoundaryLayer, MapPanes } from '../Dashboard/FootprintMap';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 import api from '../../api/client';
@@ -42,7 +42,29 @@ function MapRefSetter({ mapRef }) {
     return null;
 }
 
-export default function ProjectMap({ project, isProcessingMode, selectedImageId, onSelectImage }) {
+const normalizeImageKey = (value) => {
+    const basename = String(value || '').split(/[\\/]/).pop();
+    return basename.replace(/\.[^.]+$/, '').trim().toLowerCase();
+};
+
+const getProcessingExcludedImageKeys = (events = []) => {
+    const keys = new Set();
+    events.forEach((event) => {
+        const level = String(event?.level || '').toLowerCase();
+        const message = String(event?.message || '');
+        if (!['warning', 'warn', 'error'].includes(level) && !message.includes('이미지 제외')) return;
+        if (!message.includes('이미지 제외') && !message.includes('처리 제외')) return;
+
+        const directFilename = event?.filename;
+        const filenameMatch = message.match(/([^\s:]+?\.(?:tif|tiff|jpg|jpeg|png))\b/i);
+        const filename = directFilename || filenameMatch?.[1];
+        const key = normalizeImageKey(filename);
+        if (key) keys.add(key);
+    });
+    return keys;
+};
+
+export default function ProjectMap({ project, isProcessingMode, selectedImageId, processingEvents = [], onSelectImage }) {
     const [isLoading, setIsLoading] = useState(false);
     const mapRef = React.useRef(null);
     // 온디맨드 썸네일: { imageId -> url }
@@ -110,12 +132,29 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
         }
     }, [project?.id, project?.ortho_path]);
 
+    const processingExcludedImageKeys = useMemo(
+        () => getProcessingExcludedImageKeys(processingEvents),
+        [processingEvents]
+    );
+
     const images = useMemo(() => {
         if (!project?.images) return [];
-        const filtered = project.images.filter(img => img.hasEo);
+        const filtered = project.images
+            .filter(img => img.hasEo)
+            .map((img) => {
+                const excludedByUpload = img.upload_status === 'excluded' || img.status === 'excluded';
+                const excludedByProcessing = processingExcludedImageKeys.has(normalizeImageKey(img.name || img.filename));
+                return {
+                    ...img,
+                    eoExcluded: excludedByUpload || excludedByProcessing,
+                    eoExcludedReason: excludedByProcessing
+                        ? '처리 중 이미지 로딩 오류로 제외됨'
+                        : (excludedByUpload ? (img.validation_error || '업로드 검증에서 처리 제외됨') : null),
+                };
+            });
         console.log('[ProjectMap] project.images:', project.images.length, 'with EO:', filtered.length);
         return filtered;
-    }, [project]);
+    }, [project, processingExcludedImageKeys]);
 
     if (!project) return (
         <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 map-grid text-slate-400">
@@ -176,16 +215,22 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
 
                 {(images.length > 0 || project?.bounds) && <FitBounds images={images} projectBounds={project?.bounds} projectId={project?.id} maxZoom={tileConfig.maxZoom} />}
 
-                {showEoPoints && images.map(img => (
+                {showEoPoints && images.map(img => {
+                    const isSelected = img.id === selectedImageId;
+                    const isExcluded = Boolean(img.eoExcluded);
+                    const markerColor = isSelected ? '#7c3aed' : (isExcluded ? '#475569' : (isProcessingMode ? '#ea580c' : '#dc2626'));
+                    const markerFill = isSelected ? '#a78bfa' : (isExcluded ? '#94a3b8' : (isProcessingMode ? '#fb923c' : '#ef4444'));
+                    return (
                     <CircleMarker
                         key={img.id}
                         center={[img.wy, img.wx]}
-                        radius={isProcessingMode ? 8 : (img.id === selectedImageId ? 16 : 12)}
+                        radius={isSelected ? 16 : (isProcessingMode ? 8 : 12)}
                         pathOptions={{
-                            color: img.id === selectedImageId ? '#7c3aed' : (isProcessingMode ? '#ea580c' : '#dc2626'),
-                            fillColor: img.id === selectedImageId ? '#a78bfa' : (isProcessingMode ? '#fb923c' : '#ef4444'),
-                            fillOpacity: 0.9,
-                            weight: 4
+                            color: markerColor,
+                            fillColor: markerFill,
+                            fillOpacity: isExcluded ? 0.95 : 0.9,
+                            weight: isExcluded ? 5 : 4,
+                            dashArray: isExcluded ? '5 3' : null,
                         }}
                         eventHandlers={{
                             click: (e) => {
@@ -200,6 +245,12 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
                             <div className="text-xs">
                                 <strong className="block mb-1">{img.name}</strong>
+                                {isExcluded && (
+                                    <div className="text-slate-700 font-bold flex items-center gap-1">
+                                        <AlertTriangle size={12} />
+                                        처리 제외됨
+                                    </div>
+                                )}
                                 <div className="text-slate-500">
                                     {img.wy?.toFixed(4)}, {img.wx?.toFixed(4)}
                                     {img.z != null && ` · ${parseFloat(img.z).toFixed(0)}m`}
@@ -240,6 +291,12 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                                     )}
                                 </div>
                                 <strong className="block text-sm text-slate-800 mb-2 truncate" title={img.name}>{img.name}</strong>
+                                {isExcluded && (
+                                    <div className="mb-2 rounded-md border border-slate-200 bg-slate-100 px-2 py-1.5 text-[11px] text-slate-700 flex items-start gap-1.5">
+                                        <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                                        <span>{img.eoExcludedReason || '처리에 사용되지 않는 이미지입니다.'}</span>
+                                    </div>
+                                )}
                                 <div className="grid grid-cols-3 gap-1.5 text-xs border-t border-slate-200 pt-2 mb-2">
                                     <div className="text-center bg-slate-50 rounded p-1.5">
                                         <span className="text-slate-400 block text-[10px]">Lat</span>
@@ -271,7 +328,8 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                             </div>
                         </Popup>
                     </CircleMarker>
-                ))}
+                    );
+                })}
             </MapContainer>
 
             {/* 우측 상단 플로팅 버튼 그룹 */}

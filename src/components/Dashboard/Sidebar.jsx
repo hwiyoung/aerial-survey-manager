@@ -2,9 +2,11 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
     UploadCloud, FolderPlus, Search, CheckSquare, Square,
     ChevronRight, ChevronDown, MoreHorizontal, Edit2, Trash2,
-    Play, Download, FileImage, Eye, Loader2
+    Play, Download, FileImage, Eye, Loader2, Clock,
+    Activity, HardDrive
 } from 'lucide-react';
 import api from '../../api/client';
+import { formatKstDateTime, formatKstTime, parseBackendDate } from '../../utils/dateTime';
 
 // Export Raster는 COG 변환에 합쳐서 표시 (내부 동작은 별개이나 UI에서는 하나로)
 const DISPLAY_STEPS = [
@@ -14,10 +16,11 @@ const DISPLAY_STEPS = [
     { key: 'Build Orthomosaic', label: '정사모자이크' },
     { key: 'Convert COG',       label: 'COG 변환', mergeKeys: ['Export Raster', 'Convert COG'] },
 ];
+const RESOURCE_POLL_MS = 1000;
 
 function mergedProgress(stepStatus, keys) {
     const values = keys.map(k => stepStatus[k]).filter(v => v !== undefined);
-    if (values.length === 0) return undefined;
+    if (values.length === 0) return 0;
     if (values.some(v => v >= 1000)) return 1000; // 하나라도 에러면 에러
     if (values.every(v => v >= 99.9)) return 100;  // 모두 완료
     // 진행 중인 값 중 최대값 반환
@@ -46,8 +49,7 @@ function ProcessingSteps({ projectId }) {
             {DISPLAY_STEPS.map(({ key, label, mergeKeys }) => {
                 const progress = mergeKeys
                     ? mergedProgress(stepStatus, mergeKeys)
-                    : stepStatus[key];
-                if (progress === undefined) return null;
+                    : (stepStatus[key] ?? 0);
                 const isDone = progress >= 99.9 && progress < 1000;
                 const isError = progress >= 1000;
                 const isActive = progress > 0 && progress < 99.9 && !isError;
@@ -74,6 +76,247 @@ function ProcessingSteps({ projectId }) {
                     </div>
                 );
             })}
+        </div>
+    );
+}
+
+function formatPercent(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+    return `${Math.round(Number(value))}%`;
+}
+
+function formatBytes(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = Number(value);
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+    }
+    const digits = size >= 100 || unitIndex === 0 ? 0 : 1;
+    return `${size.toFixed(digits)}${units[unitIndex]}`;
+}
+
+function formatDateTime(value) {
+    return formatKstDateTime(value, { withYear: false }) || '-';
+}
+
+function formatSidebarTime(value) {
+    const date = parseBackendDate(value);
+    if (!date) return '';
+    return date.toLocaleTimeString('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
+function kstDateKey(value) {
+    const date = parseBackendDate(value);
+    if (!date) return '';
+    return date.toLocaleDateString('en-CA', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    });
+}
+
+function formatProcessingRange(project) {
+    const startedAt = project.processingStartedAt || project.processing_started_at;
+    const completedAt = project.processingCompletedAt || project.processing_completed_at;
+    if (!startedAt && !completedAt) return '';
+
+    if (startedAt && completedAt) {
+        const startLabel = project.processingStartedAtDisplay || formatDateTime(startedAt);
+        const completedLabel = kstDateKey(startedAt) === kstDateKey(completedAt)
+            ? formatSidebarTime(completedAt)
+            : (project.processingCompletedAtDisplay || formatDateTime(completedAt));
+        return `시작 ${startLabel} · 완료 ${completedLabel}`;
+    }
+
+    if (startedAt) return `시작 ${project.processingStartedAtDisplay || formatDateTime(startedAt)}`;
+    return `완료 ${project.processingCompletedAtDisplay || formatDateTime(completedAt)}`;
+}
+
+function statusClasses(status) {
+    switch (status) {
+        case 'ok':
+            return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+        case 'warning':
+            return 'bg-amber-50 text-amber-700 border-amber-100';
+        case 'critical':
+            return 'bg-red-50 text-red-700 border-red-100';
+        default:
+            return 'bg-slate-50 text-slate-500 border-slate-100';
+    }
+}
+
+function statusDotClass(status) {
+    switch (status) {
+        case 'ok':
+            return 'bg-emerald-500';
+        case 'warning':
+            return 'bg-amber-500';
+        case 'critical':
+            return 'bg-red-500';
+        default:
+            return 'bg-slate-300';
+    }
+}
+
+function compactGpuName(name) {
+    if (!name) return 'GPU';
+    return name
+        .replace(/^NVIDIA\s+/i, '')
+        .replace(/^GeForce\s+/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function summarizeGpu(devices = []) {
+    if (!Array.isArray(devices) || devices.length === 0) {
+        return { value: '확인중', detail: 'GPU 상태 대기' };
+    }
+    const names = devices.map((device) => compactGpuName(device.name));
+    const uniqueNames = [...new Set(names)];
+    const value = uniqueNames.length === 1
+        ? `${devices.length}x ${uniqueNames[0]}`
+        : `${devices.length} GPU`;
+    const totalMemory = devices.reduce((sum, device) => sum + (Number(device.memory_total_bytes) || 0), 0);
+    const usedMemory = devices.reduce((sum, device) => sum + (Number(device.memory_used_bytes) || 0), 0);
+    const utilizations = devices
+        .map((device) => Number(device.utilization_percent))
+        .filter((value) => !Number.isNaN(value));
+    const temperatures = devices
+        .map((device) => Number(device.temperature_c))
+        .filter((value) => !Number.isNaN(value));
+    const avgUtilization = utilizations.length
+        ? utilizations.reduce((sum, value) => sum + value, 0) / utilizations.length
+        : null;
+    const maxTemperature = temperatures.length ? Math.max(...temperatures) : null;
+    const detailParts = [];
+    if (avgUtilization !== null) detailParts.push(`사용 ${formatPercent(avgUtilization)}`);
+    if (totalMemory > 0) detailParts.push(`VRAM ${formatBytes(usedMemory)} / ${formatBytes(totalMemory)}`);
+    if (maxTemperature !== null) detailParts.push(`${Math.round(maxTemperature)}°C`);
+    const detail = detailParts.length ? detailParts.join(' · ') : uniqueNames.join(', ');
+    return { value, detail };
+}
+
+function ResourceStatusTile({ icon: Icon, label, value, detail, status, title }) {
+    return (
+        <div className={`min-w-0 rounded-md border px-2 py-1.5 ${statusClasses(status)}`} title={title}>
+            <div className="flex items-center gap-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(status)}`} />
+                <Icon size={13} className="shrink-0" />
+                <span className="text-[10px] font-semibold truncate">{label}</span>
+            </div>
+            <div className="mt-0.5 text-[11px] font-bold leading-tight truncate">{value}</div>
+            {detail && <div className="text-[10px] leading-tight opacity-80 truncate">{detail}</div>}
+        </div>
+    );
+}
+
+function ResourceStatusPanel() {
+    const [status, setStatus] = useState(null);
+    const [error, setError] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+    const inFlightRef = useRef(false);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchStatus = () => {
+            if (inFlightRef.current) return;
+            inFlightRef.current = true;
+            if (!cancelled) setRefreshing(true);
+            api.getSystemResources()
+                .then((data) => {
+                    if (cancelled) return;
+                    setStatus(data);
+                    setError(false);
+                })
+                .catch(() => {
+                    if (cancelled) return;
+                    setError(true);
+                })
+                .finally(() => {
+                    inFlightRef.current = false;
+                    if (!cancelled) setRefreshing(false);
+                });
+        };
+
+        fetchStatus();
+        const intervalId = setInterval(fetchStatus, RESOURCE_POLL_MS);
+        return () => {
+            cancelled = true;
+            clearInterval(intervalId);
+        };
+    }, []);
+
+    const storageSummary = useMemo(() => {
+        const entries = status?.storage || [];
+        if (entries.length === 0) return null;
+        const ranked = entries
+            .filter((entry) => typeof entry.available_bytes === 'number')
+            .sort((a, b) => a.available_bytes - b.available_bytes);
+        return ranked[0] || entries[0];
+    }, [status]);
+
+    if (error && !status) {
+        return (
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                시스템 상태 확인 실패
+            </div>
+        );
+    }
+
+    const gpu = status?.gpu || {};
+    const gpuSummary = gpu.status === 'critical' && (!gpu.devices || gpu.devices.length === 0)
+        ? { value: '오류', detail: gpu.message || 'nvidia-smi 실패' }
+        : gpu.available === false
+            ? { value: '미감지', detail: gpu.message || 'GPU 상태 확인 불가' }
+        : summarizeGpu(gpu.devices);
+    const storageValue = `여유 ${formatBytes(storageSummary?.available_bytes)}`;
+    const storageDetail = storageSummary ? `${storageSummary.label} ${formatPercent(storageSummary.available_percent)}` : null;
+    const updatedAt = formatKstTime(status?.timestamp);
+    const gpuStatus = gpu.stale ? 'warning' : gpu.status;
+    const gpuTitle = [
+        gpu.message || 'GPU 상태',
+        gpu.source ? `source: ${gpu.source}` : null,
+        gpu.checked_at ? `checked: ${formatKstTime(gpu.checked_at)}` : null,
+        gpu.stale ? 'stale' : null,
+    ].filter(Boolean).join(' / ');
+
+    return (
+        <div className="space-y-2">
+            <div className="flex items-center justify-between text-[10px] text-slate-400">
+                <span>리소스 상태</span>
+                <span>{refreshing ? '갱신 중' : '1초 갱신'} · {updatedAt}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+                <ResourceStatusTile
+                    icon={Activity}
+                    label="GPU"
+                    value={gpuSummary.value}
+                    detail={gpuSummary.detail}
+                    status={gpuStatus}
+                    title={gpuTitle}
+                />
+                <ResourceStatusTile
+                    icon={HardDrive}
+                    label="저장"
+                    value={storageValue}
+                    detail={storageDetail}
+                    status={storageSummary?.status}
+                    title={storageSummary ? `${storageSummary.label}: ${storageSummary.path}` : '저장공간 상태'}
+                />
+            </div>
+            {error && (
+                <div className="text-[10px] text-amber-600">최근 상태 갱신에 실패했습니다.</div>
+            )}
         </div>
     );
 }
@@ -268,6 +511,7 @@ export function ProjectItem({
     }
 
     if (sizeMode === 'expanded') {
+        const processingRangeLabel = formatProcessingRange(project);
         return (
             <div onClick={handleClick} onDoubleClick={handleDoubleClick} draggable={draggable} onDragStart={handleDragStart} className={`relative p-3 rounded-lg cursor-pointer transition-all border group ${isSelected ? "bg-blue-50 border-blue-200 shadow-sm z-10" : "bg-white hover:bg-slate-50 border-transparent"}`}>
                 <div className="flex items-center gap-3">
@@ -275,14 +519,21 @@ export function ProjectItem({
                     {isEditing ? (
                         <input autoFocus value={editValue} onClick={e => e.stopPropagation()} onChange={e => setEditValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(e); if (e.key === 'Escape') handleRenameCancel(e); }} onBlur={handleRenameSubmit} className="text-sm font-bold border rounded px-1 flex-1 min-w-0" />
                     ) : (
-                        <h4 className="text-sm font-bold text-slate-800 truncate min-w-0 max-w-[200px]">{project.title}</h4>
+                        <h4 className="text-sm font-bold text-slate-800 truncate min-w-[120px] max-w-[220px]" title={project.title}>{project.title}</h4>
                     )}
-                    <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap min-w-0">
                         <span className="bg-slate-100 px-1.5 py-0.5 rounded">{project.region}</span>
                         <span className="text-slate-300">|</span>
                         <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
                         {project.area && <><span className="text-slate-300">|</span><span className="font-bold text-blue-600"> {project.area.toFixed(2)} km²</span></>}
-                        {project.completedDate && <><span className="text-slate-300">|</span><span>📅 {project.completedDate}</span></>}
+                        {processingRangeLabel && (
+                            <>
+                                <span className="text-slate-300">|</span>
+                                <span className="flex items-center gap-1 whitespace-nowrap">
+                                    <Clock size={12} /> {processingRangeLabel}
+                                </span>
+                            </>
+                        )}
                     </div>
                     <div className="flex-1" />
                     {(() => {
@@ -294,10 +545,10 @@ export function ProjectItem({
                             </span>
                         );
                     })()}
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                    {canEditProject && <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="이름 변경"><Edit2 size={14} /></button>}
-                    {canDeleteProject && <button onClick={handleDelete} className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all shrink-0" title="프로젝트 삭제"><Trash2 size={14} /></button>}
-                </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                        {canEditProject && <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="이름 변경"><Edit2 size={14} /></button>}
+                        {canDeleteProject && <button onClick={handleDelete} className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-all shrink-0" title="프로젝트 삭제"><Trash2 size={14} /></button>}
+                    </div>
                 </div>
                 {(project.status === '진행중' || project.status === 'processing') && (
                     <div className="mt-2 ml-8">
@@ -348,13 +599,13 @@ export function ProjectItem({
             <div className="flex items-start gap-3">
                 <div onClick={(e) => { e.stopPropagation(); onToggle(); }} className="mt-1 text-slate-400 hover:text-blue-600 cursor-pointer">{isChecked ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}</div>
                 <div className="flex-1 min-w-0">
-                    <div className="flex justify-between items-start">
+                    <div className="flex justify-between items-start gap-2">
                         {isEditing ? (
                             <input autoFocus value={editValue} onClick={e => e.stopPropagation()} onChange={e => setEditValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(e); if (e.key === 'Escape') handleRenameCancel(e); }} onBlur={handleRenameSubmit} className="text-sm font-bold border rounded px-1 flex-1 min-w-0 mr-2" />
                         ) : (
-                            <h4 className="text-sm font-bold text-slate-800 truncate">{project.title}</h4>
+                            <h4 className="text-sm font-bold text-slate-800 leading-snug flex-1 min-w-0 break-words [overflow-wrap:anywhere]" title={project.title}>{project.title}</h4>
                         )}
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                             {(() => {
                                 const statusInfo = getProjectStatusDisplay(project);
                                 return (
@@ -685,6 +936,7 @@ export default function Sidebar({
                     <option value="ALL">전체 권역</option>
                     {REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
+                <ResourceStatusPanel />
             </div>
             <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 bg-slate-50 text-xs font-bold text-slate-500">
                 <button onClick={handleToggleAll} className="flex items-center gap-2 hover:text-blue-600 transition-colors">

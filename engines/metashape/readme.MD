@@ -1,6 +1,6 @@
-# Metashape Processing Engine
+# GPU Processing Engine
 
-항공측량 매니저 플랫폼의 고성능 정사영상 처리 엔진입니다. Agisoft Metashape Professional Python SDK를 기반으로 동작합니다.
+항공측량 매니저 플랫폼의 고성능 정사영상 처리 엔진입니다. 전용 GPU 처리 런타임을 기반으로 동작합니다.
 
 ## 🚀 Key Features
 - **GPU Acceleration**: NVIDIA CUDA 가속을 통한 고속 매칭 및 포인트 클라우드 생성
@@ -13,7 +13,7 @@
 `.env` 파일에 라이선스 키 및 하드웨어 설정을 입력합니다.
 
 ```env
-METASHAPE_LICENSE_KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+ENGINE_LICENSE_KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
 ```
 
 ### 2. License Activation
@@ -34,7 +34,7 @@ docker exec aerial-worker-engine python3 -c "import Metashape; print(Metashape.L
 
 ## 📁 Structure
 - `dags/`: Airflow 호환용 DAG 파일 (Celery Worker에서도 공유됨)
-- `dags/metashape/`: 실제 Metashape 처리 로직 및 공통 유틸리티
+- `dags/metashape/`: 실제 처리 로직 및 공통 유틸리티
 - `Dockerfile`: 개발용 이미지 (CUDA 12.0 기반)
 - `Dockerfile.prod`: 배포용 이미지 (.pyc 컴파일, 소스 코드 제거)
 
@@ -52,6 +52,6 @@ docker run --rm aerial-prod-worker-engine:latest \
 > 배포 패키지 빌드: `./scripts/build-release.sh v1.0.x`
 
 ## ⚠️ Notes
-- Metashape 2.2.0 버전을 사용하며, 라이선스 체크 시 `.valid` 속성을 사용합니다.
+- 처리 런타임의 라이선스 체크 시 `.valid` 속성을 사용합니다.
 - 라이선스 파일은 `/var/tmp/agisoft/licensing` 경로에 저장되도록 설정되어 있습니다.
 - 배포 환경에서는 `.pyc` 확장자로 스크립트를 실행해야 합니다.

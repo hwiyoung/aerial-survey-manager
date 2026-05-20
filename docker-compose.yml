@@ -1,8 +1,6 @@
 # Aerial Survey Manager - Docker Compose Configuration
 # 온프레미스 배포용
 
-version: '3.8'
-
 # 공통 로그 설정 (디스크 용량 관리)
 x-logging: &default-logging
   driver: "json-file"
@@ -63,7 +61,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
-      - ENABLE_METASHAPE_ENGINE=${ENABLE_METASHAPE_ENGINE:-true}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
@@ -185,13 +183,13 @@ services:
       context: .
       dockerfile: engines/metashape/Dockerfile
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info --concurrency=1 -n worker-engine@%h
+    command: celery -A app.workers.tasks worker -Q ${PROCESSING_ENGINE_QUEUE:-gpu-engine} --loglevel=info --concurrency=1 -n worker-engine@%h
     restart: always
     # Graceful shutdown (라이센스는 유지됨 - 오프라인 환경 지원)
     stop_signal: SIGTERM
     stop_grace_period: 120s
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-engine@$$HOSTNAME --timeout 20 | grep -q pong || exit 1"]
+      test: ["CMD-SHELL", "nvidia-smi -L >/dev/null 2>&1 && celery -A app.workers.tasks inspect ping -d worker-engine@$$HOSTNAME --timeout 20 | grep -q pong || exit 1"]
       interval: 120s
       timeout: 30s
       retries: 5
@@ -206,6 +204,8 @@ services:
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
@@ -215,7 +215,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
-      - METASHAPE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
+      - ENGINE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
@@ -223,7 +223,8 @@ services:
       - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
       - PROCESSING_MEMORY_WARN_MB=${PROCESSING_MEMORY_WARN_MB:-8192}
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
-      - ENABLE_METASHAPE_ENGINE=${ENABLE_METASHAPE_ENGINE:-true}
+      - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
@@ -344,7 +345,8 @@ services:
       - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
       - PROCESSING_MEMORY_WARN_MB=${PROCESSING_MEMORY_WARN_MB:-8192}
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
-      - ENABLE_METASHAPE_ENGINE=${ENABLE_METASHAPE_ENGINE:-true}
+      - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:

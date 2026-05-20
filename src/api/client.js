@@ -70,13 +70,20 @@ class ApiClient {
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
+            const detail = errorData.detail;
+            const validationMessage = Array.isArray(detail)
+                ? detail.map((item) => {
+                    const location = Array.isArray(item.loc) ? item.loc.join('.') : item.loc;
+                    return `${location}: ${item.msg}`;
+                }).join('\n')
+                : null;
             const error = new Error(
-                typeof errorData.detail === 'string'
-                    ? errorData.detail
-                    : errorData.detail?.message || `Request failed: ${response.status}`
+                typeof detail === 'string'
+                    ? detail
+                    : detail?.message || validationMessage || `Request failed: ${response.status}`
             );
             error.status = response.status;
-            error.data = errorData.detail;
+            error.data = detail;
             throw error;
         }
 
@@ -448,9 +455,11 @@ class ApiClient {
      */
     async uploadEoData(projectId, file, config = {}) {
         const formData = new FormData();
-        formData.append('file', file);
+        const files = Array.isArray(file) ? file : [file];
+        files.forEach((item) => formData.append('files', item));
+        formData.append('config', JSON.stringify(config));
 
-        return this.request(`/projects/${projectId}/eo?config=${encodeURIComponent(JSON.stringify(config))}`, {
+        return this.request(`/projects/${projectId}/eo`, {
             method: 'POST',
             body: formData,
         });
@@ -525,6 +534,15 @@ class ApiClient {
         return this.request(`/projects/stats/storage${query}`);
     }
 
+    async getSystemResources() {
+        return this.request(`/system/resources?t=${Date.now()}`, {
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-store',
+            },
+        });
+    }
+
     // --- 도엽 (Map Sheets) ---
     async getSheetScales() {
         return this.request('/sheets/scales');
@@ -568,42 +586,6 @@ class ApiClient {
     // --- COG/Orthoimage ---
     async getCogUrl(projectId) {
         return this.request(`/download/projects/${projectId}/cog-url`);
-    }
-
-    /**
-     * Batch export multiple project orthoimages as a ZIP file (legacy - uses blob)
-     * @param {string[]} projectIds - Array of project IDs to export
-     * @param {object} options - Export options (format, crs)
-     * @returns {Promise<Blob>} - ZIP file blob for download
-     */
-    async batchExport(projectIds, options = {}) {
-        const url = `${API_BASE}/api/v1/download/batch`;
-        const headers = {
-            'Content-Type': 'application/json',
-        };
-
-        if (this.token) {
-            headers['Authorization'] = `Bearer ${this.token}`;
-        }
-
-        const response = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-                project_ids: projectIds,
-                format: options.format || 'GeoTiff',
-                crs: options.crs || 'EPSG:5186',
-                gsd: options.gsd ? parseFloat(options.gsd) : null,
-                custom_filename: options.custom_filename || null,
-            }),
-        });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || `Batch export failed: ${response.status}`);
-        }
-
-        return response.blob();
     }
 
     /**

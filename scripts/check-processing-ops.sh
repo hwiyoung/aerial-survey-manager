@@ -16,9 +16,9 @@ PASS=0
 WARN=0
 FAIL=0
 
-log_ok() { echo -e "  ${GREEN}✓${NC} $1"; ((PASS++)); }
-log_warn() { echo -e "  ${YELLOW}!${NC} $1"; ((WARN++)); }
-log_fail() { echo -e "  ${RED}✗${NC} $1"; ((FAIL++)); }
+log_ok() { echo -e "  ${GREEN}✓${NC} $1"; ((PASS+=1)); }
+log_warn() { echo -e "  ${YELLOW}!${NC} $1"; ((WARN+=1)); }
+log_fail() { echo -e "  ${RED}✗${NC} $1"; ((FAIL+=1)); }
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
@@ -46,6 +46,15 @@ is_enabled() {
   to_bool "${raw:-}" || return 1
 }
 
+queue_label() {
+  case "$1" in
+    metashape) echo "gpu-engine" ;;
+    odm) echo "odm" ;;
+    external) echo "external" ;;
+    *) echo "$1" ;;
+  esac
+}
+
 compose_file="docker-compose.yml"
 if [ -f "docker-compose.prod.yml" ]; then
   compose_file="docker-compose.prod.yml"
@@ -57,7 +66,13 @@ if ! docker compose -f "$compose_file" version >/dev/null 2>&1; then
   log_warn "현재 docker-compose 파일을 읽을 수 없습니다: $compose_file"
 fi
 
-metashape_flag="$(get_env "ENABLE_METASHAPE_ENGINE")"
+metashape_flag="$(get_env "ENABLE_GPU_ENGINE")"
+if [ -z "$metashape_flag" ]; then
+  metashape_flag="$(get_env "ENABLE_METASHAPE_ENGINE")"
+fi
+metashape_flag="${metashape_flag:-true}"
+processing_queue="$(get_env "PROCESSING_ENGINE_QUEUE")"
+processing_queue="${processing_queue:-gpu-engine}"
 odm_flag="$(get_env "ENABLE_ODM_ENGINE")"
 external_flag="$(get_env "ENABLE_EXTERNAL_ENGINE")"
 external_cog="$(get_env "ENABLE_EXTERNAL_COG_INGEST")"
@@ -86,7 +101,7 @@ if [ -f ".env" ]; then
   external_cog="$external_cog"
 
   if [ -n "${metashape:-}" ] || [ -n "${odm:-}" ] || [ -n "${external:-}" ]; then
-    echo "  metashape=$metashape"
+    echo "  gpu_engine=$metashape"
     echo "  odm=$odm"
     echo "  external=$external"
     echo "  external_cog_ingest=$external_cog"
@@ -150,9 +165,9 @@ echo -e "${BLUE}[3] Queue Backlog Check${NC}"
 if ! docker compose -f "$compose_file" exec -T redis redis-cli ping >/dev/null 2>&1; then
   log_fail "redis ping 실패 (Redis 미기동)"
 else
-  for queue in metashape odm external; do
+  for queue in "$processing_queue" odm external; do
     enabled=true
-    if [ "$queue" = "metashape" ] && ! is_enabled "ENABLE_METASHAPE_ENGINE"; then
+    if [ "$queue" = "$processing_queue" ] && ! to_bool "$metashape_flag"; then
       enabled=false
     fi
     if [ "$queue" = "odm" ] && ! is_enabled "ENABLE_ODM_ENGINE"; then
@@ -163,22 +178,23 @@ else
     fi
 
     if [ "$enabled" = false ]; then
-      if docker compose -f "$compose_file" exec -T redis redis-cli llen "$queue" >/dev/null 2>&1; then
-        log_warn "redis 큐 '$queue'는 비활성 정책이나 잔여 작업이 존재할 수 있습니다"
+      disabled_len="$(docker compose -f "$compose_file" exec -T redis redis-cli llen "$queue" 2>/dev/null || echo 0)"
+      if [ "${disabled_len:-0}" -gt 0 ]; then
+        log_warn "redis 큐 '$(queue_label "$queue")'는 비활성 정책이나 잔여 작업이 존재할 수 있습니다"
       else
-        log_ok "redis 큐 '$queue' 비활성(정책)"
+        log_ok "redis 큐 '$(queue_label "$queue")' 비활성(정책)"
       fi
       continue
     fi
 
     if result="$(docker compose -f "$compose_file" exec -T redis redis-cli llen "$queue" 2>/dev/null)"; then
       if [ "$result" -gt 20 ]; then
-        log_warn "redis 큐 '$queue' 길이: $result (과다)"
+        log_warn "redis 큐 '$(queue_label "$queue")' 길이: $result (과다)"
       else
-        log_ok "redis 큐 '$queue' 길이: $result"
+        log_ok "redis 큐 '$(queue_label "$queue")' 길이: $result"
       fi
     else
-      log_fail "redis 큐 '$queue' 조회 실패 (Redis 미기동 또는 queue 없음)"
+      log_fail "redis 큐 '$(queue_label "$queue")' 조회 실패 (Redis 미기동 또는 queue 없음)"
     fi
   done
 fi
@@ -187,7 +203,7 @@ echo ""
 # 4) 워커/서비스 상태 확인
 echo -e "${BLUE}[4] Service / Worker State${NC}"
 services="$(docker compose -f "$compose_file" ps --services 2>/dev/null || true)"
-for svc in backend worker-engine; do
+for svc in api worker-engine; do
   if echo "$services" | grep -q "^$svc$"; then
     status="$(docker compose -f "$compose_file" ps "$svc" --format "{{.State}}" 2>/dev/null | tr -d '[:space:]')"
     if [ "$status" = "running" ] || [ "$status" = "Up" ] || [[ "$status" == "Up"* ]]; then
@@ -211,17 +227,17 @@ elif is_enabled "ENABLE_ODM_ENGINE"; then
   log_fail "service worker-odm: 미정의인데 ODM이 ON"
 fi
 
-if docker compose -f "$compose_file" exec -T backend celery -A app.workers.tasks inspect ping >/dev/null 2>&1; then
-  log_ok "celery ping (backend)"
+if docker compose -f "$compose_file" exec -T api celery -A app.workers.tasks inspect ping >/dev/null 2>&1; then
+  log_ok "celery ping (api)"
 else
-  log_warn "celery ping 실패 (backend or worker 미연결)"
+  log_warn "celery ping 실패 (api or worker 미연결)"
 fi
 echo ""
 
 # 5) 정책 불일치 가이드
 echo -e "${BLUE}[5] Policy mismatch quick hints${NC}"
 if [ "${metashape:-}" = "false" ] && [ "$FAIL" -eq 0 ]; then
-  echo "  메타스페이스 비활성화: worker-engine이 실행되지 않아도 정책 위반은 아닙니다."
+  echo "  GPU 처리 엔진 비활성화: worker-engine이 실행되지 않아도 정책 위반은 아닙니다."
 fi
 if [ "${external:-}" = "true" ] && [ "${odm:-}" = "false" ]; then
   echo "  external만 활성일 경우 external 큐/worker 조합을 별도 점검하세요."

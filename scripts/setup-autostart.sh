@@ -9,16 +9,16 @@ set -e
 echo "=== Docker 서비스 자동 시작 설정 ==="
 
 # 1. Docker 서비스 활성화
-echo "[1/4] Docker 서비스 시스템 시작 시 자동 실행 설정..."
+echo "[1/5] Docker 서비스 시스템 시작 시 자동 실행 설정..."
 sudo systemctl enable docker
 sudo systemctl enable containerd
 
 # 2. Docker 서비스 상태 확인
-echo "[2/4] Docker 서비스 상태 확인..."
+echo "[2/5] Docker 서비스 상태 확인..."
 sudo systemctl status docker --no-pager || true
 
 # 3. docker-compose 파일의 restart 정책 확인
-echo "[3/4] docker-compose restart 정책 확인..."
+echo "[3/5] docker-compose restart 정책 확인..."
 # Compose 파일 자동 감지 (개발환경: docker-compose.prod.yml 우선, 배포 패키지: docker-compose.yml)
 if [ -n "$1" ]; then
     COMPOSE_FILE="$1"
@@ -39,8 +39,18 @@ else
     echo "  $COMPOSE_FILE 파일을 찾을 수 없습니다."
 fi
 
-# 4. 현재 컨테이너 상태
-echo "[4/4] 현재 컨테이너 상태..."
+# 4. NVIDIA Persistence Mode 자동화
+echo "[4/5] NVIDIA Persistence Mode 설정..."
+if command -v nvidia-smi >/dev/null 2>&1; then
+    sudo systemctl enable --now nvidia-persistenced 2>/dev/null || true
+    sudo nvidia-smi -pm 1 || true
+    echo "  NVIDIA Persistence Mode 설정 시도 완료"
+else
+    echo "  nvidia-smi를 찾지 못했습니다. GPU 없는 장비면 무시해도 됩니다."
+fi
+
+# 5. 현재 컨테이너 상태
+echo "[5/5] 현재 컨테이너 상태..."
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | head -20 || echo "Docker가 실행 중이 아닙니다."
 
 echo ""
