@@ -29,7 +29,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         return allProjects.filter(p => targetProjectIds.includes(p.id));
     }, [allProjects, targetProjectIds]);
 
-    // Metashape build orthomosaic의 result_gsd 값을 직접 사용
+    // 처리 엔진의 result_gsd 값을 직접 사용
     const resultGsd = useMemo(() => {
         if (targets.length === 1) {
             const project = targets[0];

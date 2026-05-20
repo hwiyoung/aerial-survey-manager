@@ -16,6 +16,7 @@ from app.api.v1.regions import router as regions_router
 from app.api.v1.storage_files import router as storage_files_router
 from app.api.v1.filesystem import router as filesystem_router
 from app.api.v1.sheets import router as sheets_router
+from app.api.v1.system import router as system_router
 
 router = APIRouter()
 
@@ -34,3 +35,4 @@ router.include_router(regions_router)
 router.include_router(storage_files_router)
 router.include_router(filesystem_router)
 router.include_router(sheets_router)
+router.include_router(system_router)

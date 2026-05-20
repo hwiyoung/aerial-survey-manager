@@ -1,9 +1,10 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye } from 'lucide-react';
+import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye, Clock } from 'lucide-react';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
 import { api } from '../../api/client';
 import { formatBytesValue as formatBytes, formatBytesUnit } from '../../utils/formatting';
+import { formatKstDate, formatKstDateTime } from '../../utils/dateTime';
 
 // Month names for chart display
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -11,7 +12,7 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 /**
  * Enhanced Stats Card for dashboard - larger with more details
  */
-function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, progressLabel, progressColor, children }) {
+function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, progressLabel, progressColor, valueClassName = 'text-2xl', children }) {
     return (
         <div className="bg-white rounded-xl p-4 shadow-sm border border-slate-100">
             <div className="flex items-start gap-3">
@@ -23,7 +24,7 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
                 <div className="flex-1 min-w-0">
                     <p className="text-xs text-slate-500 mb-1">{label}</p>
                     <div className="flex items-baseline gap-1">
-                        <span className="text-2xl font-bold text-slate-800">{value}</span>
+                        <span className={`${valueClassName} font-bold text-slate-800`}>{value}</span>
                         {unit && <span className="text-sm text-slate-500">{unit}</span>}
                     </div>
                     {subLabel && <p className="text-xs text-slate-400 mt-1">{subLabel}</p>}
@@ -175,6 +176,10 @@ function ProjectDetailView({ project, onBack }) {
         '대기': 'bg-slate-100 text-slate-600',
         '오류': 'bg-red-100 text-red-700'
     }[project.status] || 'bg-slate-100 text-slate-600';
+    const processingStartedAt = project.processingStartedAt || project.processing_started_at;
+    const processingCompletedAt = project.processingCompletedAt || project.processing_completed_at;
+    const processingStartedLabel = project.processingStartedAtDisplay || formatKstDateTime(processingStartedAt);
+    const processingCompletedLabel = project.processingCompletedAtDisplay || formatKstDateTime(processingCompletedAt);
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -231,8 +236,21 @@ function ProjectDetailView({ project, onBack }) {
                 />
                 <DashboardStatsCard
                     icon={<FolderCheck size={18} />}
-                    value={project.created_at ? new Date(project.created_at).toLocaleDateString() : '-'}
+                    value={project.createdDate || formatKstDate(project.created_at) || '-'}
                     label="생성일"
+                />
+                <DashboardStatsCard
+                    icon={<Clock size={18} />}
+                    value={processingStartedAt ? processingStartedLabel : '-'}
+                    label="처리 시작"
+                    valueClassName="text-sm"
+                />
+                <DashboardStatsCard
+                    icon={<FolderCheck size={18} />}
+                    value={processingCompletedAt ? processingCompletedLabel : '-'}
+                    label="처리 완료"
+                    subLabel={project.processingDurationDisplay ? `소요 ${project.processingDurationDisplay}` : undefined}
+                    valueClassName="text-sm"
                 />
             </div>
 

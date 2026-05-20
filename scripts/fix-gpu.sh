@@ -16,8 +16,11 @@ if nvidia-smi &>/dev/null; then
     nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 else
     echo "❌ 호스트에서 GPU를 인식하지 못합니다."
-    echo "   NVIDIA 드라이버 설치가 필요합니다."
-    echo "   실행: sudo apt-get install -y nvidia-driver-535 && sudo reboot"
+    echo "   드라이버와 현재 커널 모듈 상태를 확인하세요."
+    echo "   권장:"
+    echo "     ubuntu-drivers devices"
+    echo "     sudo ubuntu-drivers install"
+    echo "     sudo reboot"
     exit 1
 fi
 
@@ -62,15 +65,19 @@ fi
 # 4. worker-engine 재시작
 echo ""
 echo "[4/4] 처리 엔진 재시작..."
-COMPOSE_DIR=$(find / -name "docker-compose.yml" -path "*/aerial-survey*" -not -path "*/engines/*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
-if [ -n "$COMPOSE_DIR" ]; then
-    cd "$COMPOSE_DIR"
-    docker compose restart worker-engine
-    echo "✅ worker-engine 재시작 완료"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$SCRIPT_DIR"
+if [ -f docker-compose.prod.yml ]; then
+    COMPOSE_ARGS=(-f docker-compose.prod.yml)
+elif [ -f docker-compose.yml ]; then
+    COMPOSE_ARGS=(-f docker-compose.yml)
 else
-    echo "⚠️  docker-compose.yml 경로를 찾지 못했습니다."
-    echo "   설치 경로에서 직접 실행해주세요: docker compose restart worker-engine"
+    echo "⚠️  docker-compose 파일을 찾지 못했습니다."
+    exit 1
 fi
+
+docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps worker-engine
+echo "✅ worker-engine 재생성 완료"
 
 # 5. 최종 확인
 echo ""

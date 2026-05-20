@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 
 class PresetOptionsSchema(BaseModel):
     """Processing options that can be saved in a preset."""
-    engine: str = "metashape"  # metashape only
+    engine: str = "metashape"  # default GPU processing engine
     gsd: float = 5.0  # cm/pixel
-    process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
+    process_mode: str = "Normal"  # Preview, Normal, High
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
     eo_only_align: bool = True  # EO reference와 매칭된 이미지만 정합

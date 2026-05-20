@@ -22,8 +22,6 @@
 #   자세한 내용: docs/DEPLOYMENT_GUIDE.md
 #
 
-version: '3.8'
-
 # 공통 로그 설정
 x-logging: &default-logging
   driver: "json-file"
@@ -73,24 +71,44 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
+      - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
+      - AUTO_EXPORT_ENABLED=${AUTO_EXPORT_ENABLED:-false}
+      - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
+      - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
+      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
+      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
     volumes:
       # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
+      - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
+      - ${TILES_PATH:-${AERIAL_DATA_ROOT:-./data}/tiles}:/data/tiles:ro
       # 권역 GeoJSON 데이터 (초기 시드용)
       - ./data:/app/data:ro
       # 호스트 파일시스템 탐색용 (이미지 업로드 경로 선택)
@@ -108,7 +126,7 @@ services:
     logging: *default-logging
 
   # ============================================================
-  # 처리 엔진 (Metashape)
+  # GPU 처리 엔진
   # ============================================================
   worker-engine:
     container_name: aerial-worker-engine
@@ -116,12 +134,12 @@ services:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q metashape --loglevel=info --concurrency=1 -n worker-engine@%h
+    command: celery -A app.workers.tasks worker -Q ${PROCESSING_ENGINE_QUEUE:-gpu-engine} --loglevel=info --concurrency=1 -n worker-engine@%h
     restart: always
     stop_signal: SIGTERM
     stop_grace_period: 120s
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-engine@$$HOSTNAME --timeout 20 | grep -q pong || exit 1"]
+      test: ["CMD-SHELL", "nvidia-smi -L >/dev/null 2>&1 && celery -A app.workers.tasks inspect ping -d worker-engine@$$HOSTNAME --timeout 20 | grep -q pong || exit 1"]
       interval: 120s
       timeout: 30s
       retries: 5
@@ -134,25 +152,38 @@ services:
               count: all
               capabilities: [gpu]
     environment:
+      - TZ=${TZ:-Asia/Seoul}
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
+      - AUTO_EXPORT_ENABLED=${AUTO_EXPORT_ENABLED:-false}
+      - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
+      - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
-      - METASHAPE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
+      - ENGINE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
+      - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
+      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
+      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       # 프로덕션: 데이터 디렉토리 마운트
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
-      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
+      - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
       - engine-license:/var/tmp/agisoft/licensing
       # 호스트 파일시스템 (이미지 원본 접근)
       - /media:/media:ro,rslave
@@ -179,6 +210,7 @@ services:
     command: celery -A app.workers.tasks beat --loglevel=info
     restart: always
     environment:
+      - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
@@ -205,14 +237,20 @@ services:
       retries: 3
       start_period: 30s
     environment:
+      - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
+      - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
     volumes:
-      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
+      - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
       - /media:/media:ro,rslave
       - /mnt:/mnt:ro
       - /run/media:/run/media:ro
@@ -239,15 +277,21 @@ services:
       retries: 3
       start_period: 30s
     environment:
+      - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
+      - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
     volumes:
-      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage
-      - ${PROCESSING_DATA_PATH:-./data/processing}:/data/processing
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
+      - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
       - /media:/media:ro,rslave
       - /mnt:/mnt:ro
       - /run/media:/run/media:ro
@@ -316,7 +360,7 @@ services:
     ports:
       - "127.0.0.1:9003:9001"  # Console - localhost만 접근 가능
     volumes:
-      - ${MINIO_DATA_PATH:-./data/minio}:/data
+      - ${MINIO_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/minio}:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -342,6 +386,7 @@ services:
         mc mb --ignore-existing myminio/aerial-survey
         mc anonymous set download myminio/aerial-survey/public
         mc anonymous set download myminio/aerial-survey/projects
+        mc anonymous set download myminio/aerial-survey/orthomosaic
         echo "MinIO bucket initialized successfully"
     environment:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -364,7 +409,8 @@ services:
       - AWS_HTTPS=NO
       - AWS_NO_SIGN_REQUEST=NO
     volumes:
-      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage:ro
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage:ro
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic:ro
     networks:
       - aerial-network
     logging: *default-logging
@@ -382,9 +428,10 @@ services:
       - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
       # 오프라인 타일맵 (선택사항 - TILES_PATH 환경변수로 설정)
-      - ${TILES_PATH:-./data/tiles}:/data/tiles:ro
+      - ${TILES_PATH:-${AERIAL_DATA_ROOT:-./data}/tiles}:/data/tiles:ro
       # 로컬 스토리지
-      - ${LOCAL_STORAGE_PATH:-./data/storage}:/data/storage:ro
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage:ro
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic:ro
     depends_on:
       - frontend
       - api
@@ -403,6 +450,7 @@ services:
     command: celery -A app.workers.tasks flower --port=5555
     restart: always
     environment:
+      - TZ=${TZ:-Asia/Seoul}
       - REDIS_URL=redis://redis:6379/0
     # 프로덕션: localhost만 접근 가능
     ports:

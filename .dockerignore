@@ -6,6 +6,8 @@ build
 .env
 data
 logs
+releases
+diagnostics
 venv
 __pycache__
 *.pyc

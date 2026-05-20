@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # 처리 엔진 안전 종료 스크립트
-# docker-compose down 전에 라이센스 비활성화
+# docker-compose down 전에 처리 엔진 라이선스를 비활성화합니다.
 # ============================================================
 
 # Compose 파일 자동 감지 (개발환경: docker-compose.prod.yml 우선, 배포 패키지: docker-compose.yml)
@@ -34,13 +34,20 @@ else
     echo "  워커가 실행 중입니다. (Container ID: $WORKER_STATUS)"
 fi
 
-# 2. 라이센스 비활성화
-echo "[2/4] 처리 엔진 라이센스 비활성화 중..."
+# 2. 라이선스 비활성화
+echo "[2/4] 처리 엔진 라이선스 비활성화 중..."
 if [ -n "$WORKER_STATUS" ]; then
-    # .pyc 우선, .py 폴백
-    docker compose -f "$COMPOSE_FILE" exec -T "$WORKER_SERVICE" \
-        bash -c 'if [ -f /app/engines/metashape/dags/metashape/deactivate.pyc ]; then python3 /app/engines/metashape/dags/metashape/deactivate.pyc; else python3 /app/engines/metashape/dags/metashape/deactivate.py; fi' 2>&1 || \
-        echo "  라이센스 비활성화 실패 (워커가 응답하지 않음)"
+    docker compose -f "$COMPOSE_FILE" exec -T "$WORKER_SERVICE" sh -lc '
+        deactivate_script="$(find /app/engines -path "*/dags/*/deactivate.pyc" -print -quit 2>/dev/null || true)"
+        if [ -z "$deactivate_script" ]; then
+            deactivate_script="$(find /app/engines -path "*/dags/*/deactivate.py" -print -quit 2>/dev/null || true)"
+        fi
+        if [ -n "$deactivate_script" ]; then
+            python3 "$deactivate_script"
+        else
+            echo "  비활성화 스크립트를 찾을 수 없어 스킵합니다."
+        fi
+    ' 2>&1 || echo "  라이선스 비활성화 실패 (워커가 응답하지 않음)"
 else
     echo "  워커가 실행 중이 아니므로 비활성화 스킵"
 fi

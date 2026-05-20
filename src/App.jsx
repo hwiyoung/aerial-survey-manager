@@ -15,6 +15,7 @@ import LoginPage from './components/LoginPage';
 import api from './api/client';
 import S3MultipartUploader from './services/s3Upload';
 import { formatSpeed } from './utils/formatting';
+import { formatDuration, formatKstDate, formatKstDateTime } from './utils/dateTime';
 import { useProcessingProgress } from './hooks/useProcessingProgress';
 import { useAdminPanel } from './hooks/useAdminPanel';
 import { useGroupState } from './hooks/useGroupState';
@@ -70,9 +71,54 @@ const generatePlaceholderImages = (projectId, count) => {
     y: Math.random() * 80 + 10,
     wx: 127.5, // Default center point in Korea to avoid confusing random scatter
     wy: 36.5,
-    hasEo: true, // Mark as having EO for visualization
+    hasEo: false,
     thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
   }));
+};
+
+const mapApiImageToProjectPoint = (img) => {
+  const eo = img.exterior_orientation;
+  return {
+    id: img.id,
+    name: img.filename,
+    wx: eo ? eo.x : 0,
+    wy: eo ? eo.y : 0,
+    z: eo ? eo.z : null,
+    omega: eo ? eo.omega : null,
+    phi: eo ? eo.phi : null,
+    kappa: eo ? eo.kappa : null,
+    hasEo: !!eo,
+    upload_status: img.upload_status || null,
+    validation_status: img.validation_status || null,
+    validation_error: img.validation_error || null,
+    has_error: !!img.has_error,
+    thumbnail_url: img.thumbnail_url || null,
+    file_size: img.file_size || null,
+    thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
+  };
+};
+
+const ACTIVE_UPLOAD_STATUSES = new Set(['waiting', 'uploading', 'validating']);
+const TERMINAL_UPLOAD_STATUSES = new Set(['completed', 'error', 'excluded', 'interrupted']);
+
+const getExcludedFileMessage = (excludedFiles = [], processingCount = null) => {
+  if (!excludedFiles.length) return '';
+
+  const preview = excludedFiles.slice(0, 5).map(file => {
+    const filename = file.filename || file.name || '알 수 없는 파일';
+    const error = file.error || '처리 대상에서 제외됨';
+    return `- ${filename}: ${error}`;
+  }).join('\n');
+  const more = excludedFiles.length > 5 ? `\n- 외 ${excludedFiles.length - 5}개` : '';
+  const processingLine = processingCount !== null
+    ? `\n\n처리 대상 이미지: ${processingCount}장`
+    : '';
+
+  return (
+    `${excludedFiles.length}개 이미지가 처리 대상에서 제외되었습니다.\n\n` +
+    `${preview}${more}${processingLine}\n\n` +
+    '제외된 이미지는 업로드 기록에는 남지만 처리에는 사용되지 않습니다.'
+  );
 };
 
 // --- 2. COMPONENTS ---
@@ -134,6 +180,35 @@ function Dashboard() {
   // 멀티 프로젝트 업로드 지원: 프로젝트별로 업로드 상태 관리 (projects useMemo보다 먼저 선언)
   const [uploadsByProject, setUploadsByProject] = useState({}); // { projectId: [uploads...] }
   const [uploaderControllers, setUploaderControllers] = useState({}); // { projectId: controller }
+  const [uploadEventsByProject, setUploadEventsByProject] = useState({}); // { projectId: [{level, message, timestamp}] }
+  const [processingEventsByProject, setProcessingEventsByProject] = useState({}); // { projectId: [{level, message, timestamp, filename}] }
+
+  const appendUploadEvent = useCallback((projectId, message, level = 'info') => {
+    if (!projectId || !message) return;
+    setUploadEventsByProject(prev => {
+      const nextEvents = [
+        ...(prev[projectId] || []),
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          timestamp: new Date().toISOString(),
+          level,
+          message,
+        },
+      ].slice(-80);
+      return {
+        ...prev,
+        [projectId]: nextEvents,
+      };
+    });
+  }, []);
+
+  const handleProcessingEventsChange = useCallback((projectId, events) => {
+    if (!projectId) return;
+    setProcessingEventsByProject(prev => ({
+      ...prev,
+      [projectId]: events || [],
+    }));
+  }, []);
 
 
 
@@ -142,17 +217,25 @@ function Dashboard() {
     return apiProjects.map(p => {
       // 프론트엔드 업로드 상태 병합
       const projectUploads = uploadsByProject[p.id] || [];
-      const hasActiveUpload = projectUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+      const hasActiveUpload = projectUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
       const completedUploadCount = projectUploads.filter(u => u.status === 'completed').length;
+      const excludedUploadCount = projectUploads.filter(u => u.status === 'excluded').length;
+      const processingStartedAt = p.processing_started_at || null;
+      const processingCompletedAt = p.processing_completed_at || null;
 
       return {
         ...p,
         status: STATUS_MAP[p.status] || p.status,
         imageCount: p.image_count || 0,
-        completedDate: p.updated_at?.slice(0, 10) || '',
-        createdDate: p.created_at?.slice(0, 10) || '',
-        processingStartedAt: p.processing_started_at || null,
-        processingCompletedAt: p.processing_completed_at || null,
+        processingImageCount: p.processing_image_count ?? p.upload_completed_count ?? p.image_count ?? 0,
+        completedDate: formatKstDate(processingCompletedAt || p.updated_at),
+        createdDate: formatKstDate(p.created_at),
+        createdDateTime: formatKstDateTime(p.created_at),
+        processingStartedAt,
+        processingCompletedAt,
+        processingStartedAtDisplay: formatKstDateTime(processingStartedAt),
+        processingCompletedAtDisplay: formatKstDateTime(processingCompletedAt),
+        processingDurationDisplay: formatDuration(processingStartedAt, processingCompletedAt),
         // Use real bounds from backend, don't mock it!
         bounds: p.bounds,
         orthoResult: (p.status === 'completed' || p.status === '완료') ? {
@@ -163,6 +246,7 @@ function Dashboard() {
         // 프론트엔드 업로드 상태 (백엔드 값보다 우선)
         upload_in_progress: hasActiveUpload || p.upload_in_progress,
         upload_completed_count: hasActiveUpload ? completedUploadCount : (p.upload_completed_count ?? p.image_count),
+        upload_excluded_count: hasActiveUpload ? excludedUploadCount : (p.upload_excluded_count ?? 0),
       };
     });
   }, [apiProjects, uploadsByProject]);
@@ -285,9 +369,19 @@ function Dashboard() {
     return currentProjectId ? (uploadsByProject[currentProjectId] || []) : [];
   }, [uploadsByProject, processingProject, selectedProjectId]);
 
+  const currentProjectUploadEvents = useMemo(() => {
+    const currentProjectId = processingProject?.id || selectedProjectId;
+    return currentProjectId ? (uploadEventsByProject[currentProjectId] || []) : [];
+  }, [uploadEventsByProject, processingProject, selectedProjectId]);
+
+  const currentProjectProcessingEvents = useMemo(() => {
+    const currentProjectId = processingProject?.id || selectedProjectId;
+    return currentProjectId ? (processingEventsByProject[currentProjectId] || []) : [];
+  }, [processingEventsByProject, processingProject, selectedProjectId]);
+
   // 활성 업로드가 있는지 확인
   const hasAnyActiveUploads = useMemo(() => {
-    return allUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+    return allUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
   }, [allUploads]);
 
   const [loadingImages, setLoadingImages] = useState(false);
@@ -370,12 +464,12 @@ function Dashboard() {
     Object.keys(uploadsByProject).forEach(projectId => {
       const uploads = uploadsByProject[projectId] || [];
       const hasController = !!uploaderControllers[projectId];
-      const hasActiveUploads = uploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+      const hasActiveUploads = uploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
 
       // 컨트롤러가 없고 활성 업로드가 없으면 해당 프로젝트 업로드 정리
-      if (!hasController && !hasActiveUploads && uploads.length > 0) {
+      if (!hasController && !hasActiveUploads && uploads.length > 0 && !uploads.some(u => u.persist)) {
         // 완료된 지 5초 후에 정리 (사용자가 결과를 볼 시간)
-        const allCompleted = uploads.every(u => u.status === 'completed' || u.status === 'error');
+        const allCompleted = uploads.every(u => TERMINAL_UPLOAD_STATUSES.has(u.status));
         if (allCompleted) {
           setTimeout(() => {
             setUploadsByProject(prev => {
@@ -401,7 +495,7 @@ function Dashboard() {
 
     // 이미 업로드 데이터가 있으면 스킵
     const existingUploads = uploadsByProject[currentProjectId] || [];
-    const hasActiveUploads = existingUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+    const hasActiveUploads = existingUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
     if (hasActiveUploads) return;
 
     const currentProject = projects.find(p => p.id === currentProjectId);
@@ -417,11 +511,14 @@ function Dashboard() {
           projectId: currentProjectId,
           projectTitle: currentProject.title,
           status: img.upload_status === 'completed' ? 'completed' :
-            img.upload_status === 'uploading' ? 'uploading' : 'waiting',
-          progress: img.upload_status === 'completed' ? 100 : 0,
+            img.upload_status === 'excluded' ? 'excluded' :
+              img.upload_status === 'failed' ? 'error' :
+                img.upload_status === 'uploading' ? 'uploading' : 'waiting',
+          progress: ['completed', 'excluded', 'failed'].includes(img.upload_status) ? 100 : 0,
+          error: img.validation_error || null,
         }));
 
-        const hasUploading = syntheticUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+        const hasUploading = syntheticUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
         if (hasUploading) {
           setUploadsByProject(prev => ({
             ...prev,
@@ -454,8 +551,11 @@ function Dashboard() {
       // imageCount: createProject 직후에는 API가 0을 반환하지만 processingProject에는 정확한 값이 있음
       imageCount: processingProject.imageCount || fromList.imageCount || 0,
       image_count: processingProject.image_count || fromList.image_count || 0,
+      processingImageCount: processingProject.processingImageCount ?? fromList.processingImageCount ?? 0,
+      processing_image_count: processingProject.processing_image_count ?? fromList.processing_image_count ?? 0,
       upload_in_progress: processingProject.upload_in_progress ?? fromList.upload_in_progress,
       upload_completed_count: processingProject.upload_completed_count ?? fromList.upload_completed_count,
+      upload_excluded_count: processingProject.upload_excluded_count ?? fromList.upload_excluded_count ?? 0,
       images: processingProject.images || fromList.images || projectImages
     };
   }, [processingProject, projects, projectImages]);
@@ -658,7 +758,7 @@ function Dashboard() {
     };
   }, [isResizing]);
 
-  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess, processMode }) => {
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess, processMode, imageCount }) => {
     try {
       // 1. Create Project via API
       console.log('Creating project:', projectData);
@@ -669,129 +769,231 @@ function Dashboard() {
       });
       console.log('Project created:', created);
 
+      const formatEoUploadError = (error) => (
+        error?.data?.message || error?.message || '알 수 없는 EO 업로드 오류'
+      );
+
+      const cleanupCreatedProject = async (reason) => {
+        try {
+          await deleteProject(created.id);
+          console.log(`Cleaned up project ${created.id}: ${reason}`);
+          await refreshProjects();
+        } catch (cleanupErr) {
+          console.error('Failed to clean up project after EO upload failure:', cleanupErr);
+        }
+      };
+
       // 2a. Local path import mode - register images by path
       if (sourceDir) {
-        console.log('Registering local images from:', sourceDir);
-        try {
-          const importResult = await api.localImport(created.id, sourceDir, filePaths);
-          console.log('Local import result:', importResult);
-          if (importResult.registered === 0) {
-            alert('이미지 파일을 찾을 수 없습니다: ' + sourceDir);
-            // Clean up the orphaned project that was just created
-            try {
-              await deleteProject(created.id);
-              console.log('Cleaned up orphaned project:', created.id);
-            } catch (cleanupErr) {
-              console.error('Failed to clean up orphaned project:', cleanupErr);
+        const selectedLocalPaths = Array.isArray(filePaths) ? filePaths : [];
+        const expectedLocalCount = selectedLocalPaths.length || imageCount || 0;
+        const basename = (path) => String(path || '').split(/[\\/]/).pop() || String(path || '');
+        const initialUploads = selectedLocalPaths.length > 0
+          ? selectedLocalPaths.map((path) => ({
+            name: basename(path),
+            projectId: created.id,
+            projectTitle: created.title,
+            progress: 5,
+            status: 'uploading',
+            speed: null,
+            eta: null,
+            persist: true,
+          }))
+          : [{
+            name: '로컬 이미지 등록',
+            projectId: created.id,
+            projectTitle: created.title,
+            progress: 5,
+            status: 'uploading',
+            speed: null,
+            eta: null,
+            persist: true,
+          }];
+
+        const projectForProcessing = {
+          ...created,
+          status: '대기',
+          imageCount: expectedLocalCount,
+          image_count: expectedLocalCount,
+          images: generatePlaceholderImages(created.id, expectedLocalCount),
+          bounds: { x: 30, y: 30, w: 40, h: 40 },
+          cameraModel,
+          upload_in_progress: true,
+          upload_completed_count: 0,
+          upload_excluded_count: 0,
+          processingImageCount: 0,
+          processing_image_count: 0,
+        };
+
+        setUploadsByProject(prev => ({ ...prev, [created.id]: initialUploads }));
+        setProcessingProject(projectForProcessing);
+        setViewMode('processing');
+        setIsUploadOpen(false);
+        window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
+        appendUploadEvent(created.id, '프로젝트가 생성되었습니다.', 'success');
+        appendUploadEvent(created.id, `${expectedLocalCount || '선택된'}개 로컬 이미지 등록을 시작합니다.`, 'info');
+        void refreshProjects();
+
+        const runLocalImport = async () => {
+          console.log('Registering local images from:', sourceDir);
+          try {
+            const importResult = await api.localImport(created.id, sourceDir, selectedLocalPaths);
+            console.log('Local import result:', importResult);
+            const localExcludedFiles = importResult.invalid_files || [];
+            const localImageCount = importResult.registered || 0;
+            const localExcludedCount = localExcludedFiles.length;
+            const excludedByName = new globalThis.Map(localExcludedFiles.map(item => [item.filename, item]));
+
+            if (localImageCount === 0) {
+              const excludedMessage = getExcludedFileMessage(localExcludedFiles, 0);
+              setUploadsByProject(prev => ({
+                ...prev,
+                [created.id]: (prev[created.id] || initialUploads).map(upload => ({
+                  ...upload,
+                  status: excludedByName.has(upload.name) ? 'excluded' : 'error',
+                  progress: 100,
+                  error: excludedByName.get(upload.name)?.error || '처리 가능한 이미지가 없습니다.',
+                })),
+              }));
+              appendUploadEvent(created.id, '처리 가능한 이미지가 없어 프로젝트 생성을 취소합니다.', 'error');
+              alert(
+                excludedMessage
+                  ? `${excludedMessage}\n\n처리 가능한 이미지가 없어 프로젝트 생성을 취소했습니다.`
+                  : '이미지 파일을 찾을 수 없습니다: ' + sourceDir
+              );
+              await cleanupCreatedProject('local import registered no usable images');
+              setViewMode('dashboard');
+              setProcessingProject(null);
+              window.history.pushState({}, '', window.location.pathname);
+              return;
             }
-            return;
-          }
-          // Set file count from import result for downstream use
-          files = []; // Clear browser files
-          const localImageCount = importResult.registered;
 
-          // 3. Upload EO Data if exists
-          let imagesToUse = generatePlaceholderImages(created.id, localImageCount);
-          if (eoFile) {
-            console.log('Uploading EO data...');
-            try {
-              await api.uploadEoData(created.id, eoFile, eoConfig);
+            setUploadsByProject(prev => {
+              const currentUploads = prev[created.id] || initialUploads;
+              const nextUploads = currentUploads.map(upload => {
+                const excludedInfo = excludedByName.get(upload.name);
+                if (excludedInfo) {
+                  return {
+                    ...upload,
+                    status: 'excluded',
+                    progress: 100,
+                    error: excludedInfo.error || '처리 대상에서 제외됨',
+                    validationDetails: excludedInfo.details || [],
+                  };
+                }
+                return {
+                  ...upload,
+                  status: 'completed',
+                  progress: 100,
+                };
+              });
+              return { ...prev, [created.id]: nextUploads };
+            });
 
-              const maxRetries = 5;
-              const baseDelay = 800;
-              for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                const delay = baseDelay * attempt;
-                console.log(`Fetching images (attempt ${attempt}/${maxRetries}) after ${delay}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+            appendUploadEvent(
+              created.id,
+              localExcludedCount > 0
+                ? `이미지 등록 완료: 처리 대상 ${localImageCount}장, 제외 ${localExcludedCount}장. 제외 파일은 처리에 사용되지 않습니다.`
+                : `이미지 등록 완료: 처리 대상 ${localImageCount}장.`,
+              localExcludedCount > 0 ? 'warning' : 'success'
+            );
 
-                const fetchedImages = await fetchImages(created.id);
-                if (fetchedImages && fetchedImages.length > 0) {
-                  const points = fetchedImages.map(img => {
-                    const eo = img.exterior_orientation;
-                    return {
-                      id: img.id,
-                      name: img.filename,
-                      wx: eo ? eo.x : 0,
-                      wy: eo ? eo.y : 0,
-                      z: eo ? eo.z : null,
-                      omega: eo ? eo.omega : null,
-                      phi: eo ? eo.phi : null,
-                      kappa: eo ? eo.kappa : null,
-                      hasEo: !!eo,
-                      thumbnail_url: img.thumbnail_url || null,
-                      file_size: img.file_size || null,
-                      thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
-                    };
-                  });
+            let imagesToUse = generatePlaceholderImages(created.id, localImageCount);
+            if (eoFile) {
+              appendUploadEvent(created.id, 'EO 데이터 업로드를 시작합니다.', 'info');
+              try {
+                await api.uploadEoData(created.id, eoFile, eoConfig);
+                appendUploadEvent(created.id, 'EO 데이터 업로드가 완료되었습니다.', 'success');
 
-                  const imagesWithEo = points.filter(p => p.hasEo);
-                  if (imagesWithEo.length > 0) {
-                    console.log(`Found ${imagesWithEo.length} images with EO data`);
-                    imagesToUse = imagesWithEo;
-                    setProjectImages(imagesToUse);
-                    break;
-                  }
-                  if (attempt === maxRetries) {
-                    console.warn('No EO data found after all retries, using images without EO');
-                    imagesToUse = points;
-                    setProjectImages(imagesToUse);
+                const maxRetries = 5;
+                const baseDelay = 800;
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                  const delay = baseDelay * attempt;
+                  await new Promise(resolve => setTimeout(resolve, delay));
+
+                  const fetchedImages = await fetchImages(created.id);
+                  if (fetchedImages && fetchedImages.length > 0) {
+                    const points = fetchedImages.map(mapApiImageToProjectPoint);
+
+                    const imagesWithEo = points.filter(p => p.hasEo);
+                    if (imagesWithEo.length > 0) {
+                      imagesToUse = imagesWithEo;
+                      setProjectImages(imagesToUse);
+                      break;
+                    }
+                    if (attempt === maxRetries) {
+                      imagesToUse = points;
+                      setProjectImages(imagesToUse);
+                    }
                   }
                 }
+              } catch (e) {
+                console.error(e);
+                appendUploadEvent(created.id, `EO 데이터 업로드 실패: ${formatEoUploadError(e)}`, 'error');
+                alert("EO 데이터 업로드 실패: " + formatEoUploadError(e) + "\n\n프로젝트 생성을 취소했습니다. EO 파일을 수정한 뒤 다시 생성해주세요.");
+                await cleanupCreatedProject('EO upload failed during local import');
+                setViewMode('dashboard');
+                setProcessingProject(null);
+                window.history.pushState({}, '', window.location.pathname);
+                return;
               }
-              alert("프로젝트 생성이 완료되었습니다.");
-            } catch (e) {
-              console.error(e);
-              alert("Failed to upload EO data: " + e.message);
             }
-          } else {
-            alert(`프로젝트 생성 완료. ${localImageCount}개 이미지 등록됨.`);
-          }
 
-          // 5. Auto-schedule processing if requested
-          let projectStatus = '대기';
-          if (autoProcess && eoFile) {
-            try {
-              console.log('Auto-scheduling processing for project:', created.id);
-              await api.scheduleProcessing(created.id, {
-                engine: 'metashape',
-                gsd: 5.0,
-                output_crs: 'EPSG:5186',
-                output_format: 'GeoTiff',
-                process_mode: processMode || 'Normal',
-              });
-              projectStatus = '진행중';
-              console.log('Processing auto-scheduled successfully');
-            } catch (schedErr) {
-              console.error('Auto-schedule failed:', schedErr);
-              // Non-fatal: project is created, user can manually start processing
+            let projectStatus = '대기';
+            if (autoProcess && eoFile) {
+              try {
+                appendUploadEvent(created.id, '자동 처리를 예약합니다.', 'info');
+                await api.scheduleProcessing(created.id, {
+                  engine: 'metashape',
+                  gsd: 5.0,
+                  output_crs: 'EPSG:5186',
+                  output_format: 'GeoTiff',
+                  process_mode: processMode || 'Normal',
+                });
+                projectStatus = '진행중';
+                appendUploadEvent(created.id, '자동 처리가 예약되었습니다.', 'success');
+              } catch (schedErr) {
+                console.error('Auto-schedule failed:', schedErr);
+                appendUploadEvent(created.id, `자동 처리 예약 실패: ${schedErr.message || '알 수 없는 오류'}`, 'warning');
+              }
             }
+
+            setProcessingProject(prev => prev && prev.id === created.id ? ({
+              ...prev,
+              status: projectStatus,
+              imageCount: localImageCount,
+              image_count: localImageCount,
+              images: imagesToUse,
+              upload_in_progress: false,
+              upload_completed_count: localImageCount,
+              upload_excluded_count: localExcludedCount,
+              processingImageCount: localImageCount,
+              processing_image_count: localImageCount,
+            }) : prev);
+            await refreshProjects();
+            setImageRefreshKey(prev => prev + 1);
+          } catch (err) {
+            console.error('Local import failed:', err);
+            setUploadsByProject(prev => ({
+              ...prev,
+              [created.id]: (prev[created.id] || initialUploads).map(upload => ({
+                ...upload,
+                status: 'error',
+                progress: 100,
+                error: err.message || '로컬 이미지 등록 실패',
+              })),
+            }));
+            appendUploadEvent(created.id, `로컬 이미지 등록 실패: ${err.message || '알 수 없는 오류'}`, 'error');
+            alert('로컬 이미지 등록 실패: ' + err.message);
+            await cleanupCreatedProject('local import failed');
+            setViewMode('dashboard');
+            setProcessingProject(null);
+            window.history.pushState({}, '', window.location.pathname);
           }
+        };
 
-          // 6. Update UI State for local-import (no upload needed)
-          const projectForProcessing = {
-            ...created,
-            status: projectStatus,
-            imageCount: localImageCount,
-            image_count: localImageCount,
-            images: imagesToUse,
-            bounds: { x: 30, y: 30, w: 40, h: 40 },
-            cameraModel: cameraModel,
-            upload_in_progress: false,
-            upload_completed_count: localImageCount,
-          };
-
-          setProcessingProject(projectForProcessing);
-          setViewMode('processing');
-          setIsUploadOpen(false);
-          window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
-          await refreshProjects();
-          setImageRefreshKey(prev => prev + 1);
-          return; // Done - skip the HTTP upload flow below
-        } catch (err) {
-          console.error('Local import failed:', err);
-          alert('로컬 이미지 등록 실패: ' + err.message);
-          return;
-        }
+        runLocalImport();
+        return { ok: true, projectId: created.id };
       }
 
       // 2b. Initialize Images for HTTP upload (Create records in DB)
@@ -804,7 +1006,8 @@ function Dashboard() {
         } catch (err) {
           console.error('Failed to initialize images:', err);
           alert('이미지 초기화 실패: ' + err.message);
-          return;
+          await cleanupCreatedProject('image initialization failed');
+          return { ok: false };
         }
       }
 
@@ -826,24 +1029,7 @@ function Dashboard() {
 
             const fetchedImages = await fetchImages(created.id);
             if (fetchedImages && fetchedImages.length > 0) {
-              const points = fetchedImages.map(img => {
-                const eo = img.exterior_orientation;
-                return {
-                  id: img.id,
-                  name: img.filename,
-                  // If EO exists, use it. Otherwise 0
-                  wx: eo ? eo.x : 0,
-                  wy: eo ? eo.y : 0,
-                  z: eo ? eo.z : null,
-                  omega: eo ? eo.omega : null,
-                  phi: eo ? eo.phi : null,
-                  kappa: eo ? eo.kappa : null,
-                  hasEo: !!eo,
-                  thumbnail_url: img.thumbnail_url || null,
-                  file_size: img.file_size || null,
-                  thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
-                };
-              });
+              const points = fetchedImages.map(mapApiImageToProjectPoint);
 
               const imagesWithEo = points.filter(p => p.hasEo);
 
@@ -867,7 +1053,9 @@ function Dashboard() {
           alert("프로젝트 생성이 완료되었습니다.");
         } catch (e) {
           console.error(e);
-          alert("Failed to upload EO data: " + e.message);
+          alert("EO 데이터 업로드 실패: " + formatEoUploadError(e) + "\n\n프로젝트 생성을 취소했습니다. EO 파일을 수정한 뒤 다시 생성해주세요.");
+          await cleanupCreatedProject('EO upload failed during browser upload');
+          return { ok: false };
         }
       }
 
@@ -943,27 +1131,81 @@ function Dashboard() {
               setImageRefreshKey(prev => prev + 1);
             }, 3000);
           },
-          onAllComplete: async () => {
-            console.log(`All uploads finished for project ${projectId}`);
-
-            // Mark all uploads as completed to enable processing button
+          onFileExcluded: (idx, name, excludedInfo) => {
+            console.warn(`Excluded ${name}`, excludedInfo);
             setUploadsByProject(prev => {
               const projectUploads = prev[projectId] || [];
-              const allCompleted = projectUploads.map(u => ({
-                ...u,
-                status: 'completed',
-                progress: 100
-              }));
+              const next = [...projectUploads];
+              const targetIdx = next[idx]?.name === name ? idx : next.findIndex(u => u.name === name);
+              if (targetIdx >= 0) {
+                next[targetIdx] = {
+                  ...next[targetIdx],
+                  status: 'excluded',
+                  progress: 100,
+                  error: excludedInfo?.error || '처리 대상에서 제외됨',
+                  validationDetails: excludedInfo?.details || [],
+                };
+              }
+              return { ...prev, [projectId]: next };
+            });
+          },
+          onAllComplete: async (completeResult) => {
+            console.log(`All uploads finished for project ${projectId}`);
+
+            const completedItems = completeResult?.completed || [];
+            const failedItems = completeResult?.failed || [];
+            const excludedItems = completeResult?.excluded || [];
+            const completedNames = new Set(completedItems.map(item => item.filename));
+            const failedByName = new globalThis.Map(failedItems.map(item => [item.filename, item]));
+            const excludedByName = new globalThis.Map(excludedItems.map(item => [item.filename, item]));
+            const hasCompletionResult = Boolean(completeResult && Array.isArray(completeResult.completed));
+            const validUploadCount = hasCompletionResult
+              ? completedItems.length
+              : Math.max(0, files.length - failedItems.length - excludedItems.length);
+
+            setUploadsByProject(prev => {
+              const projectUploads = prev[projectId] || [];
+              const allCompleted = projectUploads.map(u => {
+                if (excludedByName.has(u.name)) {
+                  const excludedInfo = excludedByName.get(u.name);
+                  return {
+                    ...u,
+                    status: 'excluded',
+                    progress: 100,
+                    error: excludedInfo?.error || '처리 대상에서 제외됨',
+                    validationDetails: excludedInfo?.details || [],
+                  };
+                }
+                if (failedByName.has(u.name)) {
+                  const failedInfo = failedByName.get(u.name);
+                  return {
+                    ...u,
+                    status: 'error',
+                    progress: 100,
+                    error: failedInfo?.error || '업로드 완료 처리 실패',
+                  };
+                }
+                if (!hasCompletionResult || completedNames.has(u.name)) {
+                  return {
+                    ...u,
+                    status: 'completed',
+                    progress: 100,
+                  };
+                }
+                return u;
+              });
               return { ...prev, [projectId]: allCompleted };
             });
 
-            // Update processing project with completed upload count
             setProcessingProject(prev => {
               if (prev && prev.id === projectId) {
                 return {
                   ...prev,
-                  upload_completed_count: files.length,
-                  upload_in_progress: false
+                  upload_completed_count: validUploadCount,
+                  upload_excluded_count: excludedItems.length,
+                  processingImageCount: validUploadCount,
+                  processing_image_count: validUploadCount,
+                  upload_in_progress: false,
                 };
               }
               return prev;
@@ -1001,8 +1243,9 @@ function Dashboard() {
             setUploadsByProject(prev => {
               const projectUploads = prev[projectId] || [];
               const next = [...projectUploads];
-              if (next[idx]) {
-                next[idx] = { ...next[idx], status: 'error' };
+              const targetIdx = next[idx]?.name === name ? idx : next.findIndex(u => u.name === name);
+              if (targetIdx >= 0) {
+                next[targetIdx] = { ...next[targetIdx], status: 'error', error: err?.message || '업로드 실패' };
               }
               return { ...prev, [projectId]: next };
             });
@@ -1028,6 +1271,9 @@ function Dashboard() {
         // Upload tracking
         upload_in_progress: hasFilesToUpload, // Will be set to false when uploads complete
         upload_completed_count: hasFilesToUpload ? 0 : (files?.length || 0), // 0 initially, updated as uploads complete
+        upload_excluded_count: 0,
+        processingImageCount: hasFilesToUpload ? 0 : (files?.length || 0),
+        processing_image_count: hasFilesToUpload ? 0 : (files?.length || 0),
       };
 
       setProcessingProject(projectForProcessing);
@@ -1039,10 +1285,12 @@ function Dashboard() {
       // Ensure project list is refreshed with new data including EO
       await refreshProjects();
       setImageRefreshKey(prev => prev + 1);
+      return { ok: true, projectId: created.id };
 
     } catch (err) {
       console.error('Failed to create project:', err);
       alert('프로젝트 생성 실패: ' + err.message);
+      return { ok: false };
     }
   };
 
@@ -1052,7 +1300,7 @@ function Dashboard() {
     const projectId = processingProject.id;
     const selectedEngine = options.engine || defaultProcessingEngine || 'metashape';
 
-    // Use provided options or defaults (Metashape only)
+    // Use provided options or defaults for the GPU processing engine.
     const processingOptions = {
       engine: selectedEngine,
       gsd: options.gsd || 5.0,
@@ -1358,6 +1606,8 @@ function Dashboard() {
             width={sidebarWidth}
             project={processingViewProject}
             activeUploads={currentProjectUploads}
+            uploadEvents={currentProjectUploadEvents}
+            onProcessingEventsChange={handleProcessingEventsChange}
             onCancel={() => {
               // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
               setViewMode('dashboard');
@@ -1508,23 +1758,7 @@ function Dashboard() {
                   try {
                     const images = await fetchImages(projectId);
                     // Normalize like we do in the useEffect
-                    const points = images.map(img => {
-                      const eo = img.exterior_orientation;
-                      return {
-                        id: img.id,
-                        name: img.filename,
-                        wx: eo ? eo.x : 0,
-                        wy: eo ? eo.y : 0,
-                        z: eo ? eo.z : null,
-                        omega: eo ? eo.omega : null,
-                        phi: eo ? eo.phi : null,
-                        kappa: eo ? eo.kappa : null,
-                        hasEo: !!eo,
-                        thumbnail_url: img.thumbnail_url || null,
-                        file_size: img.file_size || null,
-                        thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
-                      };
-                    });
+                    const points = images.map(mapApiImageToProjectPoint);
                     imagesToUse = points.filter(p => p.hasEo);
                     console.log('[onOpenProcessing] fetched images:', images.length, 'with EO:', imagesToUse.length);
                     // Also update state so map can show them
@@ -1636,7 +1870,13 @@ function Dashboard() {
             /* Processing mode: show Map + Inspector */
             <>
               <main className="flex-1 relative overflow-hidden">
-                <ProjectMap project={selectedProject} isProcessingMode={viewMode === 'processing'} selectedImageId={selectedImageId} onSelectImage={(id) => setSelectedImageId(id)} />
+                <ProjectMap
+                  project={selectedProject}
+                  isProcessingMode={viewMode === 'processing'}
+                  selectedImageId={selectedImageId}
+                  processingEvents={currentProjectProcessingEvents}
+                  onSelectImage={(id) => setSelectedImageId(id)}
+                />
               </main>
             </>
           )}
@@ -1718,7 +1958,7 @@ function Dashboard() {
 
       {/* Upload Progress Overlay - 멀티 프로젝트 업로드 지원 */}
       {/* 대시보드: 모든 프로젝트 업로드 표시 / 처리 화면: 현재 프로젝트만 표시 */}
-      {allUploads.length > 0 && (
+      {viewMode !== 'processing' && allUploads.length > 0 && (
         <UploadProgressPanel
           uploads={viewMode === 'processing' ? currentProjectUploads : allUploads}
           onAbortAll={() => {

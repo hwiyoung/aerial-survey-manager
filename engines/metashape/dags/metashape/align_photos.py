@@ -1,6 +1,8 @@
 import Metashape
 import os
 import re
+import json
+from datetime import datetime
 from common_args import parse_arguments, print_debug_info
 from common_utils import activate_metashape_license, progress_callback, change_task_status_in_ortho
 
@@ -38,6 +40,69 @@ def align_photos(
         mp_downscale = 2
     
     os.makedirs(output_path, exist_ok=True)
+
+    def _append_processing_event(level, message, filename=None):
+        event = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": level,
+            "message": message,
+        }
+        if filename:
+            event["filename"] = filename
+        try:
+            with open(os.path.join(output_path, "processing_events.log"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _filter_reference_file_by_images(src_path, image_paths, out_dir):
+        if not src_path:
+            return src_path
+        valid_names = {os.path.basename(path).lower() for path in image_paths}
+        filtered_path = os.path.join(out_dir, "reference_normalized_runtime.txt")
+        kept = 0
+        try:
+            with open(src_path, "r", encoding="utf-8", errors="ignore") as src, open(filtered_path, "w", encoding="utf-8") as out:
+                for line in src:
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    image_name = os.path.basename(raw.split()[0]).lower()
+                    if image_name in valid_names:
+                        out.write(line)
+                        kept += 1
+        except Exception as exc:
+            _append_processing_event("warning", f"EO 기준 파일 필터링 실패: {exc}")
+            return src_path
+        if kept == 0:
+            raise RuntimeError("처리 가능한 이미지와 매칭되는 EO 기준 행이 없습니다.")
+        return filtered_path
+
+    def _add_photos_safely(chunk, doc, image_paths, label):
+        added = []
+        skipped = []
+        for path in image_paths:
+            before_keys = _get_camera_keys(chunk.cameras)
+            try:
+                chunk.addPhotos([path], load_xmp_accuracy=True)
+                new_cameras = _get_new_cameras_by_key(chunk.cameras, before_keys)
+                if not new_cameras:
+                    raise RuntimeError("처리 엔진이 카메라를 생성하지 못했습니다.")
+                added.append(path)
+            except Exception as exc:
+                filename = os.path.basename(path)
+                skipped.append(path)
+                message = f"{label} 이미지 제외: {filename} - {exc}"
+                print(f"⚠️ {message}", flush=True)
+                _append_processing_event("warning", message, filename=filename)
+        if added:
+            doc.save()
+        if skipped:
+            _append_processing_event(
+                "warning",
+                f"{label} 이미지 {len(skipped)}장이 처리 중 제외되었습니다. 나머지 {len(added)}장으로 계속 진행합니다.",
+            )
+        return added, skipped
 
 
     print(
@@ -347,13 +412,21 @@ def align_photos(
 
     change_task_status_in_ortho(run_id,"Running")
 
-    try:
-        chunk.addPhotos(initial_input_images, load_xmp_accuracy=True)
-        doc.save()
-        print(f"✅ Added {len(initial_input_images)} EO-matched photos to the core chunk.")
-    except Exception as e:
-        print(f"❌ Failed to add EO-matched photos: {e}")
-        raise RuntimeError(f"Task failed due to: {e}") from e
+    initial_input_images, skipped_core_images = _add_photos_safely(
+        chunk,
+        doc,
+        initial_input_images,
+        "EO 매칭",
+    )
+    if not initial_input_images:
+        raise RuntimeError("처리 가능한 EO 매칭 이미지가 없습니다. 손상 파일 또는 접근 불가 파일을 확인해주세요.")
+    if skipped_core_images:
+        normalized_path = _filter_reference_file_by_images(
+            normalized_path,
+            initial_input_images,
+            os.path.dirname(normalized_path) if normalized_path else output_path,
+        )
+    print(f"✅ Added {len(initial_input_images)} EO-matched photos to the core chunk.")
 
     drone_makes = {"DJI", "Parrot", "Yuneec", "Autel Robotics", "senseFly"}
     first_camera = chunk.cameras[0]
@@ -390,6 +463,45 @@ def align_photos(
         if len(items) > 20:
             print(f"   ... 외 {len(items) - 20}개")
 
+    def _extract_unloadable_image_path(error):
+        match = re.search(r"Can't load image:\s*(.+)", str(error))
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    def _camera_matches_image_path(camera, image_path):
+        basename = os.path.basename(image_path)
+        stem = os.path.splitext(basename)[0]
+        labels = {str(getattr(camera, "label", "") or "")}
+        try:
+            if camera.photo and camera.photo.path:
+                labels.add(str(camera.photo.path))
+                labels.add(os.path.basename(str(camera.photo.path)))
+        except Exception:
+            pass
+        for label in labels:
+            label_base = os.path.basename(label)
+            label_stem = os.path.splitext(label_base)[0]
+            if label == image_path or label_base == basename or label_stem == stem:
+                return True
+        return False
+
+    def _remove_unloadable_image(image_path, stage_label, error):
+        cameras_to_remove = [
+            camera for camera in chunk.cameras
+            if _camera_matches_image_path(camera, image_path)
+        ]
+        if not cameras_to_remove:
+            return False
+
+        filename = os.path.basename(image_path)
+        message = f"{stage_label} 이미지 제외: {filename} - {error}"
+        print(f"⚠️ {message}", flush=True)
+        _append_processing_event("warning", message, filename=filename)
+        chunk.remove(cameras_to_remove)
+        _save_project()
+        return True
+
     def _match_photos(reference_preselection, reset_matches=None):
         match_kwargs = dict(
             downscale=mp_downscale,
@@ -403,6 +515,23 @@ def align_photos(
         if reset_matches is not None:
             match_kwargs["reset_matches"] = reset_matches
         chunk.matchPhotos(**match_kwargs)
+
+    def _match_photos_with_skip(reference_preselection, reset_matches=None, stage_label="정합"):
+        skipped_paths = set()
+        while True:
+            try:
+                _match_photos(
+                    reference_preselection=reference_preselection,
+                    reset_matches=reset_matches,
+                )
+                return
+            except Exception as exc:
+                image_path = _extract_unloadable_image_path(exc)
+                if not image_path or image_path in skipped_paths or len(skipped_paths) >= 20:
+                    raise
+                if not _remove_unloadable_image(image_path, stage_label, exc):
+                    raise
+                skipped_paths.add(image_path)
 
     def _align_camera_set(cameras=None, reset_alignment=False):
         if cameras is None:
@@ -418,7 +547,7 @@ def align_photos(
 
     def _align_core_photos():
         print("🛠 Aligning EO-matched core photos...")
-        _match_photos(reference_preselection=True)
+        _match_photos_with_skip(reference_preselection=True, stage_label="EO 정합")
         _align_camera_set()
         core_cameras = list(chunk.cameras)
         core_aligned, core_unaligned = _print_alignment_summary(
@@ -436,7 +565,18 @@ def align_photos(
             f"\n🔁 EO-only retry: 정합 실패 EO 카메라 "
             f"{len(retry_core_cameras)}장 재정합 시도..."
         )
-        _match_photos(reference_preselection=False, reset_matches=False)
+        _match_photos_with_skip(
+            reference_preselection=False,
+            reset_matches=False,
+            stage_label="EO 재정합",
+        )
+        active_camera_keys = _get_camera_keys(chunk.cameras)
+        retry_core_cameras = [
+            camera for camera in retry_core_cameras
+            if getattr(camera, "key", None) in active_camera_keys
+        ]
+        if not retry_core_cameras:
+            return _print_alignment_summary(list(chunk.cameras), "EO core retry result")
         _align_camera_set(cameras=retry_core_cameras, reset_alignment=False)
 
         retry_aligned = len([camera for camera in retry_core_cameras if camera.transform])
@@ -483,12 +623,20 @@ def align_photos(
 
         print(f"\n🧩 EO 없는 이미지 {len(delayed_input_images)}장 no-reset 증분 정합 시작...")
         existing_camera_keys = _get_camera_keys(chunk.cameras)
-        chunk.addPhotos(delayed_input_images, load_xmp_accuracy=True)
+        added_delayed_images, _skipped_delayed_images = _add_photos_safely(
+            chunk,
+            doc,
+            delayed_input_images,
+            "EO 미매칭",
+        )
         incremental_cameras = _get_new_cameras_by_key(chunk.cameras, existing_camera_keys)
-        if len(incremental_cameras) != len(delayed_input_images):
+        if not incremental_cameras:
+            print("⚠️ EO 없는 추가 이미지 중 처리 가능한 이미지가 없어 증분 정합을 건너뜁니다.")
+            return
+        if len(incremental_cameras) != len(added_delayed_images):
             print(
                 f"⚠️ 증분 카메라 식별 수가 입력 수와 다릅니다: "
-                f"입력 {len(delayed_input_images)}장 / 식별 {len(incremental_cameras)}장"
+                f"입력 {len(added_delayed_images)}장 / 식별 {len(incremental_cameras)}장"
             )
 
         # EO 미매칭 이미지는 reference를 최적화 제약으로 쓰지 않습니다.
@@ -509,8 +657,18 @@ def align_photos(
         )
 
         if retry_cameras:
-            _match_photos(reference_preselection=False, reset_matches=False)
-            _align_camera_set(cameras=retry_cameras, reset_alignment=False)
+            _match_photos_with_skip(
+                reference_preselection=False,
+                reset_matches=False,
+                stage_label="증분 정합",
+            )
+            active_camera_keys = _get_camera_keys(chunk.cameras)
+            retry_cameras = [
+                camera for camera in retry_cameras
+                if getattr(camera, "key", None) in active_camera_keys
+            ]
+            if retry_cameras:
+                _align_camera_set(cameras=retry_cameras, reset_alignment=False)
 
         still_unaligned = [c for c in incremental_cameras if not c.transform]
         if still_unaligned:

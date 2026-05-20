@@ -8,10 +8,10 @@ import api from '../../api/client';
  * Props:
  *   isOpen      - boolean controlling visibility
  *   onClose     - callback to close the modal
- *   onSelect    - callback({ path, imageCount }) for folder mode
+ *   onSelect    - callback({ path, imageCount, filePaths }) for folder mode
  *                 callback({ path, filePaths }) for files mode
- *                 callback({ path, filePath }) for eo mode (single file)
- *   mode        - 'folder' (select entire directory) or 'files' (select individual images) or 'eo' (single text file)
+ *                 callback({ path, filePaths }) for eo mode (one or more text files)
+ *   mode        - 'folder' (select entire directory) or 'files' (select individual images) or 'eo' (text files)
  *   fileTypes   - 'images' (default) or 'eo' — controls which file extensions are shown
  *   initialPath - optional directory path to open instead of roots view
  */
@@ -106,14 +106,14 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
     const handleSelect = () => {
         const doSelect = () => {
             if (mode === 'eo') {
-                const filePath = Array.from(selectedFiles)[0];
-                if (filePath) {
-                    onSelect({ path: currentPath, filePath });
+                const filePaths = Array.from(selectedFiles);
+                if (filePaths.length > 0) {
+                    onSelect({ path: currentPath, filePaths, filePath: filePaths[0] });
                 }
             } else if (mode === 'files') {
                 onSelect({ path: currentPath, filePaths: Array.from(selectedFiles) });
             } else {
-                onSelect({ path: currentPath, imageCount });
+                onSelect({ path: currentPath, imageCount, filePaths: files.map((file) => file.path) });
             }
             onClose();
         };
@@ -143,13 +143,6 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
     const handleFileClick = (filePath, event) => {
         const index = fileIndexMap[filePath];
         if (index === undefined) return;
-
-        // EO mode: single file selection only
-        if (mode === 'eo') {
-            setSelectedFiles(new Set([filePath]));
-            setLastClickedIndex(index);
-            return;
-        }
 
         if (event.shiftKey && lastClickedIndex >= 0) {
             // Shift+Click: range select
@@ -270,7 +263,7 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
                                 <RefreshCw size={14} /> 새로고침
                             </button>
                         )}
-                        {mode === 'files' && files.length > 0 && !isRootsView && (
+                        {(mode === 'files' || mode === 'eo') && files.length > 0 && !isRootsView && (
                             <button
                                 onClick={toggleSelectAll}
                                 className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-blue-600 transition-colors px-2 py-1 rounded hover:bg-slate-100"
@@ -421,14 +414,14 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
                         <div className="text-sm text-slate-500 font-mono truncate max-w-[400px]" title={currentPath}>
                             {isRootsView ? '디스크를 선택하세요' : currentPath}
                         </div>
-                        {mode === 'files' && !isRootsView && files.length > 0 && (
+                        {(mode === 'files' || mode === 'eo') && !isRootsView && files.length > 0 && (
                             <div className="text-[10px] text-slate-400">
                                 Ctrl+클릭: 개별 선택 · Shift+클릭: 범위 선택
                             </div>
                         )}
                         {mode === 'eo' && !isRootsView && selectedFiles.size > 0 && (
                             <div className="text-[10px] text-emerald-600 font-medium">
-                                파일이 선택되었습니다
+                                {selectedFiles.size}개 EO 파일이 선택되었습니다
                             </div>
                         )}
                     </div>
@@ -446,7 +439,7 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
                         >
                             <CheckCircle2 size={16} />
                             {mode === 'eo' ? (
-                                <>파일 선택</>
+                                <>선택 완료 {selectedFiles.size > 0 && <span className="bg-blue-500 text-white text-xs px-1.5 py-0.5 rounded-full ml-1">{selectedFiles.size}</span>}</>
                             ) : mode === 'files' ? (
                                 <>선택 완료 {selectedFiles.size > 0 && <span className="bg-blue-500 text-white text-xs px-1.5 py-0.5 rounded-full ml-1">{selectedFiles.size}</span>}</>
                             ) : (

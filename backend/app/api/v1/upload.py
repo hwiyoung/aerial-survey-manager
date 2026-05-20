@@ -10,17 +10,31 @@ from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from pydantic import BaseModel
+from sqlalchemy import select, func
+from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, Image, CameraModel
+from app.models.project import Project, Image, CameraModel, ExteriorOrientation
 from app.schemas.project import ImageResponse, ImageUploadResponse
 from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role
 from app.config import get_settings
 from app.services.storage import get_storage
 from app.services.quota import ensure_organization_quota
+from app.utils.storage_paths import (
+    processing_metadata_path,
+    source_image_key,
+    source_images_prefix,
+    source_thumbnail_key,
+)
+
+PROCESSING_ENGINE_QUEUE = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
+
+
+def _processing_queue_name(engine_name: str | None) -> str:
+    if not engine_name or engine_name == "metashape":
+        return PROCESSING_ENGINE_QUEUE
+    return engine_name
 
 
 def _verify_tus_webhook_request(token: str, signature: str, body: bytes) -> None:
@@ -322,6 +336,9 @@ async def list_project_images(
             "resolution": img.resolution,
             "file_size": img.file_size,
             "has_error": img.has_error,
+            "validation_status": img.validation_status,
+            "validation_error": img.validation_error,
+            "validated_at": img.validated_at,
             "upload_status": img.upload_status,
             "created_at": img.created_at,
             # Image dimensions
@@ -364,6 +381,7 @@ class LocalImportResponse(BaseModel):
     registered: int
     skipped: int
     total_size: int
+    invalid_files: List[dict] = Field(default_factory=list)
 
 
 @router.post("/projects/{project_id}/local-import", response_model=LocalImportResponse)
@@ -465,13 +483,13 @@ async def local_import(
     registered = 0
     skipped = 0
     total_size = 0
+    invalid_files = []
+    registered_filenames = []
 
     for file_path, file_size in scanned_files:
         if file_path.name in existing_filenames:
             skipped += 1
             continue
-
-        total_size += file_size
 
         image = Image(
             project_id=project_id,
@@ -480,8 +498,14 @@ async def local_import(
             file_size=file_size,
             upload_status="completed",
         )
+        image.validation_status = "unchecked"
+        image.validation_error = None
+        image.validated_at = None
+        image.has_error = False
         db.add(image)
         registered += 1
+        registered_filenames.append(file_path.name)
+        total_size += file_size
 
     await db.commit()
 
@@ -492,7 +516,8 @@ async def local_import(
             new_images_result = await db.execute(
                 select(Image.id).where(
                     Image.project_id == project_id,
-                    Image.filename.in_([f.name for f in image_files if f.name not in existing_filenames]),
+                    Image.filename.in_(registered_filenames),
+                    Image.upload_status == "completed",
                 )
             )
             from app.workers.tasks import generate_thumbnail
@@ -503,13 +528,14 @@ async def local_import(
 
     logger.info(
         f"[local-import] project={project_id}, registered={registered}, "
-        f"skipped={skipped}, total_size={total_size}"
+        f"skipped={skipped}, invalid={len(invalid_files)}, total_size={total_size}"
     )
 
     return LocalImportResponse(
         registered=registered,
         skipped=skipped,
         total_size=total_size,
+        invalid_files=invalid_files,
     )
 
 
@@ -588,6 +614,9 @@ async def get_image(
         "resolution": image.resolution,
         "file_size": image.file_size,
         "has_error": image.has_error,
+        "validation_status": image.validation_status,
+        "validation_error": image.validation_error,
+        "validated_at": image.validated_at,
         "upload_status": image.upload_status,
         "created_at": image.created_at,
         "image_width": image.image_width,
@@ -639,7 +668,7 @@ async def regenerate_image_thumbnail(
             return {"status": "triggered", "task_id": task.id}
 
     thumb_path = f"/tmp/thumb_{image_id}_{image.filename}.jpg"
-    thumb_object_name = f"projects/{image.project_id}/thumbnails/{image.filename}.jpg"
+    thumb_object_name = source_thumbnail_key(image.project_id, image.filename)
 
     def _run_generation():
         try:
@@ -737,10 +766,22 @@ class CompletedFileInfo(BaseModel):
     status: str
 
 
+class ExcludedFileInfo(BaseModel):
+    """Information about a file uploaded but excluded from processing."""
+    filename: str
+    image_id: Optional[UUID] = None
+    status: str = "excluded"
+    reason: str
+    error: str
+    validation_status: Optional[str] = None
+    details: List[str] = Field(default_factory=list)
+
+
 class MultipartCompleteResponse(BaseModel):
     """Response for multipart upload completion."""
     completed: List[CompletedFileInfo]
     failed: List[dict]
+    excluded: List[ExcludedFileInfo] = Field(default_factory=list)
 
 
 class AbortUpload(BaseModel):
@@ -866,7 +907,7 @@ async def init_multipart_upload(
             await db.flush()
 
         # Generate object key
-        object_key = f"images/{project_id}/{file_info.filename}"
+        object_key = source_image_key(project_id, file_info.filename)
 
         if is_local:
             # Local mode: generate API URLs for chunk upload
@@ -947,8 +988,10 @@ async def complete_multipart_upload(
 
     is_local = settings.STORAGE_BACKEND == "local"
     s3_service = None if is_local else _get_s3_multipart_service()
+    storage = get_storage()
     completed = []
     failed = []
+    excluded = []
 
     logger.info(f"[complete] project={project_id}, uploads={len(request.uploads)}, is_local={is_local}")
 
@@ -965,7 +1008,7 @@ async def complete_multipart_upload(
                 continue
 
             # Validate object_key belongs to this project (prevent cross-project writes)
-            expected_prefix = f"images/{project_id}/"
+            expected_prefix = source_images_prefix(project_id)
             if not upload.object_key.startswith(expected_prefix) or ".." in upload.object_key:
                 logger.warning(f"[complete] Invalid object_key: {upload.object_key}, expected prefix: {expected_prefix}")
                 failed.append({"filename": upload.filename, "error": "Invalid object_key for this project"})
@@ -984,7 +1027,6 @@ async def complete_multipart_upload(
                     continue
 
                 # Merge chunks into final path in storage
-                storage = get_storage()
                 final_path = Path(storage.get_local_path(upload.object_key))
                 final_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1053,7 +1095,17 @@ async def complete_multipart_upload(
             if image:
                 image.upload_id = upload.upload_id
                 image.original_path = upload.object_key
+                if is_local:
+                    try:
+                        image.file_size = final_path.stat().st_size
+                    except OSError:
+                        pass
                 image.upload_status = "completed"
+                image.validation_status = "unchecked"
+                image.validation_error = None
+                image.validated_at = None
+                image.has_error = False
+
                 logger.info(f"[complete] Image updated: id={image.id}, filename={upload.filename} -> completed")
 
                 completed.append(CompletedFileInfo(
@@ -1083,9 +1135,11 @@ async def complete_multipart_upload(
 
     await db.commit()
 
-    logger.info(f"[complete] Done: completed={len(completed)}, failed={len(failed)}")
+    logger.info(f"[complete] Done: completed={len(completed)}, failed={len(failed)}, excluded={len(excluded)}")
     if failed:
         logger.warning(f"[complete] Failed uploads: {failed}")
+    if excluded:
+        logger.warning(f"[complete] Excluded uploads: {excluded}")
 
     # --- Scheduled processing trigger hook ---
     # Check if this project has a scheduled processing job and all images are now uploaded
@@ -1124,6 +1178,32 @@ async def complete_multipart_upload(
                 )
 
                 if pending_or_uploading == 0 and completed_images > 0 and failed_images == 0:
+                    eo_result = await db.execute(
+                        select(func.count(ExteriorOrientation.id))
+                        .join(Image, ExteriorOrientation.image_id == Image.id)
+                        .where(
+                            Image.project_id == project_id,
+                            Image.upload_status == "completed",
+                        )
+                    )
+                    eo_count = eo_result.scalar() or 0
+                    metadata_path = processing_metadata_path(project_id)
+                    if eo_count == 0 or not metadata_path.exists():
+                        reason = (
+                            "처리에 필요한 이미지와 EO 매칭 정보를 다시 확인해야 합니다."
+                            if eo_count > 0
+                            else "처리에 필요한 이미지와 EO 매칭 정보가 없습니다."
+                        )
+                        scheduled_job.status = "failed"
+                        scheduled_job.error_message = reason
+                        scoped_project.status = "error"
+                        await db.commit()
+                        logger.warning(
+                            f"[Scheduled Processing] Blocked for project {project_id}: "
+                            f"eo_count={eo_count}, metadata_exists={metadata_path.exists()}"
+                        )
+                        return MultipartCompleteResponse(completed=completed, failed=failed, excluded=excluded)
+
                     # All images uploaded — update DB state first (atomic)
                     scheduled_job.status = "queued"
                     scoped_project.status = "queued"
@@ -1135,8 +1215,10 @@ async def complete_multipart_upload(
                         "output_crs": scheduled_job.output_crs,
                         "output_format": scheduled_job.output_format,
                         "process_mode": scheduled_job.process_mode or "Normal",
+                        "eo_only_align": True,
+                        "build_point_cloud": False,
                     }
-                    queue_name = scheduled_job.engine or "metashape"
+                    queue_name = _processing_queue_name(scheduled_job.engine)
 
                     # Commit DB changes BEFORE submitting to Celery
                     await db.commit()
@@ -1162,7 +1244,7 @@ async def complete_multipart_upload(
             # Don't fail the upload completion if the trigger fails
             print(f"[Scheduled Processing] Trigger check failed: {e}")
 
-    return MultipartCompleteResponse(completed=completed, failed=failed)
+    return MultipartCompleteResponse(completed=completed, failed=failed, excluded=excluded)
 
 
 @router.post("/projects/{project_id}/multipart/abort")
@@ -1207,7 +1289,7 @@ async def abort_multipart_upload(
                 continue
 
             # Validate object_key belongs to this project
-            expected_prefix = f"images/{project_id}/"
+            expected_prefix = source_images_prefix(project_id)
             if not upload.object_key.startswith(expected_prefix) or ".." in upload.object_key:
                 errors.append({"filename": upload.filename, "error": "Invalid object_key for this project"})
                 continue

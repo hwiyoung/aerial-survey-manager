@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from threading import Lock
 import requests
 import Metashape
@@ -20,16 +21,34 @@ def progress_callback(value, task_name, output_path):
     status_file = os.path.join(output_path, "status.json")
 
     with lock:  # 파일 접근을 동기화
+        status = {}
         if os.path.exists(status_file):
-            with open(status_file, "r") as f:
+            for attempt in range(2):
                 try:
-                    status = json.load(f)
+                    with open(status_file, "r") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        status = loaded
+                    break
+                except Exception:
+                    if attempt == 0:
+                        time.sleep(0.05)
+        if not status:
+            manifest_file = os.path.join(output_path, "processing_manifest.json")
+            if os.path.exists(manifest_file):
+                try:
+                    with open(manifest_file, "r") as f:
+                        manifest = json.load(f)
+                    for record in manifest.get("steps", {}).values():
+                        name = record.get("task_name")
+                        if not name:
+                            continue
+                        if record.get("status") == "completed":
+                            status[name] = 100
+                        elif record.get("status") == "failed":
+                            status[name] = 1000
                 except Exception:
                     status = {}
-        else:
-            # Fallback: status.json이 없으면 현재 task만 포함
-            # (정상적으로는 processing_router.py에서 미리 생성됨)
-            status = {}
         status[task_name] = round(value, 2)
         with open(status_file, "w") as f:
             json.dump(status, f)
@@ -93,7 +112,7 @@ def check_success(output_path):
 
     진행률 값 의미:
     - 0-98: 미완료 (진행 중 또는 미시작)
-    - 99-100: 완료 (Metashape가 99.9%로 끝나는 경우 대응)
+    - 99-100: 완료 (엔진 진행률이 99.9%로 끝나는 경우 대응)
     - 1000: 실패
 
     Note: status.json에는 실행할 단계만 포함됨 (processing_router.py에서 초기화)
@@ -118,7 +137,7 @@ def check_success(output_path):
         print(f"❌ 일부 작업이 실패했습니다: {failed}")
         return False
 
-    # 99% 이상이면 완료로 간주 (Metashape가 99.9%로 끝나는 경우 대응)
+    # 99% 이상이면 완료로 간주 (엔진 진행률이 99.9%로 끝나는 경우 대응)
     # result_gsd는 GSD 값이므로 진행률 체크에서 제외
     progress_keys = [k for k in state.keys() if k != 'result_gsd']
     incomplete = {k: v for k, v in state.items() if k in progress_keys and v < 99}
@@ -132,10 +151,10 @@ def check_success(output_path):
 
 def _is_license_valid():
     """
-    Metashape 라이선스가 이미 활성화되어 있는지 로컬에서 확인.
+    처리 엔진 라이선스가 이미 활성화되어 있는지 로컬에서 확인.
     서버 호출 없이 로컬 .lic 파일 기반으로 검증합니다.
     """
-    # Metashape 2.2.0+: License().valid
+    # 처리 엔진 License().valid
     try:
         lic = Metashape.License()
         if hasattr(lic, 'valid') and lic.valid:
@@ -143,7 +162,7 @@ def _is_license_valid():
     except Exception as e:
         print(f"⚠️ License().valid 확인 중 오류: {e}", flush=True)
 
-    # Fallback: Metashape.app.activated
+    # Fallback: engine app activation flag
     try:
         if hasattr(Metashape.app, 'activated') and Metashape.app.activated:
             return True
@@ -155,29 +174,29 @@ def _is_license_valid():
 
 def activate_metashape_license():
     """
-    환경 변수의 라이선스 키를 사용하여 Metashape를 활성화하는 함수.
+    환경 변수의 라이선스 키를 사용하여 처리 엔진을 활성화하는 함수.
     이미 활성화된 상태이면 서버에 활성화 요청을 보내지 않습니다.
     """
-    license_key = os.getenv("METASHAPE_LICENSE_KEY")
+    license_key = os.getenv("ENGINE_LICENSE_KEY") or os.getenv("METASHAPE_LICENSE_KEY")
     if not license_key:
-        print("ℹ️ METASHAPE_LICENSE_KEY 환경 변수가 설정되지 않았습니다.", flush=True)
+        print("ℹ️ 처리 엔진 라이선스 키가 설정되지 않았습니다.", flush=True)
         return
 
     # 1. 로컬 라이선스 검증 (서버 호출 없음)
     if _is_license_valid():
-        print("✅ Metashape 라이선스가 이미 활성화되어 있습니다.", flush=True)
+        print("✅ 처리 엔진 라이선스가 이미 활성화되어 있습니다.", flush=True)
         return
 
     # 2. 라이선스 미활성화 상태 — 서버에 활성화 요청
-    print("🔑 Metashape 라이선스 활성화 중...", flush=True)
+    print("🔑 처리 엔진 라이선스 활성화 중...", flush=True)
 
     try:
         Metashape.License().activate(license_key)
 
         if _is_license_valid():
-            print("✅ Metashape 라이선스 활성화 성공", flush=True)
+            print("✅ 처리 엔진 라이선스 활성화 성공", flush=True)
         else:
-            print("❌ Metashape 라이선스 활성화 실패", flush=True)
+            print("❌ 처리 엔진 라이선스 활성화 실패", flush=True)
 
     except Exception as e:
         if "already" in str(e).lower():
@@ -189,12 +208,12 @@ def activate_metashape_license():
 
 def deactivate_metashape_license():
     """
-    Metashape 라이선스를 비활성화하는 함수.
+    처리 엔진 라이선스를 비활성화하는 함수.
     """
-    print("🔒 Metashape 라이선스 비활성화를 시도합니다...")
+    print("🔒 처리 엔진 라이선스 비활성화를 시도합니다...")
     try:
         Metashape.License().deactivate()
-        print("✅ Metashape 라이선스가 성공적으로 비활성화되었습니다.")
+        print("✅ 처리 엔진 라이선스가 성공적으로 비활성화되었습니다.")
     except Exception as e:
         print(f"⚠️ 라이선스 비활성화 중 오류 발생: {e}")
 

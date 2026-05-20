@@ -80,12 +80,140 @@ secure_docker_socket() {
     fi
 }
 
+setup_gpu_watchdog_sudoers() {
+    local operator_user="${AERIAL_OPERATOR_USER:-${SUDO_USER:-}}"
+    local systemctl_bin
+    local sudoers_file="/etc/sudoers.d/aerial-gpu-watchdog"
+    local tmp_file
+
+    if [ -z "$operator_user" ] || [ "$operator_user" = "root" ]; then
+        log_warn "GPU watchdog sudoers 설정을 건너뜁니다. AERIAL_OPERATOR_USER 또는 sudo 실행 사용자를 확인하세요."
+        return 0
+    fi
+
+    if ! id "$operator_user" >/dev/null 2>&1; then
+        log_warn "GPU watchdog sudoers 설정을 건너뜁니다. 사용자를 찾을 수 없습니다: $operator_user"
+        return 0
+    fi
+
+    systemctl_bin="$(command -v systemctl || true)"
+    if [ -z "$systemctl_bin" ]; then
+        log_warn "GPU watchdog sudoers 설정을 건너뜁니다. systemctl을 찾을 수 없습니다."
+        return 0
+    fi
+
+    tmp_file="$(mktemp)"
+    cat > "$tmp_file" << EOF
+# Aerial Survey Manager - GPU watchdog timer 권한
+# $operator_user 사용자에게 watchdog timer 관리에 필요한 systemctl 명령만 허용합니다.
+$operator_user ALL=(root) NOPASSWD: $systemctl_bin daemon-reload
+$operator_user ALL=(root) NOPASSWD: $systemctl_bin enable --now aerial-gpu-watchdog.timer
+$operator_user ALL=(root) NOPASSWD: $systemctl_bin status aerial-gpu-watchdog.timer --no-pager
+$operator_user ALL=(root) NOPASSWD: $systemctl_bin restart aerial-gpu-watchdog.timer
+EOF
+
+    if ! visudo -cf "$tmp_file" >/dev/null; then
+        rm -f "$tmp_file"
+        log_warn "GPU watchdog sudoers 문법 검증 실패. 설정을 적용하지 않았습니다."
+        return 0
+    fi
+
+    install -m 0440 -o root -g root "$tmp_file" "$sudoers_file"
+    rm -f "$tmp_file"
+    log_info "GPU watchdog sudoers 설정 완료: $operator_user -> $sudoers_file"
+}
+
+setup_gpu_watchdog_timer() {
+    local script_dir
+    local service_file="/etc/systemd/system/aerial-gpu-watchdog.service"
+    local timer_file="/etc/systemd/system/aerial-gpu-watchdog.timer"
+
+    script_dir="$(cd "$(dirname "$0")/.." && pwd)"
+
+    if [ ! -f "$script_dir/scripts/gpu-watchdog.sh" ]; then
+        log_warn "GPU watchdog 스크립트가 없어 systemd timer 생성을 건너뜁니다: $script_dir/scripts/gpu-watchdog.sh"
+        return 0
+    fi
+
+    cat > "$service_file" << EOF
+[Unit]
+Description=Aerial Survey Manager GPU watchdog
+After=docker.service aerial-survey.service
+Wants=aerial-survey.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$script_dir
+EnvironmentFile=$script_dir/.env
+Environment=GPU_WATCHDOG_COLLECT_DIAGNOSTICS=true
+Environment=GPU_WATCHDOG_DIAG_SINCE=2h
+ExecStart=$script_dir/scripts/gpu-watchdog.sh --once
+EOF
+
+    cat > "$timer_file" << EOF
+[Unit]
+Description=Run Aerial Survey Manager GPU watchdog periodically
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now aerial-gpu-watchdog.timer
+    log_info "GPU watchdog 타이머 생성 및 시작 완료: aerial-gpu-watchdog.timer"
+}
+
 # systemd 서비스 생성
 create_systemd_service() {
     log_info "systemd 서비스 생성..."
 
     SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
     SERVICE_FILE="/etc/systemd/system/aerial-survey.service"
+    GPU_WATCHDOG_SERVICE="/etc/systemd/system/aerial-gpu-watchdog.service"
+    GPU_WATCHDOG_TIMER="/etc/systemd/system/aerial-gpu-watchdog.timer"
+    READ_WRITE_PATHS="$SCRIPT_DIR/data"
+
+    add_existing_read_write_path() {
+        local path="$1"
+        local label="$2"
+
+        if [ -z "$path" ] || [[ "$path" != /* ]]; then
+            return
+        fi
+
+        if [ -e "$path" ]; then
+            READ_WRITE_PATHS="$READ_WRITE_PATHS $path"
+        else
+            log_warn "$label 경로가 없어 systemd ReadWritePaths에서 제외합니다: $path"
+        fi
+    }
+
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        storage_backend=$(grep "^STORAGE_BACKEND=" "$SCRIPT_DIR/.env" | cut -d'=' -f2-)
+
+        for key in AERIAL_DATA_ROOT LOCAL_STORAGE_PATH PROCESSING_DATA_PATH EXPORT_ROOT_PATH TILES_PATH; do
+            path=$(grep "^${key}=" "$SCRIPT_DIR/.env" | cut -d'=' -f2-)
+            add_existing_read_write_path "$path" "$key"
+        done
+
+        if [ "$storage_backend" = "minio" ]; then
+            path=$(grep "^MINIO_DATA_PATH=" "$SCRIPT_DIR/.env" | cut -d'=' -f2-)
+            add_existing_read_write_path "$path" "MINIO_DATA_PATH"
+        fi
+    fi
+
+    if [ -d "$SCRIPT_DIR/images" ] && ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q '^aerial-survey-manager:'; then
+        log_warn "배포 이미지가 아직 로드되지 않았습니다."
+        log_warn "서비스 시작 전에 다음 중 하나를 먼저 실행하세요:"
+        echo "  sudo $SCRIPT_DIR/load-images.sh"
+        echo "  sudo $SCRIPT_DIR/scripts/install.sh"
+        echo ""
+    fi
 
     cat > "$SERVICE_FILE" << EOF
 [Unit]
@@ -113,9 +241,10 @@ RestartSec=10
 
 # 보안 설정
 ProtectSystem=strict
-ProtectHome=yes
+# 배포 폴더가 /home 아래에 있을 수 있으므로 Docker Compose가 compose/.env 파일을 읽을 수 있게 둡니다.
+ProtectHome=no
 NoNewPrivileges=yes
-ReadWritePaths=$SCRIPT_DIR/data
+ReadWritePaths=$READ_WRITE_PATHS
 
 [Install]
 WantedBy=multi-user.target
@@ -126,12 +255,16 @@ EOF
     systemctl enable aerial-survey.service
 
     log_info "systemd 서비스 생성 완료: aerial-survey.service"
+
+    setup_gpu_watchdog_timer
+
     echo ""
     echo "서비스 관리 명령어:"
     echo "  시작: sudo systemctl start aerial-survey"
     echo "  중지: sudo systemctl stop aerial-survey"
     echo "  상태: sudo systemctl status aerial-survey"
     echo "  로그: sudo journalctl -u aerial-survey -f"
+    echo "  GPU watchdog 상태: sudo systemctl status aerial-gpu-watchdog.timer"
     echo ""
 }
 
@@ -234,7 +367,8 @@ print_completion() {
     echo -e "${BLUE}적용된 보안 설정:${NC}"
     echo "  1. .env 파일: root만 읽기 가능"
     echo "  2. systemd 서비스: aerial-survey.service"
-    echo "  3. 사용자 명령어: aerial-status, aerial-restart, aerial-logs"
+    echo "  3. GPU watchdog timer: aerial-gpu-watchdog.timer"
+    echo "  4. 사용자 명령어: aerial-status, aerial-restart, aerial-logs"
     echo ""
     echo -e "${YELLOW}일반 사용자는 다음 항목에 접근할 수 없습니다:${NC}"
     echo "  - .env 파일 내용"
@@ -263,12 +397,25 @@ main() {
     echo "=============================================="
     echo -e "${NC}"
 
+    if [ "${1:-}" = "--gpu-watchdog-sudoers-only" ]; then
+        check_root
+        setup_gpu_watchdog_sudoers
+        exit 0
+    fi
+
+    if [ "${1:-}" = "--gpu-watchdog-timer-only" ]; then
+        check_root
+        setup_gpu_watchdog_timer
+        exit 0
+    fi
+
     check_root
     create_app_user
     secure_env_file
     secure_docker_socket
     secure_deployment_dir
     create_systemd_service
+    setup_gpu_watchdog_sudoers
     create_user_scripts
     setup_sudoers
     print_completion

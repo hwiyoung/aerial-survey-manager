@@ -179,9 +179,9 @@ echo -e "${BLUE}[Celery Workers]${NC}"
 
 celery_workers=$(docker compose -f "$compose_file" exec -T api celery -A app.workers.tasks inspect active --json 2>/dev/null || echo "{}")
 if [[ "$celery_workers" == *"worker-engine"* ]]; then
-    check_pass "Metashape Worker: 활성"
+    check_pass "GPU 처리 워커: 활성"
 else
-    check_warn "Metashape Worker: 비활성 또는 연결 불가"
+    check_warn "GPU 처리 워커: 비활성 또는 연결 불가"
 fi
 
 echo ""

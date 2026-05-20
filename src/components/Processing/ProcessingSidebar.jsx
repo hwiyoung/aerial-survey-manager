@@ -3,6 +3,16 @@ import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Tra
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 
+const ACTIVE_UPLOAD_STATUSES = new Set(['waiting', 'uploading', 'validating']);
+
+function getProcessingEngineLabel(engineName) {
+    const normalized = String(engineName || '').trim().toLowerCase();
+    if (normalized === 'metashape') return 'GPU 처리 엔진';
+    if (normalized === 'odm') return 'ODM 처리 엔진';
+    if (normalized === 'external') return '외부 처리 엔진';
+    return String(engineName || '처리 엔진');
+}
+
 export default function ProcessingSidebar({
     width,
     project,
@@ -11,6 +21,8 @@ export default function ProcessingSidebar({
     onComplete,
     onCancelled,
     activeUploads = [],
+    uploadEvents = [],
+    onProcessingEventsChange = null,
     availableEngines = [],
     defaultEngine = 'metashape',
 }) {
@@ -66,6 +78,18 @@ export default function ProcessingSidebar({
     const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected, reconnect } = useProcessingProgress(
         project?.id || null  // Use project.id for WebSocket connection
     );
+    const [processingEvents, setProcessingEvents] = useState([]);
+    const visibleEvents = useMemo(() => {
+        const normalized = [...(uploadEvents || []), ...(processingEvents || [])]
+            .map((event, index) => ({
+                id: event.id || `${event.timestamp || 'event'}-${index}`,
+                timestamp: event.timestamp || new Date().toISOString(),
+                level: event.level || 'info',
+                message: event.message || '',
+            }))
+            .filter((event) => event.message);
+        return normalized.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    }, [uploadEvents, processingEvents]);
     const normalizedProjectStatus = (project?.status || '').toLowerCase();
     const isProjectCompleted = normalizedProjectStatus === 'completed' || project?.status === '완료';
     const isProjectProcessing = (
@@ -80,6 +104,41 @@ export default function ProcessingSidebar({
     const isCancelled = (!isStarting && (normalizedProjectStatus === 'cancelled' || project?.status === '취소' || wsStatus === 'cancelled')) || hasTriggeredCancel;
     const isComplete = isProjectCompleted || wsStatus === 'complete' || wsStatus === 'completed';
     const isProcessing = !isComplete && !isCancelled && (wsStatus === 'processing' || wsStatus === 'queued' || (wsStatus === 'connecting' && isProjectProcessing) || isProjectProcessing || isStarting);
+    const processingImageCount = project?.processingImageCount
+        ?? project?.processing_image_count
+        ?? project?.upload_completed_count
+        ?? project?.imageCount
+        ?? 0;
+    const uploadSummary = useMemo(() => {
+        const completed = activeUploads.filter(upload => upload.status === 'completed').length;
+        const excluded = activeUploads.filter(upload => upload.status === 'excluded').length;
+        const errors = activeUploads.filter(upload => upload.status === 'error').length;
+        const active = activeUploads.filter(upload => ACTIVE_UPLOAD_STATUSES.has(upload.status)).length;
+        const total = activeUploads.length;
+        const progress = total > 0
+            ? activeUploads.reduce((sum, upload) => sum + (upload.progress || 0), 0) / total
+            : 0;
+        return { completed, excluded, errors, active, total, progress };
+    }, [activeUploads]);
+
+    const getUploadStatusMeta = (status) => {
+        if (status === 'completed') {
+            return { label: '처리 대상', row: 'border-emerald-100 bg-emerald-50/70', text: 'text-emerald-700', bar: 'bg-emerald-500' };
+        }
+        if (status === 'excluded') {
+            return { label: '처리 제외', row: 'border-amber-200 bg-amber-50/80', text: 'text-amber-800', bar: 'bg-amber-500' };
+        }
+        if (status === 'error') {
+            return { label: '오류', row: 'border-red-200 bg-red-50/80', text: 'text-red-700', bar: 'bg-red-500' };
+        }
+        if (status === 'validating') {
+            return { label: '확인 중', row: 'border-blue-100 bg-blue-50/70', text: 'text-blue-700', bar: 'bg-blue-500' };
+        }
+        if (status === 'uploading') {
+            return { label: '업로드 중', row: 'border-blue-100 bg-blue-50/70', text: 'text-blue-700', bar: 'bg-blue-500' };
+        }
+        return { label: '대기', row: 'border-slate-100 bg-slate-50', text: 'text-slate-500', bar: 'bg-slate-400' };
+    };
 
     const fallbackProgress = (wsStatus === 'connecting' && (isProjectProcessing || isStarting))
         ? (project?.progress ?? 0)
@@ -87,6 +146,34 @@ export default function ProcessingSidebar({
     const fallbackMessage =
         wsMessage ||
         (isStarting ? '처리 시작 중...' : (wsStatus === 'queued' ? '대기 중...' : (wsStatus === 'processing' ? '처리 진행 중...' : (wsStatus === 'connecting' ? '연결 중...' : ''))));
+
+    useEffect(() => {
+        if (!project?.id) {
+            setProcessingEvents([]);
+            return;
+        }
+
+        let cancelled = false;
+        const loadProcessingEvents = async () => {
+            try {
+                const data = await api.getProcessingStatus(project.id);
+                if (!cancelled) {
+                    const events = data.processing_events || [];
+                    setProcessingEvents(events);
+                    onProcessingEventsChange?.(project.id, events);
+                }
+            } catch (_error) {
+                if (!cancelled) setProcessingEvents([]);
+            }
+        };
+
+        loadProcessingEvents();
+        const timer = setInterval(loadProcessingEvents, isProcessing ? 4000 : 10000);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [project?.id, isProcessing, onProcessingEventsChange]);
 
     // Load presets on mount
     useEffect(() => {
@@ -270,7 +357,7 @@ export default function ProcessingSidebar({
             const fallbackEngine = enabledEngines[0]?.name;
             if (fallbackEngine && fallbackEngine !== normalizedSelectedEngine) {
                 setOptions((prev) => ({ ...prev, engine: fallbackEngine }));
-                setStartError(`현재 엔진(${normalizedSelectedEngine})은 비활성입니다. ${fallbackEngine}으로 자동 전환합니다.`);
+                setStartError(`현재 엔진(${getProcessingEngineLabel(normalizedSelectedEngine)})은 비활성입니다. ${getProcessingEngineLabel(fallbackEngine)}으로 자동 전환합니다.`);
             } else {
                 setStartError('현재 엔진이 비활성입니다.');
             }
@@ -291,7 +378,7 @@ export default function ProcessingSidebar({
                     || enabledEngines[0]?.name;
                 if (fallbackEngine) {
                     setOptions((prev) => ({ ...prev, engine: fallbackEngine }));
-                    setStartError(`요청한 엔진(${errorData.engine})은 현재 정책에서 비활성입니다. ${fallbackEngine}으로 자동 전환했습니다.`);
+                    setStartError(`요청한 엔진(${getProcessingEngineLabel(errorData.engine)})은 현재 정책에서 비활성입니다. ${getProcessingEngineLabel(fallbackEngine)}으로 자동 전환했습니다.`);
                 } else {
                     setStartError(errorData.message || '요청한 처리 엔진이 현재 비활성입니다.');
                 }
@@ -442,7 +529,7 @@ export default function ProcessingSidebar({
                     <div className="grid grid-cols-2 gap-3 text-sm font-medium">
                         <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
                             <span className="text-slate-500 block text-[10px] uppercase tracking-wider mb-1">이미지 수</span>
-                            <span className="text-slate-800 font-bold text-lg">{project?.imageCount || 0} <span className="text-sm font-normal text-slate-500">장</span></span>
+                            <span className="text-slate-800 font-bold text-lg">{processingImageCount} <span className="text-sm font-normal text-slate-500">장</span></span>
                         </div>
                         <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
                             <span className="text-slate-500 block text-[10px] uppercase tracking-wider mb-1">EO 데이터</span>
@@ -528,12 +615,99 @@ export default function ProcessingSidebar({
                     </div>
 
                 </div>
+
+                {(activeUploads.length > 0 || visibleEvents.length > 0) && (
+                    <div className="space-y-3">
+                        {activeUploads.length > 0 && (
+                            <div className="space-y-2">
+                                <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
+                                    업로드 진행상황
+                                </h4>
+                                <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                                    <div className="flex items-center justify-between gap-3 text-xs text-slate-600 mb-2">
+                                        <span>
+                                            처리 대상 {uploadSummary.completed}장
+                                            {uploadSummary.excluded > 0 && ` · 제외 ${uploadSummary.excluded}장`}
+                                            {uploadSummary.errors > 0 && ` · 오류 ${uploadSummary.errors}장`}
+                                        </span>
+                                        <span className="font-semibold text-slate-700">{Math.round(uploadSummary.progress)}%</span>
+                                    </div>
+                                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
+                                        <div
+                                            className="h-full bg-blue-500 transition-all duration-300"
+                                            style={{ width: `${Math.min(100, Math.max(0, uploadSummary.progress))}%` }}
+                                        />
+                                    </div>
+                                    <div className="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5 pr-1">
+                                        {activeUploads.slice(-40).map((upload, index) => {
+                                            const meta = getUploadStatusMeta(upload.status);
+                                            const detail = upload.error
+                                                ? `처리에 사용되지 않음: ${upload.error}`
+                                                : (upload.status === 'excluded' ? '처리에 사용되지 않음' : null);
+
+                                            return (
+                                                <div
+                                                    key={`${upload.name || upload.filename || 'upload'}-${index}`}
+                                                    className={`rounded-md border px-2.5 py-2 ${meta.row}`}
+                                                >
+                                                    <div className="flex items-start justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <p className="text-xs font-semibold text-slate-700 truncate">
+                                                                {upload.name || upload.filename || '이미지'}
+                                                            </p>
+                                                            {detail && (
+                                                                <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">
+                                                                    {detail}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                        <span className={`text-[10px] font-bold whitespace-nowrap ${meta.text}`}>
+                                                            {meta.label}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {visibleEvents.length > 0 && (
+                            <div className="space-y-2">
+                                <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
+                                    처리 로그
+                                </h4>
+                                <div className="rounded-lg border border-slate-200 bg-slate-950 p-3 shadow-sm max-h-52 overflow-y-auto custom-scrollbar">
+                                    <div className="space-y-2 font-mono text-[11px] leading-relaxed">
+                                        {visibleEvents.slice(-30).map((event) => {
+                                            const level = String(event.level || 'info').toLowerCase();
+                                            const color = level === 'error'
+                                                ? 'text-red-300'
+                                                : (level === 'warning' || level === 'warn' ? 'text-amber-300' : 'text-slate-300');
+                                            const time = event.timestamp
+                                                ? new Date(event.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                                                : '';
+
+                                            return (
+                                                <div key={event.id} className={color}>
+                                                    <span className="text-slate-500 mr-2">{time}</span>
+                                                    <span>{event.message}</span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
             <div className="p-5 border-t border-slate-200 bg-slate-50 flex gap-3">
                 <button onClick={onCancel} className="flex-1 py-3 text-slate-600 font-bold text-sm hover:bg-slate-200 rounded-lg">취소</button>
                 {(() => {
                     // 프론트엔드 상태 또는 백엔드 상태로 업로드 진행 여부 확인
-                    const frontendUploading = activeUploads.some(u => u.status === 'uploading' || u.status === 'waiting');
+                    const frontendUploading = activeUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
                     const backendUploading = project?.upload_in_progress ?? false;
                     const uploadsInProgress = frontendUploading || backendUploading;
 
@@ -549,7 +723,7 @@ export default function ProcessingSidebar({
                     else if (backendUploading) buttonText = `업로드 중... (${uploadCompleted}/${totalImages})`;
                     else if (!hasImages) buttonText = '업로드된 이미지 없음';
                     else if (!hasEnabledEngine) buttonText = '사용 가능한 처리 엔진 없음';
-                    else if (!isSelectedEngineEnabled) buttonText = `${normalizedSelectedEngine} 사용 불가`;
+                    else if (!isSelectedEngineEnabled) buttonText = `${getProcessingEngineLabel(normalizedSelectedEngine)} 사용 불가`;
                     else if (!selectedPresetId) buttonText = '프리셋 선택 필요';
                     else if (isProcessingNow) buttonText = '처리 중...';
                     else buttonText = `처리 시작 (${uploadCompleted}장)`;

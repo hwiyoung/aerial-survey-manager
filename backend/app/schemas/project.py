@@ -39,6 +39,8 @@ class ProjectResponse(ProjectBase):
     created_at: datetime
     updated_at: datetime
     image_count: int = 0
+    processing_image_count: int = 0  # 실제 처리 대상 이미지 수
+    eo_count: int = 0  # EO와 매칭된 처리 대상 이미지 수
     source_size: Optional[int] = None
     source_deleted: bool = False
     ortho_size: Optional[int] = None
@@ -48,6 +50,7 @@ class ProjectResponse(ProjectBase):
     bounds: Optional[List[List[float]]] = None  # List of [lat, lng] or [[lat, lng], ...]
     # 업로드 상태 통계
     upload_completed_count: int = 0  # 업로드 완료된 이미지 수
+    upload_excluded_count: int = 0  # 무결성 검사 등으로 처리 제외된 이미지 수
     upload_in_progress: bool = False  # 업로드 진행 중 여부
     # 처리 결과 정보
     result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
@@ -110,6 +113,9 @@ class ImageResponse(ImageBase):
     resolution: Optional[str] = None
     file_size: Optional[int] = None
     has_error: bool = False
+    validation_status: Optional[str] = None
+    validation_error: Optional[str] = None
+    validated_at: Optional[datetime] = None
     upload_status: str = "pending"
     created_at: datetime
     # Image dimensions
@@ -149,8 +155,9 @@ class EOData(BaseModel):
 class EOConfig(BaseModel):
     """EO file parsing configuration."""
     delimiter: str = ","
-    has_header: bool = Field(default=True, alias="hasHeader")
+    has_header: bool = Field(default=False, alias="hasHeader")
     crs: str = "EPSG:4326"
+    excluded_image_names: List[str] = Field(default_factory=list, alias="excludedImageNames")
     columns: dict = Field(
         default={"image_name": 0, "x": 1, "y": 2, "z": 3, "omega": 4, "phi": 5, "kappa": 6}
     )
@@ -163,7 +170,14 @@ class EOUploadResponse(BaseModel):
     """EO upload response."""
     parsed_count: int
     matched_count: int
-    errors: List[str] = []
+    errors: List[str] = Field(default_factory=list)
+    file_count: int = 1
+    detected_crs: List[str] = Field(default_factory=list)
+    file_summaries: List[dict[str, Any]] = Field(default_factory=list)
+    duplicate_ignored_count: int = 0
+    duplicate_ignored_images: List[dict[str, Any]] = Field(default_factory=list)
+    excluded_count: int = 0
+    excluded_images: List[dict[str, Any]] = Field(default_factory=list)
 
 
 # --- Camera Model Schemas ---
@@ -203,7 +217,7 @@ class ProcessingOptions(BaseModel):
     gsd: float = 5.0  # cm/pixel
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
-    process_mode: str = "Normal"  # Preview, Normal, High (Metashape)
+    process_mode: str = "Normal"  # Preview, Normal, High
     # Advanced options
     eo_only_align: bool = True  # EO reference와 매칭된 이미지만 정합
     build_point_cloud: bool = False  # Point cloud 생성 여부 (3D Tiles 출력 시 필요)
@@ -229,6 +243,7 @@ class ProcessingJobResponse(BaseModel):
     process_mode: Optional[str] = None  # Preview, Normal, High
     metrics: Optional[dict[str, Any]] = None
     step_status: Optional[dict[str, Any]] = None  # 단계별 진행률 (status.json)
+    processing_events: Optional[List[dict[str, Any]]] = None
 
     class Config:
         from_attributes = True

@@ -12,6 +12,37 @@ from app.models.project import ProcessingJob, Project
 settings = get_settings()
 
 
+def _active_processing_job_ids() -> set[str] | None:
+    try:
+        from app.workers.tasks import celery_app
+    except Exception as exc:
+        print(f"[startup] Celery active task 확인 실패: {exc}")
+        return None
+
+    try:
+        active_by_worker = celery_app.control.inspect(timeout=5).active() or {}
+    except Exception as exc:
+        print(f"[startup] Celery active task 조회 실패: {exc}")
+        return None
+
+    active_ids: set[str] = set()
+    for tasks in active_by_worker.values():
+        for task in tasks or []:
+            if task.get("name") != "app.workers.tasks.process_orthophoto":
+                continue
+            args = task.get("args") or []
+            if isinstance(args, str):
+                try:
+                    import ast
+
+                    args = ast.literal_eval(args)
+                except Exception:
+                    args = []
+            if isinstance(args, (list, tuple)) and args:
+                active_ids.add(str(args[0]))
+    return active_ids
+
+
 async def _recover_stuck_jobs():
     """서버 재시작(전원 차단 포함) 후 'processing' 상태로 고착된 작업을 복구한다.
 
@@ -28,13 +59,31 @@ async def _recover_stuck_jobs():
         if not stuck_jobs:
             return
 
+        active_job_ids = _active_processing_job_ids()
+        if active_job_ids is None:
+            print("[startup] Celery active task 상태를 확인할 수 없어 processing 작업 복구를 건너뜁니다.")
+            return
+
+        active_jobs = [job for job in stuck_jobs if str(job.id) in active_job_ids]
+        stuck_jobs = [job for job in stuck_jobs if str(job.id) not in active_job_ids]
+
+        if active_jobs:
+            print(
+                "[startup] 실제 실행 중인 처리 작업은 복구 대상에서 제외: "
+                f"{[str(job.id) for job in active_jobs]}"
+            )
+
+        if not stuck_jobs:
+            return
+
+        stuck_job_ids = [job.id for job in stuck_jobs]
         stuck_project_ids = {job.project_id for job in stuck_jobs}
         print(f"[startup] 고착된 처리 작업 {len(stuck_jobs)}건 복구 중...")
 
         # processing_jobs → error로 전환
         await db.execute(
             update(ProcessingJob)
-            .where(ProcessingJob.status == "processing")
+            .where(ProcessingJob.id.in_(stuck_job_ids))
             .values(
                 status="error",
                 error_message="서버 재시작(전원 차단)으로 인해 처리가 중단되었습니다. 다시 처리를 시작해주세요.",

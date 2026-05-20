@@ -16,12 +16,12 @@ default_args = {
 def activate_license():
     # worker 에서만 import 되도록 함수 내부에 import 구문을 넣음
     import Metashape
-    Metashape.license.activate(os.getenv("METASHAPE_LICENSE_KEY"))
+    Metashape.license.activate(os.getenv("ENGINE_LICENSE_KEY") or os.getenv("METASHAPE_LICENSE_KEY"))
 
 dag = DAG(
     'activate_metashape_license',
     default_args=default_args,
-    description='A DAG to activate Metashape license',
+    description='A DAG to activate processing engine license',
     schedule_interval=None,
     concurrency=1,
     max_active_runs=1,

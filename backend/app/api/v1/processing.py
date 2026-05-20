@@ -1,5 +1,6 @@
 """Processing API endpoints."""
 import math
+import os
 from collections import Counter
 from uuid import UUID
 from datetime import datetime
@@ -14,14 +15,13 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-import json
+from sqlalchemy import select, func
 from pathlib import Path
 
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, ProcessingJob
+from app.models.project import Project, ProcessingJob, Image, ExteriorOrientation
 from app.schemas.project import (
     ProcessingEnginesResponse,
     ProcessingEnginePolicy,
@@ -38,10 +38,20 @@ from app.auth.jwt import (
     verify_internal_token,
     verify_token,
 )
+from app.utils.storage_paths import processing_metadata_path
+from app.services.processing_runtime import (
+    get_active_processing_tasks,
+    infer_message_from_step_status,
+    progress_from_step_status,
+    read_processing_events as _read_processing_events,
+    read_processing_status_file as _read_processing_status_file,
+    read_step_status_file as _read_step_status_file,
+)
 
 router = APIRouter(prefix="/processing", tags=["Processing"])
 DEFAULT_PROCESSING_ENGINE = "metashape"
-PROCESSING_QUEUE = "metashape"
+PROCESSING_QUEUE = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
+TERMINAL_PROCESSING_STATUSES = {"error", "failed", "cancelled"}
 
 
 def _get_processing_engine_policies():
@@ -49,8 +59,8 @@ def _get_processing_engine_policies():
     return {
         "metashape": {
             "enabled": settings.ENABLE_METASHAPE_ENGINE,
-            "reason": "활성화됨" if settings.ENABLE_METASHAPE_ENGINE else "ENABLE_METASHAPE_ENGINE=false",
-            "queue_name": "metashape",
+            "reason": "활성화됨" if settings.ENABLE_METASHAPE_ENGINE else "GPU 처리 엔진 비활성",
+            "queue_name": PROCESSING_QUEUE,
         },
         "odm": {
             "enabled": settings.ENABLE_ODM_ENGINE,
@@ -89,30 +99,192 @@ def _get_queue_name(engine_name: str) -> str:
     return PROCESSING_QUEUE
 
 
-def _read_processing_status_file(project_id: str) -> dict:
-    try:
-        from app.config import get_settings
-        settings = get_settings()
-        status_path = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id) / "processing_status.json"
-        if status_path.exists():
-            with open(status_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+def _metadata_path_for_project(project_id: UUID) -> Path:
+    return processing_metadata_path(project_id)
 
 
-def _read_step_status_file(project_id: str) -> dict:
+def _count_metadata_reference_rows(metadata_path: Path) -> int:
     try:
-        from app.config import get_settings
-        settings = get_settings()
-        status_path = Path(settings.LOCAL_DATA_PATH) / "processing" / str(project_id) / ".work" / "status.json"
-        if status_path.exists():
-            with open(status_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+        with open(metadata_path, "r", encoding="utf-8", errors="ignore") as f:
+            return sum(
+                1 for line in f
+                if line.strip() and not line.lstrip().startswith("#")
+            )
+    except OSError:
+        return 0
+
+
+async def _count_project_eo_records(
+    db: AsyncSession,
+    project_id: UUID,
+    completed_only: bool = False,
+) -> int:
+    query = (
+        select(func.count(ExteriorOrientation.id))
+        .join(Image, ExteriorOrientation.image_id == Image.id)
+        .where(Image.project_id == project_id)
+    )
+    if completed_only:
+        query = query.where(Image.upload_status == "completed")
+    result = await db.execute(query)
+    return result.scalar() or 0
+
+
+async def _ensure_eo_ready_for_eo_only_processing(
+    db: AsyncSession,
+    project_id: UUID,
+    completed_only: bool = False,
+) -> None:
+    eo_count = await _count_project_eo_records(db, project_id, completed_only=completed_only)
+    if eo_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_required",
+                "message": "처리에 필요한 이미지와 EO 매칭 정보가 없습니다.",
+                "confirm_message": "이미지와 EO 파일을 다시 업로드한 뒤 처리해주세요.",
+            },
+        )
+
+    metadata_path = _metadata_path_for_project(project_id)
+    if not metadata_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_metadata_missing",
+                "message": "처리에 필요한 이미지와 EO 매칭 정보를 다시 확인해야 합니다.",
+                "metadata_path": str(metadata_path),
+                "confirm_message": "이미지와 EO 파일을 다시 업로드한 뒤 처리해주세요.",
+            },
+        )
+    metadata_count = _count_metadata_reference_rows(metadata_path)
+    if metadata_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_metadata_empty",
+                "message": "처리에 사용할 EO 매칭 정보가 비어 있습니다.",
+                "metadata_path": str(metadata_path),
+                "confirm_message": "EO 위치 preview의 제외 상태를 확인하거나 이미지와 EO 파일을 다시 업로드해주세요.",
+            },
+        )
+    if metadata_count < eo_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_metadata_stale",
+                "message": "이미지와 EO 매칭 정보가 현재 업로드 상태와 맞지 않습니다.",
+                "eo_count": eo_count,
+                "metadata_count": metadata_count,
+                "metadata_path": str(metadata_path),
+                "confirm_message": "이미지와 EO 파일을 다시 업로드한 뒤 처리해주세요.",
+            },
+        )
+
+def _uuid_or_none(value: object) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
     except Exception:
-        pass
-    return {}
+        return None
+
+
+def _active_task_for_project(project_id: UUID, force_refresh: bool = False) -> dict | None:
+    return get_active_processing_tasks(force_refresh=force_refresh).get(str(project_id))
+
+
+async def _select_status_job(
+    db: AsyncSession,
+    project_id: UUID,
+    active_task: dict | None = None,
+) -> ProcessingJob | None:
+    active_job_id = _uuid_or_none((active_task or {}).get("job_id"))
+    if active_job_id:
+        result = await db.execute(
+            select(ProcessingJob).where(
+                ProcessingJob.id == active_job_id,
+                ProcessingJob.project_id == project_id,
+            )
+        )
+        active_job = result.scalar_one_or_none()
+        if active_job:
+            return active_job
+
+    result = await db.execute(
+        select(ProcessingJob)
+        .where(ProcessingJob.project_id == project_id)
+        .order_by(ProcessingJob.started_at.desc().nullslast())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def _build_processing_status_response(
+    db: AsyncSession,
+    project: Project,
+    job: ProcessingJob,
+    active_task: dict | None = None,
+) -> ProcessingJobResponse:
+    project_id = job.project_id
+    status_payload = _read_processing_status_file(project_id)
+    step_status = _read_step_status_file(str(project_id))
+    runtime_progress = progress_from_step_status(step_status, job.progress or project.progress or 0)
+    step_message = infer_message_from_step_status(step_status)
+    active_task = active_task or _active_task_for_project(project_id)
+
+    if active_task:
+        changed = False
+        if job.status != "processing":
+            job.status = "processing"
+            changed = True
+        if project.status != "processing":
+            project.status = "processing"
+            changed = True
+        if job.started_at is None:
+            job.started_at = datetime.utcnow()
+            changed = True
+        if job.completed_at is not None:
+            job.completed_at = None
+            changed = True
+        if job.error_message:
+            job.error_message = None
+            changed = True
+        if project.progress != runtime_progress:
+            project.progress = runtime_progress
+            changed = True
+        if job.progress != runtime_progress:
+            job.progress = runtime_progress
+            changed = True
+        if changed:
+            await db.commit()
+            await db.refresh(project)
+            await db.refresh(job)
+
+    response = ProcessingJobResponse.model_validate(job)
+    if active_task:
+        response.status = "processing"
+        response.progress = runtime_progress
+        response.error_message = None
+    elif job.status in ("queued", "processing"):
+        response.progress = runtime_progress
+
+    fallback_message = status_payload.get("message")
+    if job.status in TERMINAL_PROCESSING_STATUSES and not active_task:
+        response.message = fallback_message or job.error_message
+    elif active_task or job.status in ("queued", "processing"):
+        response.message = step_message or fallback_message or response.message
+    else:
+        response.message = fallback_message or response.message
+
+    if isinstance(status_payload.get("metrics"), dict):
+        response.metrics = status_payload.get("metrics")
+    if step_status:
+        response.step_status = step_status
+    processing_events = _read_processing_events(str(project_id))
+    if processing_events:
+        response.processing_events = processing_events
+    return response
 
 
 def _to_float(value):
@@ -303,6 +475,20 @@ async def start_processing(
             },
         )
 
+    active_task = _active_task_for_project(project_id, force_refresh=True)
+    if active_task:
+        active_job = await _select_status_job(db, project_id, active_task)
+        if active_job:
+            return await _build_processing_status_response(db, project, active_job, active_task)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "job_already_running",
+                "message": "이 프로젝트의 처리 작업이 이미 worker-engine에서 실행 중입니다.",
+                "can_force_restart": True,
+            },
+        )
+
     # Check image upload status before processing
     from app.models.project import Image
     from sqlalchemy import func
@@ -377,6 +563,13 @@ async def start_processing(
                 "incomplete_count": incomplete_count,
                 "confirm_message": f"완료된 {completed_count}개 이미지만으로 처리를 진행하시겠습니까?",
             },
+        )
+
+    if options.eo_only_align:
+        await _ensure_eo_ready_for_eo_only_processing(
+            db,
+            project_id,
+            completed_only=True,
         )
 
     # Check if there's already a running job
@@ -523,6 +716,13 @@ async def schedule_processing(
             detail=f"지원되지 않는 처리 엔진: {options.engine}",
         )
 
+    if options.eo_only_align:
+        await _ensure_eo_ready_for_eo_only_processing(
+            db,
+            project_id,
+            completed_only=False,
+        )
+
     # Check for existing active/scheduled jobs
     result = await db.execute(
         select(ProcessingJob).where(
@@ -597,8 +797,10 @@ async def schedule_processing(
                 "output_crs": job.output_crs,
                 "output_format": job.output_format,
                 "process_mode": job.process_mode or "Normal",
+                "eo_only_align": options.eo_only_align,
+                "build_point_cloud": options.build_point_cloud,
             }
-            queue_name = job.engine or "metashape"
+            queue_name = _get_queue_name(job.engine or DEFAULT_PROCESSING_ENGINE)
             task = process_orthophoto.apply_async(
                 args=[str(job.id), str(project_id), options_dict],
                 queue=queue_name,
@@ -638,13 +840,8 @@ async def get_processing_status(
             detail="Project not found",
         )
     
-    result = await db.execute(
-        select(ProcessingJob)
-        .where(ProcessingJob.project_id == project_id)
-        .order_by(ProcessingJob.started_at.desc().nullsfirst())
-        .limit(1)
-    )
-    job = result.scalars().first()
+    active_task = _active_task_for_project(project_id)
+    job = await _select_status_job(db, project_id, active_task)
     
     if not job:
         raise HTTPException(
@@ -652,16 +849,7 @@ async def get_processing_status(
             detail="No processing job found for this project",
         )
     
-    status_payload = _read_processing_status_file(project_id)
-    response = ProcessingJobResponse.model_validate(job)
-    if status_payload.get("message"):
-        response.message = status_payload.get("message")
-    if isinstance(status_payload.get("metrics"), dict):
-        response.metrics = status_payload.get("metrics")
-    step_status = _read_step_status_file(str(project_id))
-    if step_status:
-        response.step_status = step_status
-    return response
+    return await _build_processing_status_response(db, scoped_project, job, active_task)
 
 
 @router.post("/projects/{project_id}/cancel")
@@ -686,13 +874,17 @@ async def cancel_processing(
             detail="Project not found",
         )
     
-    result = await db.execute(
-        select(ProcessingJob).where(
-            ProcessingJob.project_id == project_id,
-            ProcessingJob.status.in_(["queued", "processing"]),
+    active_task = _active_task_for_project(project_id, force_refresh=True)
+    if active_task:
+        job = await _select_status_job(db, project_id, active_task)
+    else:
+        result = await db.execute(
+            select(ProcessingJob).where(
+                ProcessingJob.project_id == project_id,
+                ProcessingJob.status.in_(["queued", "processing"]),
+            )
         )
-    )
-    job = result.scalar_one_or_none()
+        job = result.scalar_one_or_none()
     
     if not job:
         raise HTTPException(
@@ -701,9 +893,10 @@ async def cancel_processing(
         )
     
     # Revoke Celery task
-    if job.celery_task_id:
+    celery_task_id = job.celery_task_id or (active_task or {}).get("task_id")
+    if celery_task_id:
         from app.workers.tasks import celery_app
-        celery_app.control.revoke(job.celery_task_id, terminate=True)
+        celery_app.control.revoke(celery_task_id, terminate=True)
     
     job.status = "cancelled"
     
@@ -725,7 +918,7 @@ async def list_processing_jobs(
     query = (
         select(ProcessingJob)
         .join(Project)
-        .order_by(ProcessingJob.started_at.desc().nullsfirst())
+        .order_by(ProcessingJob.started_at.desc().nullslast())
     )
     
     query = _apply_project_access_scope(query, current_user)
@@ -755,7 +948,7 @@ async def get_processing_metrics(
     query = (
         select(ProcessingJob, Project.title)
         .join(Project)
-        .order_by(ProcessingJob.started_at.desc().nullsfirst())
+        .order_by(ProcessingJob.started_at.desc().nullslast())
     )
     query = _apply_project_access_scope(query, current_user)
 
@@ -915,22 +1108,15 @@ async def websocket_status(
     await manager.connect(project_id, websocket)
     # Send latest known status immediately on connect
     try:
-        result = await db.execute(
-            select(ProcessingJob)
-            .where(ProcessingJob.project_id == project_id)
-            .order_by(ProcessingJob.started_at.desc().nullsfirst())
-            .limit(1)
-        )
-        job = result.scalars().first()
+        project_uuid = _safe_uuid(project_id)
+        active_task = _active_task_for_project(project_uuid)
+        job = await _select_status_job(db, project_uuid, active_task)
         if job:
-            status_payload = _read_processing_status_file(project_id)
-            await websocket.send_json({
-                "project_id": project_id,
-                "status": job.status,
-                "progress": job.progress,
-                "message": status_payload.get("message") or (job.error_message if job.status in ("error", "failed") else None),
-                "type": "progress" if job.status == "processing" else job.status,
-            })
+            response = await _build_processing_status_response(db, scoped_project, job, active_task)
+            payload = response.model_dump(mode="json")
+            payload["project_id"] = project_id
+            payload["type"] = "progress" if response.status == "processing" else response.status
+            await websocket.send_json(payload)
     except Exception:
         pass
     try:
@@ -998,7 +1184,7 @@ async def external_processing_webhook(
     result = await db.execute(
         select(ProcessingJob)
         .where(ProcessingJob.project_id == project_uuid)
-        .order_by(ProcessingJob.started_at.desc().nullsfirst())
+        .order_by(ProcessingJob.started_at.desc().nullslast())
     )
     job = result.scalar_one_or_none()
     

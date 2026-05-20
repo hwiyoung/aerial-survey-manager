@@ -82,6 +82,9 @@ class Image(Base):
     resolution: Mapped[str | None] = mapped_column(String(50), nullable=True)
     file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     has_error: Mapped[bool] = mapped_column(Boolean, default=False)
+    validation_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    validation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Image dimensions
@@ -170,7 +173,7 @@ class ProcessingJob(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
     )
-    engine: Mapped[str] = mapped_column(String(20), default="metashape")  # metashape only
+    engine: Mapped[str] = mapped_column(String(20), default="metashape")  # default GPU processing engine
     gsd: Mapped[float] = mapped_column(Float, default=5.0)  # cm/pixel
     output_crs: Mapped[str] = mapped_column(String(50), default="EPSG:5186")
     output_format: Mapped[str] = mapped_column(String(20), default="GeoTiff")
