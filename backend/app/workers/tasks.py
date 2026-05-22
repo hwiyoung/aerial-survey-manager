@@ -498,6 +498,41 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             
             # Run processing engine
             engine_name = options.get("engine", "metashape")
+            options.setdefault("project_region", project.region)
+            options.setdefault("project_title", project.title)
+
+            # Interior Orientation override: a project is assumed to share a
+            # single camera model across all its images, so we look up the first
+            # image with a populated camera_model_id and forward its IO to the
+            # engine. Missing fields → engine falls back to EXIF auto-calibration.
+            if "camera_io" not in options:
+                from app.models.project import CameraModel as _CameraModel
+                first_image_cam = (
+                    db.query(Image)
+                    .filter(
+                        Image.project_id == project_id,
+                        Image.camera_model_id.isnot(None),
+                    )
+                    .first()
+                )
+                if first_image_cam and first_image_cam.camera_model_id:
+                    cam = db.query(_CameraModel).filter(
+                        _CameraModel.id == first_image_cam.camera_model_id
+                    ).first()
+                    if cam and cam.focal_length and cam.pixel_size:
+                        options["camera_io"] = {
+                            "model_name": cam.name,
+                            "focal_length_mm": float(cam.focal_length),
+                            "pixel_size_mm": float(cam.pixel_size),
+                            "sensor_width_px": cam.sensor_width_px,
+                            "sensor_height_px": cam.sensor_height_px,
+                            "ppa_x_mm": float(cam.ppa_x) if cam.ppa_x is not None else 0.0,
+                            "ppa_y_mm": float(cam.ppa_y) if cam.ppa_y is not None else 0.0,
+                        }
+                        print(
+                            f"[Processing] IO override: {cam.name} "
+                            f"focal={cam.focal_length}mm pixel={cam.pixel_size}mm"
+                        )
             print(f"[Processing] Engine dispatch: {engine_name} / queue={queue_name}")
             
             # Run async processing in event loop
@@ -543,7 +578,12 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             )
             if str(target_ortho_crs).strip().isdigit():
                 target_ortho_crs = f"EPSG:{str(target_ortho_crs).strip()}"
-            result_object_name = orthomosaic_key(project_id, str(target_ortho_crs))
+            result_object_name = orthomosaic_key(
+                project_id,
+                str(target_ortho_crs),
+                region=project.region,
+                title=project.title,
+            )
             orthomosaic_cog_path = output_dir / Path(result_object_name).name
 
             try:
@@ -945,17 +985,40 @@ def delete_project_data(self, project_id: str):
 
     local_path = project_root_dir(project_id)
 
-    if local_path.exists():
-        try:
-            shutil.rmtree(local_path)
-            print(f"✓ 프로젝트 데이터 삭제 완료: {local_path}")
-            return {"status": "deleted", "path": str(local_path)}
-        except Exception as e:
-            print(f"✗ 프로젝트 데이터 삭제 실패 {local_path}: {e}")
-            return {"status": "error", "path": str(local_path), "error": str(e)}
-    else:
+    if not local_path.exists():
         print(f"ℹ 삭제할 데이터 없음: {local_path}")
         return {"status": "not_found", "path": str(local_path)}
+
+    # Best-effort delete: tolerate broken symlinks / ENOENT inside the tree
+    # so a single bad file can't strand the whole project folder.
+    swallowed: list[str] = []
+
+    def _on_error(func, path, exc_info):
+        swallowed.append(f"{path}: {exc_info[1]}")
+
+    shutil.rmtree(local_path, onerror=_on_error)
+
+    if local_path.exists():
+        # Some entries survived; try a second sweep then report.
+        shutil.rmtree(local_path, ignore_errors=True)
+
+    if local_path.exists():
+        print(f"✗ 프로젝트 데이터 일부 잔존 {local_path}: {swallowed[:5]}")
+        return {
+            "status": "partial",
+            "path": str(local_path),
+            "errors": swallowed[:20],
+        }
+
+    if swallowed:
+        print(f"✓ 프로젝트 데이터 삭제 완료 (일부 항목 무시): {local_path} ({len(swallowed)} skipped)")
+    else:
+        print(f"✓ 프로젝트 데이터 삭제 완료: {local_path}")
+    return {
+        "status": "deleted",
+        "path": str(local_path),
+        "skipped": len(swallowed),
+    }
 
 
 @celery_app.task(
@@ -1139,7 +1202,12 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         target_ortho_crs = settings.AUTO_EXPORT_TARGET_CRS or "EPSG:5186"
         if str(target_ortho_crs).strip().isdigit():
             target_ortho_crs = f"EPSG:{str(target_ortho_crs).strip()}"
-        cog_object_name = orthomosaic_key(project_id, str(target_ortho_crs))
+        cog_object_name = orthomosaic_key(
+            project_id,
+            str(target_ortho_crs),
+            region=project.region,
+            title=project.title,
+        )
         final_cog_path = output_dir / Path(cog_object_name).name
 
         # 소스가 이미 최종 경로에 있으면 복사/이동 불필요

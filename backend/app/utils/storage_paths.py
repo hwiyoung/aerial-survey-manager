@@ -59,11 +59,45 @@ def normalize_crs_label(value: str | None, default: str = "EPSG:5186") -> str:
     return raw.replace(":", "")
 
 
+_FS_UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f\s]+')
+_UNDERSCORE_RUN_RE = re.compile(r"_{2,}")
+
+
+def sanitize_filename_component(value: str | None, max_len: int = 100) -> str:
+    """Make a string safe to use as a single filename component.
+
+    Keeps Unicode letters (including 한글) and `.-_`; replaces filesystem-unsafe
+    characters (`/ \\ : * ? " < > |`), control chars and whitespace with `_`.
+    Collapses repeated underscores and trims leading/trailing separators.
+    Returns "" when the input is empty/None or reduces to nothing.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    cleaned = _FS_UNSAFE_RE.sub("_", raw)
+    cleaned = _UNDERSCORE_RUN_RE.sub("_", cleaned).strip("._-")
+    return cleaned[:max_len].rstrip("._-")
+
+
 def orthomosaic_key(
     project_id: str | UUID,
     target_crs: str | None = "EPSG:5186",
     when: datetime | None = None,
+    region: str | None = None,
+    title: str | None = None,
 ) -> str:
+    """Compute the orthomosaic storage key / export filename.
+
+    When a sanitized ``title`` is provided, uses ``{region}_{title}.tif``
+    (or just ``{title}.tif`` if region is empty). Otherwise falls back to
+    the legacy UUID + timestamp naming so existing artifacts keep working.
+    """
+    safe_title = sanitize_filename_component(title)
+    if safe_title:
+        safe_region = sanitize_filename_component(region)
+        basename = f"{safe_region}_{safe_title}" if safe_region else safe_title
+        return f"{orthomosaic_prefix()}{basename}.tif"
+
     stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
     return (
         f"{orthomosaic_prefix()}{project_id_str(project_id)}_"

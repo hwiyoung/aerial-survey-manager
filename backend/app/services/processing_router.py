@@ -526,6 +526,19 @@ class MetashapeEngine(ProcessingEngine):
             "auto_export": _as_bool(options.get("auto_export"), settings.AUTO_EXPORT_ENABLED),
             "export_target_crs": str(options.get("export_target_crs") or settings.AUTO_EXPORT_TARGET_CRS),
         }
+        # Only add camera_io to the fingerprint when set — preserves backward
+        # compatibility for projects without an IO override (their hash stays
+        # the same as before, avoiding spurious checkpoint invalidations).
+        camera_io = options.get("camera_io") or {}
+        if camera_io.get("focal_length_mm") and camera_io.get("pixel_size_mm"):
+            payload["camera_io"] = {
+                "focal_length_mm": camera_io.get("focal_length_mm"),
+                "pixel_size_mm": camera_io.get("pixel_size_mm"),
+                "sensor_width_px": camera_io.get("sensor_width_px"),
+                "sensor_height_px": camera_io.get("sensor_height_px"),
+                "ppa_x_mm": camera_io.get("ppa_x_mm"),
+                "ppa_y_mm": camera_io.get("ppa_y_mm"),
+            }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -841,7 +854,15 @@ class MetashapeEngine(ProcessingEngine):
             raise RuntimeError("자동 내보내기 대상 경로가 허용된 export root 밖에 있습니다.")
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        target_path = target_dir / Path(orthomosaic_key(project_id, target_crs, when=export_time)).name
+        target_path = target_dir / Path(
+            orthomosaic_key(
+                project_id,
+                target_crs,
+                when=export_time,
+                region=options.get("project_region"),
+                title=options.get("project_title"),
+            )
+        ).name
         export_log_path = output_dir / ".auto_export.log"
         export_status_path = output_dir / "auto_export_status.json"
         cmd = [
@@ -1155,6 +1176,28 @@ class MetashapeEngine(ProcessingEngine):
                         cmd.extend(["--eo_only_align", "true"])
                     else:
                         cmd.append("--allow_non_eo_incremental")
+
+                    camera_io = options.get("camera_io")
+                    if camera_io and camera_io.get("focal_length_mm") and camera_io.get("pixel_size_mm"):
+                        cmd.extend([
+                            "--camera_focal_length", str(camera_io["focal_length_mm"]),
+                            "--camera_pixel_size", str(camera_io["pixel_size_mm"]),
+                            "--camera_ppa_x", str(camera_io.get("ppa_x_mm") or 0.0),
+                            "--camera_ppa_y", str(camera_io.get("ppa_y_mm") or 0.0),
+                        ])
+                        if camera_io.get("sensor_width_px"):
+                            cmd.extend(["--camera_sensor_width_px", str(camera_io["sensor_width_px"])])
+                        if camera_io.get("sensor_height_px"):
+                            cmd.extend(["--camera_sensor_height_px", str(camera_io["sensor_height_px"])])
+                        if camera_io.get("model_name"):
+                            cmd.extend(["--camera_model_name", str(camera_io["model_name"])])
+                        logger.info(
+                            "[ProcessingEngine] IO override forwarded: model=%s focal=%smm pixel=%smm",
+                            camera_io.get("model_name"),
+                            camera_io.get("focal_length_mm"),
+                            camera_io.get("pixel_size_mm"),
+                        )
+
                     metadata_path = input_dir / "metadata.txt"
                     logger.info(f"[ProcessingEngine] EO metadata path: {metadata_path} (exists={metadata_path.exists()})")
                     logger.info(f"[ProcessingEngine] EO-only align mode: {eo_only_align}")
