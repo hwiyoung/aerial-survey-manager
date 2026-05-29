@@ -385,14 +385,6 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                 </div>
             )}
 
-            {images.length === 0 && project.images?.length > 0 && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-[1000] pointer-events-none">
-                    <div className="bg-white p-4 rounded shadow text-slate-700 font-bold">
-                        EO 데이터가 없어 지도에 표시할 수 없습니다.
-                    </div>
-                </div>
-            )}
-
         </div>
     );
 }

@@ -35,13 +35,43 @@ SCAN_DEPTHS = {"/media": 2, "/run/media": 2, "/home": 1}
 SKIP_PREFIXES = ("snap-", "loop", ".")
 
 
+def _split_configured_roots(value: Optional[str]) -> List[str]:
+    """Parse an explicit comma-separated root allowlist."""
+    if not value:
+        return []
+    roots = []
+    for item in value.split(","):
+        root = item.strip()
+        if root:
+            roots.append(str(Path(root).resolve()))
+    return roots
+
+
+def _configured_allowed_roots() -> List[str]:
+    return _split_configured_roots(os.getenv("FILESYSTEM_ALLOWED_ROOTS"))
+
+
+def _allowed_roots() -> List[str]:
+    return _configured_allowed_roots() or ALLOWED_ROOTS
+
+
 def _is_within_allowed_root(path: str) -> bool:
     """Check if a path is within an allowed root directory."""
     resolved = str(Path(path).resolve())
     return any(
         resolved == root or resolved.startswith(root + "/")
-        for root in ALLOWED_ROOTS
+        for root in _allowed_roots()
     )
+
+
+def get_allowed_roots() -> List[str]:
+    """Return the effective filesystem root allowlist."""
+    return _allowed_roots()
+
+
+def is_within_allowed_root(path: str) -> bool:
+    """Public helper for endpoints that accept server-side paths."""
+    return _is_within_allowed_root(path)
 
 
 def _get_disk_usage(path: str) -> tuple:
@@ -121,24 +151,40 @@ async def get_filesystem_roots(
 ):
     """List mounted devices/volumes available for browsing."""
     roots = []
-    for root, depth in SCAN_DEPTHS.items():
-        for device_path in _enumerate_devices(root, depth):
-            try:
-                has_contents = any(
-                    not c.name.startswith(".")
-                    for c in device_path.iterdir()
-                )
-            except PermissionError:
-                has_contents = False
+    configured_roots = _configured_allowed_roots()
+    if configured_roots:
+        device_paths = []
+        for root in configured_roots:
+            if root in SCAN_DEPTHS:
+                device_paths.extend(_enumerate_devices(root, SCAN_DEPTHS[root]))
+                continue
+            root_path = Path(root)
+            if root_path.exists() and root_path.is_dir():
+                device_paths.append(root_path)
+    else:
+        device_paths = [
+            device_path
+            for root, depth in SCAN_DEPTHS.items()
+            for device_path in _enumerate_devices(root, depth)
+        ]
 
-            total_gb, used_gb = _get_disk_usage(str(device_path))
-            roots.append(RootEntry(
-                name=device_path.name,
-                path=str(device_path),
-                has_contents=has_contents,
-                total_gb=total_gb,
-                used_gb=used_gb,
-            ))
+    for device_path in device_paths:
+        try:
+            has_contents = any(
+                not c.name.startswith(".")
+                for c in device_path.iterdir()
+            )
+        except PermissionError:
+            has_contents = False
+
+        total_gb, used_gb = _get_disk_usage(str(device_path))
+        roots.append(RootEntry(
+            name=device_path.name,
+            path=str(device_path),
+            has_contents=has_contents,
+            total_gb=total_gb,
+            used_gb=used_gb,
+        ))
 
     roots.sort(key=lambda r: r.name.lower())
     return RootsResponse(roots=roots)
@@ -163,7 +209,7 @@ async def browse_filesystem(
     if not _is_within_allowed_root(str(target)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: path is outside allowed directories ({', '.join(ALLOWED_ROOTS)})",
+            detail=f"Access denied: path is outside allowed directories ({', '.join(_allowed_roots())})",
         )
 
     if not target.exists():

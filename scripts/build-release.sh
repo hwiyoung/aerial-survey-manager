@@ -21,6 +21,10 @@ RELEASE_NAME="aerial-survey-manager-${VERSION}"
 RELEASE_DIR="./releases/${RELEASE_NAME}"
 IMAGE_PREFIX="aerial-survey-manager"
 PROD_PROJECT="aerial-prod"  # 개발 이미지와 분리하기 위한 별도 프로젝트명
+IO_CSV_PATH="${IO_CSV_PATH:-${AERIAL_IO_CSV_PATH:-}}"
+DATA_ASSET_DIR="${DATA_ASSET_DIR:-${AERIAL_DATA_ASSET_DIR:-}}"
+REGION_GEOJSON_PATH="${REGION_GEOJSON_PATH:-${AERIAL_REGION_GEOJSON_PATH:-}}"
+SHEET_GEOJSON_DIR="${SHEET_GEOJSON_DIR:-${AERIAL_SHEET_GEOJSON_DIR:-$DATA_ASSET_DIR}}"
 
 echo -e "${BLUE}=============================================="
 echo "     Aerial Survey Manager Release Builder"
@@ -29,6 +33,32 @@ echo ""
 echo "Version: $VERSION"
 echo "Output: ${RELEASE_DIR}.tar.gz"
 echo ""
+
+echo "0. 배포 전 설정 검증 중..."
+docker compose -f docker-compose.prod.yml config >/dev/null
+echo -e "   ${GREEN}✓ docker compose config 통과${NC}"
+
+IO_CSV_SRC=""
+for candidate in "$IO_CSV_PATH" "./data/io.csv" "./data/regions/io.csv"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+        IO_CSV_SRC="$candidate"
+        break
+    fi
+done
+
+if [ -z "$IO_CSV_SRC" ] && [ "${REQUIRE_IO_CSV:-true}" = "true" ]; then
+    echo "   ⚠ io.csv 파일을 찾을 수 없습니다."
+    echo "     - 기본 위치: data/io.csv"
+    echo "     - 별도 위치 사용: IO_CSV_PATH=/path/to/io.csv scripts/build-release.sh $VERSION"
+    echo "     - io.csv 없이 배포 패키지를 만들려면 REQUIRE_IO_CSV=false 를 명시하세요."
+    exit 1
+fi
+
+if [ -n "$IO_CSV_SRC" ]; then
+    ./scripts/check-release-parity.sh --io-csv "$IO_CSV_SRC"
+else
+    ./scripts/check-release-parity.sh --allow-missing-io
+fi
 
 # 기존 릴리스 디렉토리 정리
 rm -rf "$RELEASE_DIR"
@@ -92,6 +122,7 @@ with open('docker-compose.prod.yml', 'r') as f:
 # 서비스별 이미지 매핑
 VERSION = '${VERSION}'
 PREFIX = '${IMAGE_PREFIX}'
+DISPLAY_VERSION = VERSION[1:] if VERSION.startswith('v') else VERSION
 service_images = {
     'frontend': f'{PREFIX}:frontend-{VERSION}',
     'api': f'{PREFIX}:api-{VERSION}',
@@ -100,6 +131,7 @@ service_images = {
     'celery-worker-thumbnail': f'{PREFIX}:celery-worker-{VERSION}',
     'celery-worker': f'{PREFIX}:celery-worker-{VERSION}',
     'flower': f'{PREFIX}:flower-{VERSION}',
+    'flower-debug': f'{PREFIX}:flower-{VERSION}',
 }
 
 lines = content.split('\n')
@@ -141,18 +173,11 @@ while i < len(lines):
             i += 1
             continue
 
-    # 데이터 경로: ./data → ./data/regions (배포 패키지 구조에 맞게)
-    if '- ./data:/app/data:ro' in line or '- ./data/regions:/app/data:ro' in line:
-        indent = len(line) - len(line.lstrip())
-        output.append(f'{" " * indent}- ./data/regions:/app/data:ro')
-        i += 1
-        continue
-
     output.append(line)
     i += 1
 
 # 헤더 추가
-header = f'# Aerial Survey Manager - 배포용 (v{VERSION})\n# 이 파일은 docker-compose.prod.yml에서 자동 생성됨\n'
+header = f'# Aerial Survey Manager - 배포용 (v{DISPLAY_VERSION})\n# 이 파일은 docker-compose.prod.yml에서 자동 생성됨\n'
 result = header + '\n'.join(output)
 
 with open('${RELEASE_DIR}/docker-compose.yml', 'w') as f:
@@ -160,6 +185,9 @@ with open('${RELEASE_DIR}/docker-compose.yml', 'w') as f:
 
 print('  docker-compose.prod.yml → docker-compose.yml 변환 완료')
 PYEOF
+
+docker compose -f "$RELEASE_DIR/docker-compose.yml" config >/dev/null
+echo -e "  ${GREEN}✓ 배포용 docker-compose.yml config 통과${NC}"
 
 echo ""
 echo "5. 기타 배포 파일 복사 중..."
@@ -177,6 +205,7 @@ rm -f "$RELEASE_DIR/scripts/shutdown-metashape.sh"
 mkdir -p "$RELEASE_DIR/docs"
 cp docs/DEPLOYMENT_GUIDE.md "$RELEASE_DIR/docs/"
 cp docs/ADMIN_GUIDE.md "$RELEASE_DIR/docs/" 2>/dev/null || true
+cp docs/INSTALLATION_GUIDE.md "$RELEASE_DIR/docs/" 2>/dev/null || true
 
 # SSL 자체 서명 인증서 자동 생성 (nginx 시작을 위해 필요)
 echo ""
@@ -189,23 +218,51 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 echo "  - 자체 서명 SSL 인증서가 생성되었습니다."
 echo "  - 프로덕션 환경에서는 실제 인증서로 교체하세요."
 
-# data/regions 디렉토리 생성 (시드 데이터용)
+echo "  - nginx 설정 검증 중..."
+docker run --rm \
+    -v "$(pwd)/$RELEASE_DIR/nginx.prod.conf:/etc/nginx/nginx.conf:ro" \
+    -v "$(pwd)/$RELEASE_DIR/ssl:/etc/nginx/ssl:ro" \
+    nginx:alpine nginx -t >/tmp/aerial-release-nginx-test.log 2>&1 \
+    || {
+        cat /tmp/aerial-release-nginx-test.log
+        rm -f /tmp/aerial-release-nginx-test.log
+        exit 1
+    }
+rm -f /tmp/aerial-release-nginx-test.log
+echo -e "    ${GREEN}✓ nginx -t 통과${NC}"
+
+# data 디렉토리 전체 복사 후, 이전 배포 구조와 호환되는 regions 사본도 유지
+echo "  - data 디렉토리 복사 중..."
+mkdir -p "$RELEASE_DIR/data"
+if [ -d "./data" ]; then
+    cp -a ./data/. "$RELEASE_DIR/data/"
+    echo "    ✓ ./data 전체 복사 완료"
+else
+    echo "    ⚠ ./data 디렉토리가 없습니다."
+fi
+
+# data/regions 디렉토리 생성 (이전 배포 구조 호환용)
 mkdir -p "$RELEASE_DIR/data/regions"
 
 # 권역 GeoJSON 데이터 복사 (초기 시드용, 파일명 후보 순서대로 탐색)
 echo "  - 권역 GeoJSON 데이터 복사 중..."
 REGION_SRC=""
 for candidate in \
+    "$REGION_GEOJSON_PATH" \
+    "${DATA_ASSET_DIR:+$DATA_ASSET_DIR/전국_권역_5K_5179.geojson}" \
+    "${DATA_ASSET_DIR:+$DATA_ASSET_DIR/TN_MAPINDX_5K_5179.geojson}" \
+    "${DATA_ASSET_DIR:+$DATA_ASSET_DIR/regions.geojson}" \
     "./data/전국_권역_5K_5179.geojson" \
     "./data/TN_MAPINDX_5K_5179.geojson" \
     "./data/regions.geojson"; do
-    if [ -f "$candidate" ]; then
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
         REGION_SRC="$candidate"
         break
     fi
 done
 
 if [ -n "$REGION_SRC" ]; then
+    cp "$REGION_SRC" "$RELEASE_DIR/data/regions.geojson"
     cp "$REGION_SRC" "$RELEASE_DIR/data/regions/regions.geojson"
     echo "    ✓ $(basename $REGION_SRC) → regions.geojson 복사 완료"
 else
@@ -214,22 +271,34 @@ fi
 
 # 카메라 모델 데이터 복사 (초기 시드용)
 echo "  - 카메라 모델 데이터 복사 중..."
-if [ -f "./data/io.csv" ]; then
-    cp "./data/io.csv" "$RELEASE_DIR/data/regions/"
-    echo "    ✓ io.csv 복사 완료"
+if [ -n "$IO_CSV_SRC" ]; then
+    cp "$IO_CSV_SRC" "$RELEASE_DIR/data/io.csv"
+    cp "$IO_CSV_SRC" "$RELEASE_DIR/data/regions/io.csv"
+    echo "    ✓ $(basename "$IO_CSV_SRC") → data/io.csv 복사 완료"
 else
-    echo "    ⚠ io.csv 파일을 찾을 수 없습니다. data/io.csv 를 확인하세요."
+    echo "    ⚠ io.csv 파일을 찾을 수 없습니다."
+    echo "      - 기본 위치: data/io.csv"
+    echo "      - 별도 위치 사용: IO_CSV_PATH=/path/to/io.csv scripts/build-release.sh $VERSION"
+    if [ "${REQUIRE_IO_CSV:-true}" = "true" ]; then
+        echo "      - io.csv 없이 배포 패키지를 만들려면 REQUIRE_IO_CSV=false 를 명시하세요."
+        exit 1
+    fi
 fi
 
 # 도엽(map sheet) GeoJSON 데이터 복사
 echo "  - 도엽 GeoJSON 데이터 복사 중..."
 SHEET_COUNT=0
-for f in ./data/TN_MAPINDX_*K_5179.geojson; do
-    if [ -f "$f" ]; then
-        cp "$f" "$RELEASE_DIR/data/regions/"
-        echo "    ✓ $(basename $f) 복사 완료"
-        SHEET_COUNT=$((SHEET_COUNT + 1))
+for sheet_dir in "$SHEET_GEOJSON_DIR" "./data"; do
+    if [ -z "$sheet_dir" ] || [ ! -d "$sheet_dir" ]; then
+        continue
     fi
+    for f in "$sheet_dir"/TN_MAPINDX_*K_5179.geojson; do
+        if [ -f "$f" ]; then
+            cp "$f" "$RELEASE_DIR/data/regions/"
+            echo "    ✓ $(basename "$f") 복사 완료"
+            SHEET_COUNT=$((SHEET_COUNT + 1))
+        fi
+    done
 done
 if [ "$SHEET_COUNT" -eq 0 ]; then
     echo "    ⚠ 도엽 GeoJSON 파일을 찾을 수 없습니다."
@@ -326,6 +395,44 @@ chmod +x "$RELEASE_DIR/load-images.sh"
 echo ""
 echo "8. README 생성 중..."
 
+cat > "$RELEASE_DIR/OPERATIONS_CHECKLIST.txt" << EOF
+Aerial Survey Manager 운영 체크리스트 (${VERSION})
+=================================================
+
+설치 전:
+  [ ] ./load-images.sh 실행
+  [ ] ./scripts/check-gpu-stack.sh 로 GPU/커널/Docker runtime 확인
+  [ ] data/io.csv 포함 여부 확인
+  [ ] docker compose config 통과 확인
+  [ ] nginx -t 통과 확인
+
+설치/업그레이드:
+  [ ] ./scripts/install.sh 실행 또는 기존 .env 유지 후 docker compose up
+  [ ] sudo bash scripts/secure-deployment.sh 재실행
+  [ ] systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|ExecStart'
+      - /home/dell/aerial-survey-manager-current 같은 고정 symlink 경로를 가리켜야 함
+
+재부팅 후:
+  [ ] systemctl status aerial-survey --no-pager
+  [ ] systemctl status aerial-gpu-watchdog.timer --no-pager
+  [ ] nvidia-smi
+  [ ] docker compose exec worker-engine nvidia-smi
+
+경로/정사영상:
+  [ ] LOCAL_STORAGE_PATH/projects 만 /data/storage/projects 로 마운트됨
+  [ ] EXPORT_ROOT_PATH 가 /data/storage/orthomosaic 및 /data/exports 로 마운트됨
+  [ ] LOCAL_STORAGE_PATH/orthomosaic 더미 디렉토리는 필요 없음
+  [ ] 기존 데이터 동기화 필요 시 ./scripts/sync-ortho-result-paths.sh --apply 실행
+
+카메라 IO:
+  [ ] API 시작 후 data/io.csv 기준으로 표준 카메라 모델이 DB에 동기화됨
+  [ ] io.csv의 pixel size는 µm 단위이며 처리 엔진 전달 시 mm로 변환됨
+
+선택:
+  [ ] 커널/NVIDIA stack 고정이 필요하면 보안 업데이트 지연 위험을 확인한 뒤
+      sudo ./scripts/pin-gpu-stack.sh --hold 실행
+EOF
+
 cat > "$RELEASE_DIR/README.txt" << EOF
 ============================================================
 Aerial Survey Manager - 정사영상 생성 플랫폼
@@ -346,11 +453,14 @@ Version: ${VERSION}
    docker compose up -d
 
 3. 접속:
-   http://your-server:8081
+   http://배포PC_IP:18100
 
 상세 가이드:
 -----------
-docs/DEPLOYMENT_GUIDE.md 참조
+docs/INSTALLATION_GUIDE.md  - 설치 절차
+docs/DEPLOYMENT_GUIDE.md    - 배포/업그레이드
+docs/ADMIN_GUIDE.md         - 운영/복구
+OPERATIONS_CHECKLIST.txt    - 설치 전후 점검표
 
 지원:
 -----------
@@ -386,4 +496,8 @@ echo "  1. tar -xzf ${RELEASE_NAME}.tar.gz"
 echo "  2. cd ${RELEASE_NAME}"
 echo "  3. ./load-images.sh"
 echo "  4. ./scripts/install.sh"
+echo ""
+echo -e "${YELLOW}운영 체크리스트:${NC}"
+echo "  - ${RELEASE_NAME}/OPERATIONS_CHECKLIST.txt"
+echo "  - ${RELEASE_NAME}/docs/INSTALLATION_GUIDE.md"
 echo ""

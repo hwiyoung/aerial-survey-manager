@@ -45,6 +45,30 @@ PROCESSING_ENGINE_QUEUE = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
 ENABLE_EXTERNAL_COG_INGEST = (
     os.getenv("ENABLE_EXTERNAL_COG_INGEST", "false").strip().lower() == "true"
 )
+CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
+
+
+class ProcessingCancelled(Exception):
+    """Raised when the worker notices that the DB job was cancelled."""
+
+
+def _camera_pixel_size_to_mm(value) -> float | None:
+    """Return camera pixel size in millimeters.
+
+    CameraModel.pixel_size is populated from io.csv in micrometers. Some
+    hand-entered or future-corrected records may already be in millimeters, so
+    values below 0.1 are treated as mm for backward compatibility.
+    """
+    if value is None:
+        return None
+    try:
+        pixel_size = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pixel_size <= 0:
+        return None
+    return pixel_size / 1000.0 if pixel_size > 0.1 else pixel_size
+
 
 # Create Celery application
 celery_app = Celery(
@@ -187,6 +211,35 @@ def _warp_to_cog(input_path: str, output_path: str, target_crs: str) -> None:
         output_path,
     ]
     subprocess.run(gdal_cmd, check=True, capture_output=True)
+
+
+def _is_cog_in_target_crs(path: Path | str, target_crs: str) -> bool:
+    """Return True when a raster is already a COG in the requested CRS."""
+    try:
+        from osgeo import gdal, osr
+
+        ds = gdal.Open(str(path), gdal.GA_ReadOnly)
+        if ds is None:
+            return False
+
+        try:
+            image_structure = ds.GetMetadata("IMAGE_STRUCTURE") or {}
+            if image_structure.get("LAYOUT") != "COG":
+                return False
+
+            source_srs = osr.SpatialReference()
+            if source_srs.ImportFromWkt(ds.GetProjection() or "") != 0:
+                return False
+
+            target_srs = osr.SpatialReference()
+            if target_srs.SetFromUserInput(str(target_crs)) != 0:
+                return False
+
+            return bool(source_srs.IsSame(target_srs))
+        finally:
+            ds = None
+    except Exception:
+        return False
 
 
 def _update_project_geo(project, bounds_wkt: str, db) -> None:
@@ -350,6 +403,12 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
         if job.status == "completed":
             print(f"[process_orthophoto] Job {job_id} already completed, skipping re-execution.")
             return {"status": "skipped", "message": "Job already completed"}
+        if job.status in ("cancelled", "failed", "error"):
+            print(
+                f"[process_orthophoto] Job {job_id} is already {job.status}, "
+                "skipping queued task."
+            )
+            return {"status": "skipped", "message": f"Job already {job.status}"}
 
         try:
             queue_name = "unknown"
@@ -458,8 +517,38 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 except Exception:
                     pass
 
+            def _is_cancelled_in_db() -> bool:
+                try:
+                    db.refresh(job)
+                    db.refresh(project)
+                except Exception:
+                    return False
+                return job.status == "cancelled" or project.status == "cancelled"
+
+            def persist_cancelled_status(progress: int | None = None):
+                cancel_progress = max(
+                    0,
+                    min(
+                        100,
+                        int(progress if progress is not None else (job.progress or project.progress or 0)),
+                    ),
+                )
+                job.status = "cancelled"
+                job.progress = cancel_progress
+                job.completed_at = job.completed_at or datetime.utcnow()
+                job.error_message = None
+                project.status = "cancelled"
+                project.progress = cancel_progress
+                db.commit()
+                write_status_file(cancel_progress, CANCELLED_PROCESSING_MESSAGE, status_value="cancelled")
+                _broadcast_ws(project_id, "cancelled", cancel_progress, CANCELLED_PROCESSING_MESSAGE)
+                return {"status": "cancelled", "message": CANCELLED_PROCESSING_MESSAGE}
+
             def update_progress(progress, message=""):
                 """Update progress in database, Celery state, and broadcast via WebSocket."""
+                if _is_cancelled_in_db():
+                    persist_cancelled_status()
+                    raise ProcessingCancelled(CANCELLED_PROCESSING_MESSAGE)
                 current = job.progress or 0
                 if progress < current:
                     progress = current
@@ -519,11 +608,13 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     cam = db.query(_CameraModel).filter(
                         _CameraModel.id == first_image_cam.camera_model_id
                     ).first()
-                    if cam and cam.focal_length and cam.pixel_size:
+                    pixel_size_mm = _camera_pixel_size_to_mm(cam.pixel_size if cam else None)
+                    if cam and cam.focal_length and pixel_size_mm:
                         options["camera_io"] = {
                             "model_name": cam.name,
                             "focal_length_mm": float(cam.focal_length),
-                            "pixel_size_mm": float(cam.pixel_size),
+                            "pixel_size_mm": pixel_size_mm,
+                            "pixel_size_um": float(cam.pixel_size),
                             "sensor_width_px": cam.sensor_width_px,
                             "sensor_height_px": cam.sensor_height_px,
                             "ppa_x_mm": float(cam.ppa_x) if cam.ppa_x is not None else 0.0,
@@ -531,7 +622,8 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                         }
                         print(
                             f"[Processing] IO override: {cam.name} "
-                            f"focal={cam.focal_length}mm pixel={cam.pixel_size}mm"
+                            f"focal={cam.focal_length}mm "
+                            f"pixel={cam.pixel_size}µm/{pixel_size_mm:.6f}mm"
                         )
             print(f"[Processing] Engine dispatch: {engine_name} / queue={queue_name}")
             
@@ -605,7 +697,15 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
 
                 update_progress(92, "결과물 저장 중...")
 
-                _warp_to_cog(str(cog_path), str(orthomosaic_cog_path), str(target_ortho_crs))
+                if _is_cog_in_target_crs(cog_path, str(target_ortho_crs)):
+                    print(
+                        f"COG already in target CRS ({target_ortho_crs}); "
+                        "moving to final name without warp"
+                    )
+                    orthomosaic_cog_path.unlink(missing_ok=True)
+                    shutil.move(str(cog_path), str(orthomosaic_cog_path))
+                else:
+                    _warp_to_cog(str(cog_path), str(orthomosaic_cog_path), str(target_ortho_crs))
                 result_path = _upload_cog_to_storage(orthomosaic_cog_path, result_object_name, storage)
                 if not is_local_storage:
                     # MinIO: COG를 output/으로 이동 (체크섬/bounds 추출용)
@@ -720,6 +820,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 pass
 
             # Final status update
+            if _is_cancelled_in_db():
+                return persist_cancelled_status()
+
             job.status = "completed"
             job.progress = 100
             job.completed_at = datetime.utcnow()
@@ -767,13 +870,26 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 "metrics": final_metrics,
             }
             
+        except ProcessingCancelled:
+            if "persist_cancelled_status" in locals():
+                return persist_cancelled_status()
+            raise
+
         except Exception as e:
+            if "persist_cancelled_status" in locals() and _is_cancelled_in_db():
+                return persist_cancelled_status()
+
             # Handle error - extract user-friendly message from processing output
             error_str = str(e)
             
             # Try to find [ERROR] message in output
             user_friendly_error = "처리 중 오류가 발생했습니다."
-            if "[ERROR]" in error_str:
+            if "GPU_RUNTIME_LOST" in error_str:
+                user_friendly_error = (
+                    "GPU 처리 장치 연결이 끊겨 처리가 중단되었습니다. "
+                    "GPU 워커 상태를 확인한 뒤 다시 처리해주세요."
+                )
+            elif "[ERROR]" in error_str:
                 # Extract the ERROR line
                 import re
                 error_match = re.search(r'\[ERROR\]\s*(.+?)(?:\n|$)', error_str)
@@ -1249,13 +1365,16 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
                 return {"status": "error", "message": f"COG 변환 실패: {e}"}
 
         # Ensure the stored orthomosaic is a COG in the configured target CRS.
-        warped_cog_path = output_dir / f"_warped_{Path(cog_object_name).name}"
-        try:
-            _warp_to_cog(str(final_cog_path), str(warped_cog_path), str(target_ortho_crs))
-            shutil.move(str(warped_cog_path), str(final_cog_path))
-        except Exception as e:
-            warped_cog_path.unlink(missing_ok=True)
-            return {"status": "error", "message": f"정사영상 COG/CRS 변환 실패: {e}"}
+        if _is_cog_in_target_crs(final_cog_path, str(target_ortho_crs)):
+            print(f"✓ 입력 파일이 이미 대상 CRS({target_ortho_crs})의 COG 형식")
+        else:
+            warped_cog_path = output_dir / f"_warped_{Path(cog_object_name).name}"
+            try:
+                _warp_to_cog(str(final_cog_path), str(warped_cog_path), str(target_ortho_crs))
+                shutil.move(str(warped_cog_path), str(final_cog_path))
+            except Exception as e:
+                warped_cog_path.unlink(missing_ok=True)
+                return {"status": "error", "message": f"정사영상 COG/CRS 변환 실패: {e}"}
 
         # Upload / move to storage
         storage = get_storage()

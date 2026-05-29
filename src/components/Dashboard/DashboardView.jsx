@@ -52,6 +52,17 @@ function DashboardStatsCard({ icon, value, unit, label, subLabel, progress, prog
     );
 }
 
+function getProcessingImageCount(project) {
+    const count = project?.processingImageCount
+        ?? project?.processing_image_count
+        ?? project?.upload_completed_count
+        ?? project?.imageCount
+        ?? project?.image_count
+        ?? 0;
+    const numericCount = Number(count);
+    return Number.isFinite(numericCount) ? numericCount : 0;
+}
+
 /**
  * Stats summary section with 4 key metrics
  */
@@ -180,6 +191,7 @@ function ProjectDetailView({ project, onBack }) {
     const processingCompletedAt = project.processingCompletedAt || project.processing_completed_at;
     const processingStartedLabel = project.processingStartedAtDisplay || formatKstDateTime(processingStartedAt);
     const processingCompletedLabel = project.processingCompletedAtDisplay || formatKstDateTime(processingCompletedAt);
+    const processingImageCount = getProcessingImageCount(project);
 
     return (
         <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-100">
@@ -217,9 +229,9 @@ function ProjectDetailView({ project, onBack }) {
             <div className="grid grid-cols-2 gap-4">
                 <DashboardStatsCard
                     icon={<Camera size={18} />}
-                    value={project.imageCount?.toLocaleString() || project.image_count?.toLocaleString() || '0'}
+                    value={processingImageCount.toLocaleString()}
                     unit="장"
-                    label="원본 사진"
+                    label="처리 이미지"
                 />
                 <DashboardStatsCard
                     icon={<MapPin size={18} />}

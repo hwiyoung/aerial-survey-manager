@@ -62,13 +62,13 @@ cd aerial-survey-manager
 | `VITE_TILE_URL` | `/tiles/{z}/{x}/{y}` |
 | `TILES_PATH` | 호스트 타일 디렉토리 경로 |
 
-> 신규 설치는 `AERIAL_DATA_ROOT`를 먼저 정하고 프로젝트 데이터는 `AERIAL_DATA_ROOT/projects`, 최종 정사영상은 `AERIAL_DATA_ROOT/orthomosaic` 또는 별도 `EXPORT_ROOT_PATH`로 정리하는 방식을 권장합니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
+> 신규 설치는 `AERIAL_DATA_ROOT`를 먼저 정하고 프로젝트 데이터는 `AERIAL_DATA_ROOT/projects`, 최종 정사영상은 `AERIAL_DATA_ROOT/orthomosaic` 또는 별도 `EXPORT_ROOT_PATH`로 정리하는 방식을 권장합니다. 컨테이너에는 `LOCAL_STORAGE_PATH/projects`만 `/data/storage/projects`로, `EXPORT_ROOT_PATH`가 `/data/storage/orthomosaic`와 `/data/exports`로 마운트되므로 `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 만들 필요가 없습니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
 > 전체 변수 목록: `.env.example` 참조
 
 ### 3. GPU 연결 확인
 ```bash
 # 컨테이너에서 GPU 인식 확인 (필수)
-docker exec aerial-worker-engine nvidia-smi
+docker compose exec worker-engine nvidia-smi
 ```
 실패 시 → [문제 해결 > GPU 미인식](#문제-해결) 참조
 
@@ -76,18 +76,19 @@ docker exec aerial-worker-engine nvidia-smi
 ```bash
 docker compose up -d
 docker compose ps              # 모든 서비스 Up 확인
-curl http://localhost:8081/health   # API 응답 확인
+curl http://127.0.0.1:18100/health   # API 응답 확인
 ```
 
 ### 5. 접속
-- 웹 UI: `http://서버IP:8081`
+- 기본 웹 UI: `http://배포PC_IP:18100`
+- 배포PC에서만 접속하게 제한하려면 `.env`의 `HOST_BIND`를 `127.0.0.1`로 변경
 - 기본 계정: `admin` / `siqms`
 
 ---
 
 ## 버전 업그레이드
 
-### 간편 업그레이드 (.env에 `COMPOSE_PROJECT_NAME=aerial-survey-manager`가 있는 경우)
+### 간편 업그레이드 (.env에 `COMPOSE_PROJECT_NAME=aerial_survey_manager`가 있는 경우)
 
 ```bash
 # 1. 백업
@@ -128,7 +129,7 @@ cd ~
 tar -xzf aerial-survey-manager-v1.1.0.tar.gz
 cd aerial-survey-manager-v1.1.0
 cp ~/env_backup .env
-echo 'COMPOSE_PROJECT_NAME=aerial-survey-manager' >> .env
+echo 'COMPOSE_PROJECT_NAME=aerial_survey_manager' >> .env
 
 # 4. DB 복원
 docker compose up -d db
@@ -156,9 +157,34 @@ docker compose up -d
 
 ```bash
 docker compose ps
-curl http://localhost:8081/health
+curl http://127.0.0.1:18100/health
 sudo bash scripts/secure-deployment.sh
 ```
+
+`secure-deployment.sh`는 현재 배포 폴더를 고정 symlink로 연결하고 systemd 유닛이 이 경로만 보게 합니다.
+
+```text
+/home/dell/aerial-survey-manager-current -> /home/dell/aerial-survey-manager-<version>
+```
+
+새 버전 폴더로 업그레이드한 뒤에는 새 폴더에서 반드시 다시 실행하세요.
+
+```bash
+cd /home/dell/aerial-survey-manager-<new-version>
+sudo bash scripts/secure-deployment.sh
+systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|ExecStart'
+```
+
+`WorkingDirectory`, `EnvironmentFile`, `ExecStart`가 고정 symlink 경로를 가리켜야 합니다. `.env`는 보안 설정 후 root-only(`600`)가 되므로 일반 사용자의 직접 `docker compose` 실행은 permission denied가 날 수 있습니다. 운영자는 `aerial-status`, `aerial-restart`, `aerial-logs`를 사용하세요.
+
+### systemd 시작 모델
+
+`aerial-survey.service`는 핵심 서비스를 먼저 시작하고 `worker-engine`은 best-effort로 분리합니다.
+
+- 핵심 서비스: `db`, `redis`, `api`, `frontend`, `nginx`, `celery-beat`, `celery-worker`, `celery-worker-thumbnail`, `flower`, `titiler`
+- GPU 처리 엔진: `worker-engine`
+
+GPU 드라이버나 NVIDIA Docker runtime이 부팅 직후 늦게 준비되면 `worker-engine`만 실패할 수 있습니다. 이 경우에도 핵심 서비스가 올라오면 `aerial-survey.service`는 success가 될 수 있고, `aerial-gpu-watchdog.timer`가 나중에 `worker-engine` 복구를 시도합니다.
 
 ### CORS 제한
 ```nginx
@@ -166,11 +192,12 @@ sudo bash scripts/secure-deployment.sh
 add_header 'Access-Control-Allow-Origin' 'https://app.example.com' always;
 ```
 
-### 관리 포트 localhost 제한
-```yaml
-# docker-compose.yml
-ports:
-  - "127.0.0.1:5555:5555"  # Flower
+### 관리 포트
+```bash
+# 운영 기본값에서는 Flower host port를 열지 않습니다.
+# 필요할 때만 debug profile로 로컬 포트를 엽니다.
+docker compose --profile debug up -d flower-debug
+curl http://127.0.0.1:18055
 ```
 
 ### SSL/HTTPS
@@ -200,6 +227,7 @@ sudo ufw enable
 - 재부팅 후 정사영상이 지도에 표시되지 않음
 - 내보내기 시 "정사영상을 찾을 수 없습니다" 에러
 - `docker exec aerial-survey-manager-api-1 ls /data/storage/projects/` 또는 `/data/storage/orthomosaic/` 결과가 비어있음
+- `LOCAL_STORAGE_PATH`와 `EXPORT_ROOT_PATH`를 별도 경로로 분리했는데, 둘 중 하나의 실제 드라이브만 마운트되어 있음
 
 ### 해결: Docker가 드라이브 마운트 이후에 시작되도록 설정
 
@@ -248,8 +276,11 @@ docker exec aerial-survey-manager-api-1 ls /data/storage/projects/
 컨테이너에서 GPU가 인식되지 않으면 처리 엔진이 CPU only로 동작합니다. 오류 없이 정상 시작되므로 알아차리기 어렵지만, **처리 속도가 10배 이상 느려집니다.**
 
 ```bash
+# 0단계: 전체 GPU/커널/Docker runtime 진단
+./scripts/check-gpu-stack.sh
+
 # 1단계: 컨테이너 GPU 확인
-docker exec aerial-worker-engine nvidia-smi
+docker compose exec worker-engine nvidia-smi
 # → 성공하면 GPU 정상. 아래 단계 불필요.
 # → "Failed to initialize NVML" 등 오류 시 계속 진행
 
@@ -276,7 +307,7 @@ docker info | grep -i nvidia
 #   sudo systemctl restart docker
 
 # 5단계: 확인
-docker exec aerial-worker-engine nvidia-smi
+docker compose exec worker-engine nvidia-smi
 ```
 
 > 또는 `scripts/fix-gpu.sh`를 사용하면 위 과정을 자동으로 수행합니다:
@@ -284,6 +315,33 @@ docker exec aerial-worker-engine nvidia-smi
 >
 > 배포 설치 후 `scripts/setup-autostart.sh` 또는 `scripts/secure-deployment.sh`를 실행하면
 > NVIDIA Persistence Mode와 GPU watchdog도 함께 설정됩니다.
+
+### 커널/NVIDIA 패키지 mismatch
+
+현재 커널과 일치하는 `linux-modules-nvidia-*$(uname -r)` 패키지가 없으면 호스트 `nvidia-smi`부터 실패할 수 있습니다. 예를 들어 커널은 `6.17.0-29`인데 NVIDIA 모듈 패키지는 `6.17.0-23`만 설치되어 있으면 `worker-engine`도 GPU를 받을 수 없습니다.
+
+진단:
+
+```bash
+uname -r
+dpkg-query -W -f='${binary:Package}\t${Version}\t${db:Status-Abbrev}\n' 'linux-modules-nvidia-*' | grep "$(uname -r)"
+./scripts/check-gpu-stack.sh
+```
+
+운영자가 현재 정상 동작 중인 커널/NVIDIA stack을 명시적으로 고정해야 하는 경우에만 다음을 사용합니다.
+
+```bash
+./scripts/pin-gpu-stack.sh --list
+sudo ./scripts/pin-gpu-stack.sh --hold
+```
+
+해제:
+
+```bash
+sudo ./scripts/pin-gpu-stack.sh --unhold
+```
+
+주의: hold는 커널과 드라이버 보안 업데이트 적용을 지연시킵니다. 기본 설치는 자동 hold를 수행하지 않습니다.
 
 > 상세 운영 문제는 [ADMIN_GUIDE.md](ADMIN_GUIDE.md) 참조
 

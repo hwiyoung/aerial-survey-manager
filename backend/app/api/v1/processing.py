@@ -1,4 +1,5 @@
 """Processing API endpoints."""
+import json
 import math
 import os
 from collections import Counter
@@ -15,7 +16,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import case, select, func
 from pathlib import Path
 
 from app.config import get_settings
@@ -38,8 +39,13 @@ from app.auth.jwt import (
     verify_internal_token,
     verify_token,
 )
-from app.utils.storage_paths import processing_metadata_path
+from app.utils.storage_paths import (
+    processing_metadata_path,
+    processing_status_path,
+    processing_work_dir,
+)
 from app.services.processing_runtime import (
+    clear_active_processing_task_cache,
     get_active_processing_tasks,
     infer_message_from_step_status,
     progress_from_step_status,
@@ -52,6 +58,188 @@ router = APIRouter(prefix="/processing", tags=["Processing"])
 DEFAULT_PROCESSING_ENGINE = "metashape"
 PROCESSING_QUEUE = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
 TERMINAL_PROCESSING_STATUSES = {"error", "failed", "cancelled"}
+CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
+RESTART_CHOICE_STATUSES = {"error", "failed", "cancelled"}
+CHECKPOINT_STEP_LABELS = {
+    "align_photos.py": "이미지 정렬",
+    "build_depth_maps.py": "깊이 맵 생성",
+    "build_point_cloud.py": "포인트 클라우드 생성",
+    "build_dem.py": "수치표고모델 생성",
+    "build_orthomosaic.py": "정사모자이크 생성",
+    "export_orthomosaic.py": "정사영상 내보내기",
+    "convert_cog.py": "COG 변환",
+}
+PROJECT_STATE_STEP_RANK = {
+    "align_photos.py": 1,
+    "build_depth_maps.py": 2,
+    "build_point_cloud.py": 3,
+    "build_dem.py": 4,
+    "build_orthomosaic.py": 5,
+}
+
+
+def _remove_queued_celery_message(task_id: str | None, queue_name: str) -> int:
+    """Remove a not-yet-reserved Celery message from a Redis list queue."""
+    if not task_id:
+        return 0
+    try:
+        import redis
+
+        client = redis.Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        removed = 0
+        for item in client.lrange(queue_name, 0, -1):
+            if task_id in item:
+                removed += client.lrem(queue_name, 0, item)
+        if removed:
+            print(f"[processing.cancel] removed {removed} queued Celery message(s): {task_id}")
+        return removed
+    except Exception as exc:
+        print(f"[processing.cancel] failed to remove queued Celery message {task_id}: {exc}")
+        return 0
+
+
+def _write_processing_terminal_status_file(
+    project_id: UUID,
+    status_value: str,
+    progress: int,
+    message: str,
+    metrics: dict | None = None,
+) -> None:
+    try:
+        status_file = processing_status_path(project_id)
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": status_value,
+            "progress": max(0, min(100, int(progress or 0))),
+            "message": message,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        if metrics:
+            payload["metrics"] = metrics
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[processing.status] failed to write terminal status file: {exc}")
+
+
+def _mark_job_cancelled(
+    project: Project,
+    job: ProcessingJob,
+    *,
+    progress: int | None = None,
+    message: str = CANCELLED_PROCESSING_MESSAGE,
+) -> int:
+    cancel_progress = max(
+        0,
+        min(100, int(progress if progress is not None else (job.progress or project.progress or 0))),
+    )
+    job.status = "cancelled"
+    job.progress = cancel_progress
+    job.completed_at = job.completed_at or datetime.utcnow()
+    job.error_message = None
+    project.status = "cancelled"
+    project.progress = cancel_progress
+    _write_processing_terminal_status_file(
+        job.project_id,
+        "cancelled",
+        cancel_progress,
+        message,
+    )
+    return cancel_progress
+
+
+def _celery_task_state(task_id: str | None) -> str | None:
+    if not task_id:
+        return None
+    try:
+        from app.workers.tasks import celery_app
+
+        return celery_app.AsyncResult(task_id).state
+    except Exception as exc:
+        print(f"[processing.status] failed to read Celery task state {task_id}: {exc}")
+        return None
+
+
+def _project_checkpoint_covers(work_dir: Path, script_name: str) -> bool:
+    checkpoint_dir = work_dir / ".processing_checkpoint"
+    if not ((checkpoint_dir / "project.psx").exists() and (checkpoint_dir / "project.files").exists()):
+        return False
+    try:
+        checkpoint_step = (checkpoint_dir / "step.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    checkpoint_rank = PROJECT_STATE_STEP_RANK.get(checkpoint_step)
+    requested_rank = PROJECT_STATE_STEP_RANK.get(script_name)
+    return bool(checkpoint_rank and requested_rank and checkpoint_rank >= requested_rank)
+
+
+def _step_checkpoint_usable(work_dir: Path, script_name: str) -> bool:
+    if script_name in PROJECT_STATE_STEP_RANK:
+        return _project_checkpoint_covers(work_dir, script_name)
+    if script_name == "export_orthomosaic.py":
+        return (work_dir / "result.tif").exists()
+    if script_name == "convert_cog.py":
+        return (work_dir / "result_cog.tif").exists()
+    return False
+
+
+def _processing_restart_summary(project_id: UUID) -> dict:
+    work_dir = processing_work_dir(project_id)
+    manifest_path = work_dir / "processing_manifest.json"
+    summary = {
+        "can_resume": False,
+        "completed_steps": [],
+        "failed_step": None,
+        "next_step": None,
+        "manifest_exists": manifest_path.exists(),
+    }
+    if not manifest_path.exists():
+        return summary
+
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        return summary
+
+    steps = manifest.get("steps", {})
+    if not isinstance(steps, dict):
+        return summary
+
+    completed = []
+    failed_step = None
+    next_step = None
+    for script_name, record in steps.items():
+        if not isinstance(record, dict):
+            continue
+        label = CHECKPOINT_STEP_LABELS.get(script_name) or record.get("task_name") or script_name
+        status_value = record.get("status")
+        if status_value == "completed" and _step_checkpoint_usable(work_dir, script_name):
+            completed.append({
+                "script": script_name,
+                "label": label,
+                "completed_at": record.get("completed_at"),
+            })
+            continue
+        if status_value == "failed" and failed_step is None:
+            failed_step = {
+                "script": script_name,
+                "label": label,
+                "error_code": record.get("error_code"),
+                "error_message": record.get("error_message"),
+            }
+        if next_step is None:
+            next_step = {
+                "script": script_name,
+                "label": label,
+                "status": status_value or "pending",
+            }
+
+    summary["can_resume"] = bool(completed)
+    summary["completed_steps"] = completed
+    summary["failed_step"] = failed_step
+    summary["next_step"] = next_step
+    return summary
 
 
 def _get_processing_engine_policies():
@@ -194,6 +382,37 @@ def _active_task_for_project(project_id: UUID, force_refresh: bool = False) -> d
     return get_active_processing_tasks(force_refresh=force_refresh).get(str(project_id))
 
 
+def _caller_label(user: User) -> str:
+    return (
+        str(getattr(user, "email", None) or "")
+        or str(getattr(user, "username", None) or "")
+        or str(getattr(user, "id", "unknown"))
+    )
+
+
+async def _sync_completed_job_result_path(
+    db: AsyncSession,
+    project: Project,
+    job: ProcessingJob,
+    active_task: dict | None,
+) -> bool:
+    """Keep completed status responses aligned with the project's current COG key."""
+    if active_task:
+        return False
+    if not project.ortho_path:
+        return False
+    if job.status != "completed" and project.status != "completed":
+        return False
+    if job.result_path == project.ortho_path:
+        return False
+
+    job.result_path = project.ortho_path
+    await db.commit()
+    await db.refresh(project)
+    await db.refresh(job)
+    return True
+
+
 async def _select_status_job(
     db: AsyncSession,
     project_id: UUID,
@@ -214,7 +433,14 @@ async def _select_status_job(
     result = await db.execute(
         select(ProcessingJob)
         .where(ProcessingJob.project_id == project_id)
-        .order_by(ProcessingJob.started_at.desc().nullslast())
+        .order_by(
+            case(
+                (ProcessingJob.status.in_(["processing", "queued", "scheduled"]), 0),
+                else_=1,
+            ),
+            ProcessingJob.started_at.desc().nullslast(),
+            ProcessingJob.completed_at.desc().nullslast(),
+        )
         .limit(1)
     )
     return result.scalars().first()
@@ -232,6 +458,9 @@ async def _build_processing_status_response(
     runtime_progress = progress_from_step_status(step_status, job.progress or project.progress or 0)
     step_message = infer_message_from_step_status(step_status)
     active_task = active_task or _active_task_for_project(project_id)
+
+    if job.status in TERMINAL_PROCESSING_STATUSES or project.status in TERMINAL_PROCESSING_STATUSES:
+        active_task = None
 
     if active_task:
         changed = False
@@ -260,6 +489,33 @@ async def _build_processing_status_response(
             await db.commit()
             await db.refresh(project)
             await db.refresh(job)
+    elif job.status in ("queued", "processing") and status_payload.get("status") in TERMINAL_PROCESSING_STATUSES:
+        terminal_status = str(status_payload.get("status"))
+        terminal_message = status_payload.get("message") or job.error_message
+        job.status = terminal_status
+        project.status = terminal_status
+        job.progress = runtime_progress
+        project.progress = runtime_progress
+        if terminal_message:
+            job.error_message = terminal_message
+        if job.completed_at is None:
+            job.completed_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(project)
+        await db.refresh(job)
+    elif job.status in ("queued", "processing") and _celery_task_state(job.celery_task_id) == "REVOKED":
+        runtime_progress = _mark_job_cancelled(
+            project,
+            job,
+            progress=runtime_progress,
+            message=CANCELLED_PROCESSING_MESSAGE,
+        )
+        clear_active_processing_task_cache()
+        await db.commit()
+        await db.refresh(project)
+        await db.refresh(job)
+
+    await _sync_completed_job_result_path(db, project, job, active_task)
 
     response = ProcessingJobResponse.model_validate(job)
     if active_task:
@@ -269,9 +525,14 @@ async def _build_processing_status_response(
     elif job.status in ("queued", "processing"):
         response.progress = runtime_progress
 
+    payload_status = status_payload.get("status")
     fallback_message = status_payload.get("message")
+    if job.status in TERMINAL_PROCESSING_STATUSES and payload_status != job.status:
+        fallback_message = None
     if job.status in TERMINAL_PROCESSING_STATUSES and not active_task:
         response.message = fallback_message or job.error_message
+        if job.status == "cancelled" and not response.message:
+            response.message = CANCELLED_PROCESSING_MESSAGE
     elif active_task or job.status in ("queued", "processing"):
         response.message = step_message or fallback_message or response.message
     else:
@@ -284,6 +545,13 @@ async def _build_processing_status_response(
     processing_events = _read_processing_events(str(project_id))
     if processing_events:
         response.processing_events = processing_events
+    if job.status in RESTART_CHOICE_STATUSES and project.status in RESTART_CHOICE_STATUSES:
+        checkpoint_summary = _processing_restart_summary(project_id)
+        response.restart_choice_required = True
+        response.can_resume = checkpoint_summary["can_resume"]
+        response.completed_steps = checkpoint_summary["completed_steps"]
+        response.failed_step = checkpoint_summary["failed_step"]
+        response.next_step = checkpoint_summary["next_step"]
     return response
 
 
@@ -457,6 +725,12 @@ async def start_processing(
             detail="Project not found",
         )
 
+    if force_restart:
+        print(
+            "[processing.force_restart] requested "
+            f"caller={_caller_label(current_user)} project_id={project_id}"
+        )
+
     supported_engines = _get_supported_processing_engines()
     if not supported_engines:
         raise HTTPException(
@@ -584,9 +858,15 @@ async def start_processing(
         now = datetime.utcnow()
         is_stale = False
         stale_reason = ""
+        status_payload = _read_processing_status_file(project_id)
+        status_payload_value = status_payload.get("status")
+
+        if status_payload_value in TERMINAL_PROCESSING_STATUSES:
+            is_stale = True
+            stale_reason = f"처리 상태 파일이 {status_payload_value} 상태입니다"
 
         # Case 1: Job never started and has been queued for more than 6 hours
-        if existing_job.started_at is None:
+        elif existing_job.started_at is None:
             is_stale = True
             stale_reason = "작업이 시작되지 않고 대기 중이었습니다"
 
@@ -599,12 +879,21 @@ async def start_processing(
         if force_restart:
             is_stale = True
             stale_reason = "사용자가 강제 재시작을 요청했습니다"
+            print(
+                "[processing.force_restart] accepted for non-active queued/processing job "
+                f"caller={_caller_label(current_user)} project_id={project_id} "
+                f"existing_job_id={existing_job.id} stale_reason={stale_reason}"
+            )
 
             # Also revoke the Celery task if exists
             if existing_job.celery_task_id:
                 try:
                     from app.workers.tasks import celery_app
                     celery_app.control.revoke(existing_job.celery_task_id, terminate=True)
+                    _remove_queued_celery_message(
+                        existing_job.celery_task_id,
+                        _get_queue_name(existing_job.engine or DEFAULT_PROCESSING_ENGINE),
+                    )
                 except Exception:
                     pass
 
@@ -627,6 +916,55 @@ async def start_processing(
                     "can_force_restart": True
                 },
             )
+
+    latest_job = await _select_status_job(db, project_id, None)
+    if (
+        latest_job
+        and latest_job.status in RESTART_CHOICE_STATUSES
+        and project.status in RESTART_CHOICE_STATUSES
+        and not force_restart
+    ):
+        checkpoint_summary = _processing_restart_summary(project_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "restart_choice_required",
+                "message": "이전 처리 작업이 완료되지 않았습니다. 처리 방식을 선택해주세요.",
+                "job_id": str(latest_job.id),
+                "job_status": latest_job.status,
+                "project_status": project.status,
+                "progress": latest_job.progress or project.progress or 0,
+                "can_resume": checkpoint_summary["can_resume"],
+                "completed_steps": checkpoint_summary["completed_steps"],
+                "failed_step": checkpoint_summary["failed_step"],
+                "next_step": checkpoint_summary["next_step"],
+                "confirm_message": (
+                    "완료된 단계부터 이어서 처리하거나, 기존 체크포인트를 버리고 처음부터 새로 처리할 수 있습니다."
+                    if checkpoint_summary["can_resume"]
+                    else "재사용 가능한 완료 단계가 없어 처음부터 새로 처리해야 합니다."
+                ),
+            },
+        )
+
+    if force_restart and latest_job and latest_job.status == "completed":
+        await _sync_completed_job_result_path(db, project, latest_job, None)
+        print(
+            "[processing.force_restart] rejected for completed latest job without active worker task "
+            f"caller={_caller_label(current_user)} project_id={project_id} "
+            f"existing_job_id={latest_job.id} stale_reason=latest_job_completed_no_active_task"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "completed_job_restart_requires_explicit_action",
+                "message": "이미 완료된 프로젝트입니다. 자동 재시작 요청은 차단되었습니다.",
+                "job_id": str(latest_job.id),
+                "job_status": latest_job.status,
+                "result_path": latest_job.result_path,
+                "can_force_restart": False,
+                "confirm_message": "완료된 프로젝트는 기존 결과를 유지한 채 새 처리 작업으로 다시 시작할 수 있습니다.",
+            },
+        )
     
     
     # Create processing job
@@ -897,15 +1235,36 @@ async def cancel_processing(
     if celery_task_id:
         from app.workers.tasks import celery_app
         celery_app.control.revoke(celery_task_id, terminate=True)
-    
-    job.status = "cancelled"
-    
-    # Update project status
-    scoped_project.status = "cancelled"
+        _remove_queued_celery_message(
+            celery_task_id,
+            _get_queue_name(job.engine or DEFAULT_PROCESSING_ENGINE),
+        )
+    clear_active_processing_task_cache()
+
+    progress = _mark_job_cancelled(
+        scoped_project,
+        job,
+        progress=job.progress or scoped_project.progress or 0,
+        message=CANCELLED_PROCESSING_MESSAGE,
+    )
     
     await db.commit()
+    await manager.broadcast(
+        str(project_id),
+        {
+            "status": "cancelled",
+            "progress": progress,
+            "message": CANCELLED_PROCESSING_MESSAGE,
+        },
+    )
     
-    return {"message": "Processing job cancelled"}
+    return {
+        "message": CANCELLED_PROCESSING_MESSAGE,
+        "status": "cancelled",
+        "progress": progress,
+        "project_id": str(project_id),
+        "job_id": str(job.id),
+    }
 
 
 @router.get("/jobs", response_model=list[ProcessingJobResponse])

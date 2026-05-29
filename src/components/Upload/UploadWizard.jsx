@@ -714,6 +714,14 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
         return cameraModels.find(c => c.name === cameraModel) || { focal_length: 0, sensor_width: 0, sensor_height: 0, pixel_size: 0 };
     }, [cameraModel, cameraModels]);
 
+    const cameraModelCounts = useMemo(() => {
+        const standard = cameraModels.filter(c => !c.is_custom).length;
+        return {
+            standard,
+            custom: cameraModels.length - standard
+        };
+    }, [cameraModels]);
+
     const handleAddCamera = async () => {
         try {
             const created = await api.createCameraModel({ ...newCamera, name: newCamera.name || 'Custom Camera' });
@@ -1288,7 +1296,12 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                     )}
                     {step === 3 && (
                         <div className="space-y-6 text-center max-w-2xl mx-auto h-full flex flex-col justify-center overflow-y-auto py-4">
-                            <h4 className="text-xl font-bold text-slate-800">3. 카메라 모델 (IO) 선택</h4>
+                            <div className="space-y-1">
+                                <h4 className="text-xl font-bold text-slate-800">3. 카메라 모델 (IO) 선택</h4>
+                                <div className="text-xs text-slate-500">
+                                    io.csv 기본 모델 {cameraModelCounts.standard}개 · 사용자 모델 {cameraModelCounts.custom}개
+                                </div>
+                            </div>
                             <div className="max-w-sm mx-auto space-y-6 w-full pb-4">
                                 <div className="p-6 bg-slate-50 rounded-full w-32 h-32 mx-auto flex items-center justify-center border border-slate-200 shrink-0"><Camera size={56} className="text-slate-400" /></div>
 
@@ -1349,7 +1362,11 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                         <div className="relative">
                                             <select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none" value={cameraModel} onChange={(e) => setCameraModel(e.target.value)}>
                                                 {Array.isArray(cameraModels) && cameraModels.length > 0 ? (
-                                                    cameraModels.map(c => <option key={c.id} value={c.name}>{c.name}</option>)
+                                                    cameraModels.map(c => (
+                                                        <option key={c.id} value={c.name}>
+                                                            {c.name}
+                                                        </option>
+                                                    ))
                                                 ) : (
                                                     <option value="" disabled>카메라 모델 로딩 중...</option>
                                                 )}

@@ -139,7 +139,7 @@ def legacy_processing_work_dir(project_id: str | UUID) -> Path:
 
 
 def processing_logs_dir(project_id: str | UUID) -> Path:
-    return processing_dir(project_id) / "logs"
+    return processing_dir(project_id) / ".logs"
 
 
 def processing_log_path(project_id: str | UUID) -> Path:

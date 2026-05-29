@@ -56,6 +56,8 @@ from app.services.processing_runtime import (
 from pyproj import Transformer
 import json
 
+TERMINAL_PROJECT_STATUSES = {"completed", "error", "failed", "cancelled"}
+
 def serialize_geometry(geom):
     """Convert PostGIS geometry to GeoJSON-like list of coordinates.
     
@@ -430,6 +432,10 @@ async def _apply_active_project_overrides(
         active_job = job_by_id.get(active_job_id) if active_job_id else None
         if active_job is None:
             active_job = latest_any_job_map.get(project.id)
+        if project.status in TERMINAL_PROJECT_STATUSES:
+            continue
+        if active_job and active_job.status in TERMINAL_PROJECT_STATUSES:
+            continue
         if active_job:
             active_job_map[project.id] = active_job
 

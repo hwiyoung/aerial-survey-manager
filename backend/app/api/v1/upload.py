@@ -21,6 +21,7 @@ from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role
 from app.config import get_settings
 from app.services.storage import get_storage
 from app.services.quota import ensure_organization_quota
+from app.api.v1.filesystem import get_allowed_roots, is_within_allowed_root
 from app.utils.storage_paths import (
     processing_metadata_path,
     source_image_key,
@@ -374,6 +375,7 @@ class LocalImportRequest(BaseModel):
     """Request body for local path import."""
     source_dir: str
     file_paths: Optional[List[str]] = None  # Specific files to register (individual selection mode)
+    camera_model_name: Optional[str] = None  # Optional camera model to link to imported images
 
 
 class LocalImportResponse(BaseModel):
@@ -426,6 +428,11 @@ async def local_import(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="source_dir must not contain '..' components",
         )
+    if not is_within_allowed_root(str(source_dir)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: source_dir is outside allowed directories ({', '.join(get_allowed_roots())})",
+        )
 
     logger.info(f"[local-import] Scanning directory: {source_dir} (raw={raw_path})")
 
@@ -443,8 +450,15 @@ async def local_import(
         files = []
         if request.file_paths:
             for fp in request.file_paths:
-                p = Path(fp)
-                if not p.is_absolute():
+                raw_file_path = Path(fp)
+                if ".." in raw_file_path.parts:
+                    continue
+                if not raw_file_path.is_absolute():
+                    continue
+                p = raw_file_path.resolve()
+                if not is_within_allowed_root(str(p)):
+                    continue
+                if p != source_dir and source_dir not in p.parents:
                     continue
                 if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
                     try:
@@ -480,11 +494,31 @@ async def local_import(
     )
     existing_filenames = {row[0] for row in existing_result.all()}
 
+    # Look up camera model if provided, matching the HTTP upload flow
+    camera_model_id = None
+    if request.camera_model_name:
+        cam_result = await db.execute(
+            select(CameraModel).where(CameraModel.name == request.camera_model_name)
+        )
+        camera_model = cam_result.scalar_one_or_none()
+        if camera_model:
+            camera_model_id = camera_model.id
+
     registered = 0
     skipped = 0
     total_size = 0
     invalid_files = []
     registered_filenames = []
+    additional_storage_bytes = sum(
+        file_size
+        for file_path, file_size in scanned_files
+        if file_path.name not in existing_filenames
+    )
+    await ensure_organization_quota(
+        db,
+        current_user.organization_id,
+        additional_storage_bytes=additional_storage_bytes,
+    )
 
     for file_path, file_size in scanned_files:
         if file_path.name in existing_filenames:
@@ -497,6 +531,7 @@ async def local_import(
             original_path=str(file_path.resolve()),
             file_size=file_size,
             upload_status="completed",
+            camera_model_id=camera_model_id,
         )
         image.validation_status = "unchecked"
         image.validation_error = None
@@ -992,6 +1027,7 @@ async def complete_multipart_upload(
     completed = []
     failed = []
     excluded = []
+    thumbnail_image_ids = []
 
     logger.info(f"[complete] project={project_id}, uploads={len(request.uploads)}, is_local={is_local}")
 
@@ -1113,13 +1149,7 @@ async def complete_multipart_upload(
                     image_id=image.id,
                     status="completed"
                 ))
-
-                # Trigger thumbnail generation
-                try:
-                    from app.workers.tasks import generate_thumbnail
-                    generate_thumbnail.delay(str(image.id))
-                except Exception as e:
-                    logger.warning(f"Failed to trigger thumbnail task: {e}")
+                thumbnail_image_ids.append(str(image.id))
             else:
                 failed.append({
                     "filename": upload.filename,
@@ -1134,6 +1164,13 @@ async def complete_multipart_upload(
             })
 
     await db.commit()
+
+    for image_id in thumbnail_image_ids:
+        try:
+            from app.workers.tasks import generate_thumbnail
+            generate_thumbnail.delay(image_id)
+        except Exception as e:
+            logger.warning(f"Failed to trigger thumbnail task: {e}")
 
     logger.info(f"[complete] Done: completed={len(completed)}, failed={len(failed)}, excluded={len(excluded)}")
     if failed:

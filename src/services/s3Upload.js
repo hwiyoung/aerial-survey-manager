@@ -175,7 +175,8 @@ export class S3MultipartUploader {
                     }
                 } catch (completeError) {
                     console.error('Failed to complete multipart uploads:', completeError);
-                    // 개별 파일은 이미 업로드 완료 — 배치 완료 실패해도 onAllComplete 호출
+                    onError?.(0, 'completion', completeError);
+                    return;
                 }
                 onAllComplete?.(completeResult);
             }

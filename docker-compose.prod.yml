@@ -71,13 +71,6 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: always
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     environment:
       - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
@@ -86,11 +79,12 @@ services:
       - LOCAL_STORAGE_PATH=/data/storage
       - PROCESSING_DATA_PATH=/data/processing
       - EXPORT_ROOT_PATH=/data/exports
+      - MEDIA_STORAGE_ROOT=${MEDIA_STORAGE_ROOT:-/media}
+      - SYSTEM_STORAGE_PATH=${SYSTEM_STORAGE_PATH:-/}
+      - FILESYSTEM_ALLOWED_ROOTS=${FILESYSTEM_ALLOWED_ROOTS:-/media}
       - AUTO_EXPORT_ENABLED=${AUTO_EXPORT_ENABLED:-false}
       - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
       - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -101,11 +95,11 @@ services:
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:18100}
     volumes:
       # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
       - ${TILES_PATH:-${AERIAL_DATA_ROOT:-./data}/tiles}:/data/tiles:ro
@@ -129,7 +123,6 @@ services:
   # GPU 처리 엔진
   # ============================================================
   worker-engine:
-    container_name: aerial-worker-engine
     build:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod
@@ -181,7 +174,7 @@ services:
     volumes:
       # 프로덕션: 데이터 디렉토리 마운트
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
       - engine-license:/var/tmp/agisoft/licensing
@@ -214,7 +207,14 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:8081}
+      - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:18100}
+    volumes:
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
     depends_on:
       - redis
     networks:
@@ -247,7 +247,7 @@ services:
       - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
     volumes:
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
@@ -288,7 +288,7 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
     volumes:
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
@@ -315,9 +315,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    # 프로덕션: 외부 포트 노출 제거 (보안)
-    # ports:
-    #   - "5434:5432"
+    # 프로덕션: host 포트 노출 제거 (Docker 내부 네트워크에서만 접근)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -334,9 +332,7 @@ services:
     image: redis:7-alpine
     command: redis-server --appendonly yes
     restart: always
-    # 프로덕션: 외부 포트 노출 제거
-    # ports:
-    #   - "6380:6379"
+    # 프로덕션: host 포트 노출 제거 (Docker 내부 네트워크에서만 접근)
     volumes:
       - redis_data:/data
     networks:
@@ -355,10 +351,7 @@ services:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_API_CORS_ALLOW_ORIGIN=*
-    # 프로덕션: 외부 포트 노출 제거 (nginx를 통해 접근)
-    # 관리자 콘솔만 로컬 접근 허용
-    ports:
-      - "127.0.0.1:9003:9001"  # Console - localhost만 접근 가능
+    # 프로덕션: host 포트 노출 제거 (Docker 내부 네트워크에서만 접근)
     volumes:
       - ${MINIO_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/minio}:/data
     healthcheck:
@@ -409,8 +402,9 @@ services:
       - AWS_HTTPS=NO
       - AWS_NO_SIGN_REQUEST=NO
     volumes:
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage:ro
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects:ro
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic:ro
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports:ro
     networks:
       - aerial-network
     logging: *default-logging
@@ -422,16 +416,16 @@ services:
     image: nginx:alpine
     restart: always
     ports:
-      - "${WEB_PORT:-8081}:80"
-      - "${HTTPS_PORT:-443}:443"
+      - "${HOST_BIND:-0.0.0.0}:${AERIAL_WEB_PORT:-18100}:80"
     volumes:
       - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
       # 오프라인 타일맵 (선택사항 - TILES_PATH 환경변수로 설정)
       - ${TILES_PATH:-${AERIAL_DATA_ROOT:-./data}/tiles}:/data/tiles:ro
       # 로컬 스토리지
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}:/data/storage:ro
+      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects:ro
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic:ro
+      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports:ro
     depends_on:
       - frontend
       - api
@@ -452,9 +446,27 @@ services:
     environment:
       - TZ=${TZ:-Asia/Seoul}
       - REDIS_URL=redis://redis:6379/0
-    # 프로덕션: localhost만 접근 가능
+    depends_on:
+      - redis
+    networks:
+      - aerial-network
+    logging: *default-logging
+
+  # ============================================================
+  # Flower Debug Port (optional)
+  # ============================================================
+  flower-debug:
+    profiles: ["debug"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    command: celery -A app.workers.tasks flower --port=5555
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Seoul}
+      - REDIS_URL=redis://redis:6379/0
     ports:
-      - "127.0.0.1:5555:5555"
+      - "127.0.0.1:18055:5555"
     depends_on:
       - redis
     networks:

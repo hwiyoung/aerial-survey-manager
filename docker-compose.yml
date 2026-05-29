@@ -56,6 +56,11 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
+      - MEDIA_STORAGE_ROOT=${MEDIA_STORAGE_ROOT:-/media}
+      - SYSTEM_STORAGE_PATH=${SYSTEM_STORAGE_PATH:-/}
+      - FILESYSTEM_ALLOWED_ROOTS=${FILESYSTEM_ALLOWED_ROOTS:-/media}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -71,11 +76,13 @@ services:
     volumes:
       - ./backend:/app
       - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports
       - ${MINIO_DATA_PATH:-${DATA_PATH:-./data}}:/data/minio:ro
       - ${TILES_PATH:-/data/tiles}:/data/tiles:ro
       # 권역 GeoJSON 데이터 (초기 시드용)
-      - ./data:/app/data:ro
+      - ${SEED_DATA_PATH:-./data}:/app/data:ro
       # 호스트 파일시스템 접근 (로컬 이미지 불러오기용)
       # rslave: 외장하드 핫플러그 시 컨테이너에 실시간 반영
       - type: bind
@@ -210,6 +217,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -231,7 +240,9 @@ services:
       - ./backend/app:/app/app
       - ./engines/metashape:/app/engines/metashape
       - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports
       - engine-license:/var/tmp/agisoft/licensing
       # 호스트 파일시스템 접근 (로컬 이미지 symlink용)
       # rslave: 외장하드 핫플러그 시 컨테이너에 실시간 반영
@@ -264,9 +275,15 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
+      - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
     volumes:
       - ./backend:/app
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports
     depends_on:
       - redis
     networks:
@@ -291,6 +308,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -299,7 +318,9 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
     volumes:
       - ./backend:/app
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports
       - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
       # 호스트 파일시스템 접근 (로컬 이미지 썸네일 생성용)
       - type: bind
@@ -335,6 +356,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
       - LOCAL_STORAGE_PATH=/data/storage
+      - PROCESSING_DATA_PATH=/data/processing
+      - EXPORT_ROOT_PATH=/data/exports
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -351,7 +374,9 @@ services:
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       - ./backend:/app
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports
       - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
       # 호스트 파일시스템 접근 (로컬 이미지 썸네일 생성용)
       # rslave: 외장하드 핫플러그 시 컨테이너에 실시간 반영
@@ -475,7 +500,9 @@ services:
       - CPL_VSIL_CURL_USE_HEAD=NO
     volumes:
       # 로컬 모드에서 file:// URL로 직접 읽기
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage:ro
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects:ro
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic:ro
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports:ro
     networks:
       - aerial-network
     logging: *default-logging
@@ -491,7 +518,9 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
       - ${TILES_PATH:-/data/tiles}:/data/tiles:ro  # 오프라인 타일맵
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}:/data/storage:ro  # 로컬 스토리지
+      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects:ro  # 프로젝트 스토리지
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic:ro  # 정사영상
+      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports:ro
     depends_on:
       - frontend
       - api

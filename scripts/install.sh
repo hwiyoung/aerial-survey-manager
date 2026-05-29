@@ -68,6 +68,59 @@ test_docker_gpu_runtime() {
     docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null
 }
 
+check_kernel_nvidia_modules() {
+    local kernel
+    kernel="$(uname -r 2>/dev/null || true)"
+    if [ -z "$kernel" ] || ! command -v dpkg-query >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local matched
+    matched="$(
+        dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'linux-modules-nvidia-*' 2>/dev/null \
+            | awk -v k="$kernel" '$2 ~ /^ii/ && index($1, k) {print $1}'
+    )"
+    if [ -n "$matched" ]; then
+        log_info "현재 커널 NVIDIA 모듈 패키지: $(printf '%s' "$matched" | paste -sd ',' -)"
+    else
+        log_warn "현재 커널($kernel)에 대응하는 linux-modules-nvidia-* 패키지를 찾지 못했습니다."
+        log_warn "커널/NVIDIA 모듈 mismatch이면 nvidia-smi와 worker-engine이 실패합니다."
+        log_warn "상세 진단: ./scripts/check-gpu-stack.sh"
+    fi
+}
+
+validate_compose_config() {
+    local compose_file="$1"
+    log_info "docker compose config 검증 중: $compose_file"
+    docker compose -f "$compose_file" config >/dev/null
+    log_info "docker compose config: 정상"
+}
+
+validate_nginx_config() {
+    local nginx_file="nginx.conf"
+    if [ -f nginx.prod.conf ]; then
+        nginx_file="nginx.prod.conf"
+    fi
+
+    if [ ! -d ssl ]; then
+        log_warn "ssl 디렉토리가 없어 nginx -t 검증을 건너뜁니다."
+        return 0
+    fi
+
+    log_info "nginx -t 검증 중: $nginx_file"
+    docker run --rm \
+        -v "$PWD/$nginx_file:/etc/nginx/nginx.conf:ro" \
+        -v "$PWD/ssl:/etc/nginx/ssl:ro" \
+        nginx:alpine nginx -t >/tmp/aerial-nginx-test.log 2>&1 \
+        || {
+            cat /tmp/aerial-nginx-test.log
+            rm -f /tmp/aerial-nginx-test.log
+            return 1
+        }
+    rm -f /tmp/aerial-nginx-test.log
+    log_info "nginx -t: 정상"
+}
+
 upsert_env() {
     local key="$1"
     local value="$2"
@@ -147,6 +200,7 @@ check_requirements() {
         log_info "NVIDIA Persistence Mode 설정 중..."
         sudo systemctl enable --now nvidia-persistenced 2>/dev/null || true
         sudo nvidia-smi -pm 1 2>/dev/null || true
+        check_kernel_nvidia_modules
     fi
 
     # 디스크 용량 확인
@@ -196,13 +250,17 @@ setup_environment() {
     echo ""
 
     # 도메인/IP 설정
-    # 외부 접속이 필요하면 IP 또는 도메인 입력, 로컬만 사용하면 Enter
+    # 기본값은 내부망 접속 허용입니다. 배포PC에서만 접속하게 제한하려면
+    # HOST_BIND를 127.0.0.1로 변경하세요.
     read -p "접속 도메인 또는 IP [localhost]: " domain
     domain=${domain:-localhost}
 
-    # 포트 설정
-    read -p "웹 서비스 포트 [8081]: " web_port
-    web_port=${web_port:-8081}
+    read -p "호스트 바인드 주소 [0.0.0.0]: " host_bind
+    host_bind=${host_bind:-0.0.0.0}
+
+    # 포트 설정 (nginx/web 진입점 하나만 공개)
+    read -p "웹 서비스 포트 [18100]: " web_port
+    web_port=${web_port:-18100}
 
     # 저장소 경로 설정
     echo ""
@@ -226,40 +284,33 @@ setup_environment() {
     # 오프라인 타일맵 설정
     echo ""
     echo -e "${YELLOW}오프라인 지도 타일 설정${NC}"
-    echo "인터넷 없이 지도를 표시하려면 타일 데이터가 필요합니다."
-    read -p "오프라인 타일맵을 사용하시겠습니까? (y/N): " use_offline_tiles
+    echo "이 배포 패키지는 오프라인 지도 모드로 빌드됩니다."
+    echo "지도 배경이 필요하면 타일 데이터를 아래 경로에 준비하세요."
+    USE_OFFLINE_TILES="true"
+    read -p "타일 데이터 경로 [$data_root/tiles]: " tiles_path
+    if [ -z "$tiles_path" ]; then
+        tiles_path="$data_root/tiles"
+        log_warn "기본 경로 사용: $tiles_path"
+    fi
 
-    if [[ "$use_offline_tiles" =~ ^[Yy]$ ]]; then
-        USE_OFFLINE_TILES="true"
-        read -p "타일 데이터 경로 [$data_root/tiles]: " tiles_path
-        if [ -z "$tiles_path" ]; then
-            tiles_path="$data_root/tiles"
-            log_warn "기본 경로 사용: $tiles_path"
-        fi
-
-        # 타일 경로 확인
-        if [ ! -d "$tiles_path" ]; then
-            log_warn "타일 디렉토리가 존재하지 않습니다: $tiles_path"
-            read -p "디렉토리를 생성하시겠습니까? (Y/n): " create_tiles_dir
-            if [[ ! "$create_tiles_dir" =~ ^[Nn]$ ]]; then
-                mkdir -p "$tiles_path"
-                log_info "타일 디렉토리 생성됨: $tiles_path"
-                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png (또는 .jpg)"
-            fi
-        else
-            # 타일 파일 존재 확인 (png, jpg, jpeg 지원)
-            tile_count=$(find "$tiles_path" \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) 2>/dev/null | head -10 | wc -l)
-            if [ "$tile_count" -gt 0 ]; then
-                log_info "타일 데이터 확인됨: $tiles_path"
-            else
-                log_warn "타일 디렉토리는 있지만 이미지 파일이 없습니다."
-                echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png (또는 .jpg)"
-            fi
+    # 타일 경로 확인
+    if [ ! -d "$tiles_path" ]; then
+        log_warn "타일 디렉토리가 존재하지 않습니다: $tiles_path"
+        read -p "디렉토리를 생성하시겠습니까? (Y/n): " create_tiles_dir
+        if [[ ! "$create_tiles_dir" =~ ^[Nn]$ ]]; then
+            mkdir -p "$tiles_path"
+            log_info "타일 디렉토리 생성됨: $tiles_path"
+            echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png (또는 .jpg)"
         fi
     else
-        USE_OFFLINE_TILES="false"
-        tiles_path="$data_root/tiles"
-        log_info "온라인 지도를 사용합니다. (인터넷 연결 필요)"
+        # 타일 파일 존재 확인 (png, jpg, jpeg 지원)
+        tile_count=$(find "$tiles_path" \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) 2>/dev/null | head -10 | wc -l)
+        if [ "$tile_count" -gt 0 ]; then
+            log_info "타일 데이터 확인됨: $tiles_path"
+        else
+            log_warn "타일 디렉토리는 있지만 이미지 파일이 없습니다."
+            echo "타일 데이터를 이 경로에 복사하세요: $tiles_path/{z}/{x}/{y}.png (또는 .jpg)"
+        fi
     fi
 
     # 처리 엔진 라이선스
@@ -288,7 +339,9 @@ setup_environment() {
     upsert_env "AUTO_EXPORT_TARGET_CRS" "EPSG:5186"
     upsert_env "MINIO_DATA_PATH" "$minio_path"
     upsert_env "ENGINE_LICENSE_KEY" "$engine_license"
-    upsert_env "WEB_PORT" "$web_port"
+    upsert_env "HOST_BIND" "$host_bind"
+    upsert_env "AERIAL_WEB_PORT" "$web_port"
+    upsert_env "MINIO_PUBLIC_ENDPOINT" "$domain:$web_port"
 
     # 도메인 설정
     upsert_env "DOMAIN" "$domain"
@@ -298,10 +351,13 @@ setup_environment() {
 
     # 오프라인 지도 사용 여부 설정
     upsert_env "USE_OFFLINE_TILES" "$USE_OFFLINE_TILES"
+    upsert_env "VITE_MAP_OFFLINE" "$USE_OFFLINE_TILES"
+    upsert_env "VITE_TILE_URL" "/tiles/{z}/{x}/{y}"
 
     # 저장소 디렉토리 생성
     mkdir -p "$processing_path"
     mkdir -p "$storage_path"
+    mkdir -p "$storage_path/projects"
     mkdir -p "$export_path"
     mkdir -p "$minio_path"
     mkdir -p "$tiles_path"
@@ -409,8 +465,11 @@ start_services() {
         docker compose -f "$compose_file" build
     fi
 
+    validate_compose_config "$compose_file"
+    validate_nginx_config
+
     log_info "서비스 시작 중..."
-    docker compose -f "$compose_file" up -d
+    COMPOSE_FILE="$compose_file" ./scripts/systemd-start.sh
 
     log_info "서비스 초기화 대기 중..."
     sleep 10
@@ -510,7 +569,14 @@ run_healthcheck() {
         echo ""
 
         # API 헬스체크
-        if curl -s http://localhost:8081/health > /dev/null 2>&1; then
+        host_bind=$(grep "^HOST_BIND=" .env 2>/dev/null | cut -d'=' -f2)
+        web_port=$(grep "^AERIAL_WEB_PORT=" .env 2>/dev/null | cut -d'=' -f2)
+        health_host=${host_bind:-127.0.0.1}
+        web_port=${web_port:-18100}
+        if [ "$health_host" = "0.0.0.0" ]; then
+            health_host="127.0.0.1"
+        fi
+        if curl -s "http://$health_host:$web_port/health" > /dev/null 2>&1; then
             log_info "API 서버: 정상"
         else
             log_warn "API 서버: 응답 없음 (초기화 중일 수 있습니다)"
@@ -545,8 +611,11 @@ setup_network() {
 # 설치 완료 메시지
 print_completion() {
     domain=$(grep "^DOMAIN=" .env | cut -d'=' -f2)
-    web_port=$(grep "^WEB_PORT=" .env | cut -d'=' -f2)
-    web_port=${web_port:-8081}
+    host_bind=$(grep "^HOST_BIND=" .env | cut -d'=' -f2)
+    web_port=$(grep "^AERIAL_WEB_PORT=" .env | cut -d'=' -f2)
+    domain=${domain:-localhost}
+    host_bind=${host_bind:-0.0.0.0}
+    web_port=${web_port:-18100}
 
     echo ""
     echo -e "${GREEN}=============================================="
@@ -556,9 +625,11 @@ print_completion() {
     echo -e "${BLUE}접속 정보:${NC}"
     echo "  웹 UI: http://$domain:$web_port"
     echo "  API 문서: http://$domain:$web_port/api/v1/docs"
+    echo "  호스트 바인드: $host_bind:$web_port"
     echo ""
     echo -e "${BLUE}관리 도구:${NC}"
-    echo "  Flower (작업 모니터링): http://localhost:5555"
+    echo "  Flower debug: docker compose --profile debug up -d flower-debug"
+    echo "  Flower URL: http://127.0.0.1:18055"
     echo ""
     echo -e "${YELLOW}다음 단계:${NC}"
     echo "  1. 웹 UI에 접속하여 관리자 계정 생성"

@@ -116,6 +116,10 @@ export function useProjects(options = {}) {
         }
     }, []);
 
+    const patchProject = useCallback((projectId, patch) => {
+        setProjects(prev => prev.map(p => p.id === projectId ? { ...p, ...patch } : p));
+    }, []);
+
     const fetchImages = useCallback(async (projectId) => {
         try {
             return await api.getProjectImages(projectId);
@@ -140,6 +144,7 @@ export function useProjects(options = {}) {
         deleteProject,
         batchDeleteProjects,
         batchUpdateProjectStatus,
+        patchProject,
         fetchImages,
     };
 }

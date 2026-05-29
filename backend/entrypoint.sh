@@ -72,8 +72,8 @@ elif [ -f "scripts/seed_camera_models.py" ]; then
 fi
 
 if [ -n "$SEED_SCRIPT" ]; then
-    echo "  - Seeding camera models..."
-    python "$SEED_SCRIPT" 2>/dev/null || echo "    (camera models may already exist)"
+    echo "  - Syncing camera models from io.csv..."
+    python "$SEED_SCRIPT" --sync 2>/dev/null || echo "    (camera model sync skipped; io.csv may be missing)"
 fi
 
 # 권역 데이터 시드 (GeoJSON 파일이 있는 경우)
@@ -138,7 +138,13 @@ asyncio.run(import_regions())
     else
         # SQL 없으면 GeoJSON 폴백
         REGION_FILE=""
-        for f in "/app/data/전국_권역_5K_5179.geojson" "/app/data/regions.geojson" "data/전국_권역_5K_5179.geojson" "data/regions.geojson"; do
+        for f in \
+            "/app/data/전국_권역_5K_5179.geojson" \
+            "/app/data/TN_MAPINDX_5K_5179.geojson" \
+            "/app/data/regions.geojson" \
+            "data/전국_권역_5K_5179.geojson" \
+            "data/TN_MAPINDX_5K_5179.geojson" \
+            "data/regions.geojson"; do
             if [ -f "$f" ]; then
                 REGION_FILE="$f"
                 break

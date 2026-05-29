@@ -7,7 +7,7 @@ REASON="manual"
 DOCKER_SINCE="${GPU_DIAG_DOCKER_SINCE:-2h}"
 JOURNAL_SINCE="${GPU_DIAG_JOURNAL_SINCE:-2 hours ago}"
 OUTPUT_ROOT="${GPU_DIAG_ROOT:-}"
-CONTAINER_NAME="${GPU_DIAG_CONTAINER:-aerial-worker-engine}"
+CONTAINER_NAME="${GPU_DIAG_CONTAINER:-}"
 COMPOSE_FILE_ARG="${COMPOSE_FILE:-}"
 FALLBACK_OUTPUT_ROOT="/tmp/aerial-gpu-runtime-events"
 
@@ -21,7 +21,7 @@ Options:
   --journal-since VALUE  Relative time for journalctl (default: 2 hours ago)
   --output-root PATH     Output root directory
   --compose-file PATH    Compose file to inspect
-  --container NAME       Worker container name (default: aerial-worker-engine)
+  --container NAME       Worker container name or ID (default: docker compose ps -q worker-engine)
   -h, --help             Show this help
 EOF
 }
@@ -50,7 +50,7 @@ while [ $# -gt 0 ]; do
             ;;
         --container)
             shift
-            CONTAINER_NAME="${1:-aerial-worker-engine}"
+            CONTAINER_NAME="${1:-}"
             ;;
         -h|--help)
             usage
@@ -87,6 +87,10 @@ elif [ -f docker-compose.prod.yml ]; then
     COMPOSE_ARGS=(-f docker-compose.prod.yml)
 else
     COMPOSE_ARGS=(-f docker-compose.yml)
+fi
+
+if [ -z "$CONTAINER_NAME" ]; then
+    CONTAINER_NAME="$(docker compose "${COMPOSE_ARGS[@]}" ps -q worker-engine 2>/dev/null || true)"
 fi
 
 SAFE_REASON="$(printf '%s' "$REASON" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//')"
@@ -138,18 +142,27 @@ elif ! command -v nvidia-smi >/dev/null 2>&1; then
     host_gpu_status="missing-nvidia-smi"
 fi
 
-worker_container_id="$(docker ps -aqf "name=^/${CONTAINER_NAME}$" 2>/dev/null | head -1 || true)"
-worker_state="$(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")"
-worker_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")"
+worker_container_id=""
+worker_state="missing"
+worker_health="missing"
+if [ -n "$CONTAINER_NAME" ]; then
+    worker_container_id="$(docker inspect --format '{{.Id}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+    worker_state="$(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")"
+    worker_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")"
+fi
 worker_gpu_status="fail"
-if [ "$worker_state" = "running" ] && docker exec "$CONTAINER_NAME" nvidia-smi -L >/dev/null 2>&1; then
+if [ -n "$CONTAINER_NAME" ] && [ "$worker_state" = "running" ] && docker exec "$CONTAINER_NAME" nvidia-smi -L >/dev/null 2>&1; then
     worker_gpu_status="ok"
 elif [ "$worker_state" = "missing" ]; then
     worker_gpu_status="missing-container"
 fi
 
-device_requests="$(docker inspect --format '{{json .HostConfig.DeviceRequests}}' "$CONTAINER_NAME" 2>/dev/null || echo "null")"
-compose_config_files="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")"
+device_requests="null"
+compose_config_files="unknown"
+if [ -n "$CONTAINER_NAME" ]; then
+    device_requests="$(docker inspect --format '{{json .HostConfig.DeviceRequests}}' "$CONTAINER_NAME" 2>/dev/null || echo "null")"
+    compose_config_files="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")"
+fi
 
 cat > "$OUT_DIR/summary.txt" << EOF
 reason=$REASON

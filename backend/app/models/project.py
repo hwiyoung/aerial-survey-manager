@@ -149,7 +149,7 @@ class CameraModel(Base):
     focal_length: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
     sensor_width: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
     sensor_height: Mapped[float | None] = mapped_column(Float, nullable=True)  # mm
-    pixel_size: Mapped[float | None] = mapped_column(Float, nullable=True)  # µm
+    pixel_size: Mapped[float | None] = mapped_column(Float, nullable=True)  # micrometers (µm)
     # Sensor size in pixels (image dimensions)
     sensor_width_px: Mapped[int | None] = mapped_column(Integer, nullable=True)  # pixels
     sensor_height_px: Mapped[int | None] = mapped_column(Integer, nullable=True)  # pixels

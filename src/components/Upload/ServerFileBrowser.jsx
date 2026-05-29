@@ -101,8 +101,6 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
         }
     };
 
-    const isExternalDrive = (path) => /^\/(media|mnt)\//i.test(path);
-
     const handleSelect = () => {
         const doSelect = () => {
             if (mode === 'eo') {
@@ -118,15 +116,6 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
             onClose();
         };
 
-        if (mode !== 'eo' && isExternalDrive(currentPath)) {
-            const ok = window.confirm(
-                '⚠️ 외장 하드디스크 경로가 감지되었습니다.\n\n' +
-                '외장 저장장치의 I/O 속도에 따라 이미지 처리 시간이 길어질 수 있습니다.\n' +
-                '가능하면 내장 디스크로 복사 후 진행하는 것을 권장합니다.\n\n' +
-                '이대로 진행하시겠습니까?'
-            );
-            if (!ok) return;
-        }
         doSelect();
     };
 

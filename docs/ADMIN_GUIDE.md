@@ -173,12 +173,14 @@ docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
 ## 카메라 모델 등록
 
 ```bash
-# 새 데이터만 추가
-docker compose exec api python /app/scripts/seed_camera_models.py -f /app/io.csv
+# io.csv 기준으로 표준 카메라 모델 동기화
+docker compose exec api python /app/scripts/seed_camera_models.py -f /app/data/io.csv --sync
 
 # 전체 초기화 후 등록
-docker compose exec api python /app/scripts/seed_camera_models.py -f /app/io.csv --clear
+docker compose exec api python /app/scripts/seed_camera_models.py -f /app/data/io.csv --clear
 ```
+
+`io.csv`의 `$PIXEL_SIZE` 값은 마이크로미터(µm)로 관리합니다. 처리 엔진으로 전달할 때만 mm로 변환됩니다.
 
 ---
 
@@ -223,7 +225,7 @@ GPU가 컨테이너에 전달되지 않으면 처리 엔진이 CPU only로 동�
 
 ### 확인
 ```bash
-docker exec aerial-worker-engine nvidia-smi
+docker compose exec worker-engine nvidia-smi
 ```
 `Failed to initialize NVML` 오류 시 GPU가 컨테이너에 전달되지 않고 있습니다.
 
@@ -237,7 +239,7 @@ sudo bash scripts/fix-gpu.sh
 ```bash
 sudo systemctl restart docker
 # restart: always 설정으로 모든 컨테이너 자동 복구
-docker exec aerial-worker-engine nvidia-smi   # 확인
+docker compose exec worker-engine nvidia-smi   # 확인
 ```
 
 위 방법으로 해결되지 않으면 NVIDIA Container Toolkit이 설치되지 않았거나 Docker runtime에 등록되지 않은 것입니다.
@@ -295,7 +297,7 @@ sudo systemctl is-enabled docker
 docker compose ps
 
 # GPU 전달 확인 (재부팅 후 반드시 확인)
-docker exec aerial-worker-engine nvidia-smi
+docker compose exec worker-engine nvidia-smi
 ```
 
 > **별도 드라이브 사용 시**: 재부팅 후 데이터가 보이지 않으면 드라이브 마운트 순서 문제입니다.
@@ -307,19 +309,21 @@ docker exec aerial-worker-engine nvidia-smi
 
 ### 증상: "정사영상을 찾을 수 없습니다"
 
-내보내기 시 API가 `LOCAL_STORAGE_PATH/projects/{uuid}/ortho/result_cog.tif` 경로에서 파일을 찾습니다. 파일이 없으면 404 에러가 발생합니다.
+내보내기 시 API가 DB의 `projects.ortho_path`와 최신 `processing_jobs.result_path`에 저장된 정사영상 키를 기준으로 파일을 찾습니다. 로컬 모드에서는 최종 정사영상이 `EXPORT_ROOT_PATH`에 저장되고 컨테이너 안에서는 `/data/storage/orthomosaic`로 보입니다. `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 필요하지 않습니다.
 
 ### 진단
 ```bash
 # 1. 컨테이너 내부에서 파일 확인
 docker exec aerial-survey-manager-api-1 ls /data/storage/projects/
+docker exec aerial-survey-manager-api-1 ls /data/storage/orthomosaic/
 
-# 2. 호스트에서 result_cog.tif 위치 찾기
-find / -name "result_cog.tif" -not -path "/proc/*" 2>/dev/null
+# 2. 호스트에서 정사영상 위치 찾기
+find "$(grep EXPORT_ROOT_PATH .env | cut -d= -f2)" -name "*.tif" 2>/dev/null
 
-# 3. 컨테이너의 /data/storage 마운트 소스 확인
+# 3. 컨테이너의 프로젝트/정사영상 마운트 소스 확인
 docker inspect aerial-survey-manager-api-1 \
-  --format '{{range .Mounts}}{{if eq .Destination "/data/storage"}}{{.Source}}{{end}}{{end}}'
+  --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' | \
+  grep -E '/data/storage/projects|/data/storage/orthomosaic|/data/exports'
 ```
 
 ### 원인별 해결
@@ -334,10 +338,12 @@ cd /path/to/aerial-survey-manager
 docker compose down
 docker compose up -d
 
-# 잘못된 위치의 파일을 올바른 위치로 이동
-# (DB에는 상대경로만 저장되므로 파일 이동만으로 인식됨)
-mv /wrong/path/projects/{uuid}/ortho/result_cog.tif \
-   $(grep LOCAL_STORAGE_PATH .env | cut -d= -f2)/projects/{uuid}/ortho/result_cog.tif
+# 잘못된 위치의 파일을 올바른 정사영상 경로로 이동
+mv /wrong/path/orthomosaic/{region}_{title}.tif \
+   $(grep EXPORT_ROOT_PATH .env | cut -d= -f2)/{region}_{title}.tif
+
+# DB 최신 job 경로 동기화
+./scripts/sync-ortho-result-paths.sh --apply
 ```
 
 **이전 버전 폴더가 남아있는 경우** (실수 방지):
@@ -352,6 +358,49 @@ sudo bash scripts/secure-deployment.sh
 ```
 .env 파일 권한 제한, systemd 서비스 등록, 일반 사용자용 관리 명령어(`aerial-status`, `aerial-restart`, `aerial-logs`) 생성.
 
+`secure-deployment.sh`는 버전 폴더를 systemd 유닛에 직접 박지 않고 고정 symlink를 사용합니다.
+
+```text
+/home/dell/aerial-survey-manager-current -> /home/dell/aerial-survey-manager-<version>
+```
+
+새 버전 배포 후에는 새 버전 폴더에서 다시 실행해야 합니다.
+
+```bash
+cd /home/dell/aerial-survey-manager-<new-version>
+sudo bash scripts/secure-deployment.sh
+systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|ExecStart'
+```
+
+`aerial-survey.service`는 핵심 서비스가 정상 기동되면 success가 될 수 있습니다. GPU 드라이버나 NVIDIA runtime이 늦게 올라와 `worker-engine`만 실패한 경우에는 `aerial-gpu-watchdog.timer`가 이후 복구를 시도합니다.
+
+보안 설정 후 `.env`는 root-only(`600`)가 됩니다. 일반 사용자가 직접 `docker compose`를 실행하면 permission denied가 날 수 있으므로 운영 명령은 아래를 사용합니다.
+
+```bash
+aerial-status
+aerial-restart
+aerial-logs
+```
+
+### GPU/커널 mismatch 진단
+
+```bash
+./scripts/check-gpu-stack.sh
+uname -r
+dpkg-query -W -f='${binary:Package}\t${Version}\t${db:Status-Abbrev}\n' 'linux-modules-nvidia-*' | grep "$(uname -r)"
+```
+
+현재 커널과 일치하는 `linux-modules-nvidia-*` 패키지가 없으면 호스트 `nvidia-smi`와 `worker-engine` GPU 전달이 모두 실패할 수 있습니다.
+
+현재 정상 동작 중인 커널/NVIDIA stack을 운영자가 명시적으로 고정해야 할 때만 사용합니다.
+
+```bash
+sudo ./scripts/pin-gpu-stack.sh --hold
+sudo ./scripts/pin-gpu-stack.sh --unhold
+```
+
+주의: hold는 커널/드라이버 보안 업데이트 적용을 지연시킬 수 있습니다. 자동으로 적용하지 말고 운영자가 선택해야 합니다.
+
 ---
 
 ## 스크립트 레퍼런스
@@ -364,6 +413,8 @@ sudo bash scripts/secure-deployment.sh
 | `inject-cog.sh` | 외부 정사영상 COG 삽입 | 일반 |
 | `cleanup-storage.sh` | 중복 파일 정리 (dry-run 기본) | 일반 |
 | `check-processing-ops.sh` | 큐/워커/정책 점검 | 일반 |
+| `check-gpu-stack.sh` | GPU/커널/Docker runtime read-only 진단 | 일반 |
+| `pin-gpu-stack.sh` | 커널/NVIDIA stack hold/unhold (opt-in) | sudo |
 | `fix-gpu.sh` | GPU 진단 및 자동 복구 | sudo |
 | `healthcheck.sh` | 전체 서비스 헬스체크 | 일반 |
 | `collect-logs.sh` | 로그 수집 (지원팀 전달용) | 일반 |

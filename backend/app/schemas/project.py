@@ -193,6 +193,10 @@ class CameraModelBase(BaseModel):
 class CameraModelCreate(CameraModelBase):
     """Camera model creation schema."""
     is_custom: bool = True
+    sensor_width_px: Optional[int] = None
+    sensor_height_px: Optional[int] = None
+    ppa_x: Optional[float] = None
+    ppa_y: Optional[float] = None
 
 
 class CameraModelResponse(CameraModelBase):
@@ -221,6 +225,7 @@ class ProcessingOptions(BaseModel):
     # Advanced options
     eo_only_align: bool = True  # EO reference와 매칭된 이미지만 정합
     build_point_cloud: bool = False  # Point cloud 생성 여부 (3D Tiles 출력 시 필요)
+    resume_checkpoint: bool = True  # 완료된 단계 checkpoint 재사용 여부
 
 
 class ProcessingJobResponse(BaseModel):
@@ -244,6 +249,11 @@ class ProcessingJobResponse(BaseModel):
     metrics: Optional[dict[str, Any]] = None
     step_status: Optional[dict[str, Any]] = None  # 단계별 진행률 (status.json)
     processing_events: Optional[List[dict[str, Any]]] = None
+    restart_choice_required: bool = False
+    can_resume: bool = False
+    completed_steps: List[dict[str, Any]] = Field(default_factory=list)
+    failed_step: Optional[dict[str, Any]] = None
+    next_step: Optional[dict[str, Any]] = None
 
     class Config:
         from_attributes = True

@@ -12,7 +12,8 @@ def _apply_camera_io(chunk, camera_io):
 
     ``camera_io`` is the dict returned by :func:`_camera_io_from_args`. When
     ``None`` or missing the required focal_length/pixel_size, the function
-    no-ops and Metashape keeps its EXIF-derived auto-calibration.
+    no-ops and Metashape keeps its EXIF-derived auto-calibration. When IO is
+    provided, keep it as the initial calibration without fixing any parameters.
 
     Units in input: focal_length (mm), pixel_size (mm), ppa_x/y (mm).
     Metashape's Sensor.focal_length is mm, Sensor.pixel_size is mm,
@@ -58,7 +59,8 @@ def _apply_camera_io(chunk, camera_io):
             calib.cy = float(cy_px)
 
             sensor.user_calib = calib
-            sensor.fixed_calibration = True
+            sensor.fixed_calibration = False
+            sensor.fixed_params = []
             print(
                 f"✅ IO 적용: sensor='{getattr(sensor, 'label', '?')}' "
                 f"model='{model_name}' f={focal_px:.2f}px "
@@ -509,8 +511,8 @@ def align_photos(
     print(f"✅ Added {len(initial_input_images)} EO-matched photos to the core chunk.")
 
     # Interior Orientation override: when the project specifies a calibrated
-    # camera, apply it to the chunk's sensors so alignment uses fixed IO instead
-    # of Metashape's EXIF-derived auto-calibration.
+    # camera, apply it as Metashape's initial calibration without fixing
+    # calibration parameters during alignment.
     _apply_camera_io(chunk, camera_io)
 
     drone_makes = {"DJI", "Parrot", "Yuneec", "Autel Robotics", "senseFly"}

@@ -330,10 +330,13 @@ class ApiClient {
     }
 
     // --- Local Import ---
-    async localImport(projectId, sourceDir, filePaths = null) {
+    async localImport(projectId, sourceDir, filePaths = null, cameraModelName = null) {
         const body = { source_dir: sourceDir };
         if (filePaths && filePaths.length > 0) {
             body.file_paths = filePaths;
+        }
+        if (cameraModelName) {
+            body.camera_model_name = cameraModelName;
         }
         return this.request(`/upload/projects/${projectId}/local-import`, {
             method: 'POST',

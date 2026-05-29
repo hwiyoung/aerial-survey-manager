@@ -53,6 +53,20 @@ def _as_bool(value, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _camera_pixel_size_to_mm(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        pixel_size = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pixel_size <= 0:
+        return None
+    # Legacy camera_models.pixel_size values are stored in micrometers. Values
+    # already below 0.1 are assumed to be millimeters.
+    return pixel_size / 1000.0 if pixel_size > 0.1 else pixel_size
+
+
 def _normalize_epsg_crs(value: object, default: str = "EPSG:5186") -> str:
     raw = str(value or default).strip().upper()
     if re.fullmatch(r"\d{4,5}", raw):
@@ -530,10 +544,11 @@ class MetashapeEngine(ProcessingEngine):
         # compatibility for projects without an IO override (their hash stays
         # the same as before, avoiding spurious checkpoint invalidations).
         camera_io = options.get("camera_io") or {}
-        if camera_io.get("focal_length_mm") and camera_io.get("pixel_size_mm"):
+        pixel_size_mm = _camera_pixel_size_to_mm(camera_io.get("pixel_size_mm"))
+        if camera_io.get("focal_length_mm") and pixel_size_mm:
             payload["camera_io"] = {
                 "focal_length_mm": camera_io.get("focal_length_mm"),
-                "pixel_size_mm": camera_io.get("pixel_size_mm"),
+                "pixel_size_mm": pixel_size_mm,
                 "sensor_width_px": camera_io.get("sensor_width_px"),
                 "sensor_height_px": camera_io.get("sensor_height_px"),
                 "ppa_x_mm": camera_io.get("ppa_x_mm"),
@@ -1178,10 +1193,11 @@ class MetashapeEngine(ProcessingEngine):
                         cmd.append("--allow_non_eo_incremental")
 
                     camera_io = options.get("camera_io")
-                    if camera_io and camera_io.get("focal_length_mm") and camera_io.get("pixel_size_mm"):
+                    pixel_size_mm = _camera_pixel_size_to_mm((camera_io or {}).get("pixel_size_mm"))
+                    if camera_io and camera_io.get("focal_length_mm") and pixel_size_mm:
                         cmd.extend([
                             "--camera_focal_length", str(camera_io["focal_length_mm"]),
-                            "--camera_pixel_size", str(camera_io["pixel_size_mm"]),
+                            "--camera_pixel_size", str(pixel_size_mm),
                             "--camera_ppa_x", str(camera_io.get("ppa_x_mm") or 0.0),
                             "--camera_ppa_y", str(camera_io.get("ppa_y_mm") or 0.0),
                         ])
@@ -1195,7 +1211,7 @@ class MetashapeEngine(ProcessingEngine):
                             "[ProcessingEngine] IO override forwarded: model=%s focal=%smm pixel=%smm",
                             camera_io.get("model_name"),
                             camera_io.get("focal_length_mm"),
-                            camera_io.get("pixel_size_mm"),
+                            pixel_size_mm,
                         )
 
                     metadata_path = input_dir / "metadata.txt"
