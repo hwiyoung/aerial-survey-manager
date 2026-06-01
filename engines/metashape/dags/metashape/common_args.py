@@ -91,7 +91,52 @@ def parse_arguments():
         help="Opt into the legacy non-EO incremental alignment pass."
     )
 
-
+    # Interior Orientation (IO) / camera calibration overrides.
+    # All optional; if any required field is missing, Metashape falls back to
+    # EXIF-based auto calibration.
+    parser.add_argument(
+        "--camera_focal_length",
+        required=False,
+        type=float,
+        help="Camera focal length in mm (user-provided IO)."
+    )
+    parser.add_argument(
+        "--camera_pixel_size",
+        required=False,
+        type=float,
+        help="Camera pixel size in mm (user-provided IO)."
+    )
+    parser.add_argument(
+        "--camera_sensor_width_px",
+        required=False,
+        type=int,
+        help="Sensor width in pixels."
+    )
+    parser.add_argument(
+        "--camera_sensor_height_px",
+        required=False,
+        type=int,
+        help="Sensor height in pixels."
+    )
+    parser.add_argument(
+        "--camera_ppa_x",
+        required=False,
+        type=float,
+        default=0.0,
+        help="Principal point offset X from image center, in mm."
+    )
+    parser.add_argument(
+        "--camera_ppa_y",
+        required=False,
+        type=float,
+        default=0.0,
+        help="Principal point offset Y from image center, in mm."
+    )
+    parser.add_argument(
+        "--camera_model_name",
+        required=False,
+        help="Human-readable camera model name for logging."
+    )
 
     args = parser.parse_args()
 
@@ -117,4 +162,15 @@ def print_debug_info(args, input_images):
     print(f"Output Path: {args.output_path}")
     print(f"Process Mode: {args.process_mode}")
     print(f"EO-only Align: {args.eo_only_align}")
+    if getattr(args, "camera_focal_length", None) is not None:
+        print(
+            "Interior Orientation override: "
+            f"model={getattr(args, 'camera_model_name', None)} "
+            f"focal={args.camera_focal_length}mm "
+            f"pixel_size={getattr(args, 'camera_pixel_size', None)}mm "
+            f"sensor={getattr(args, 'camera_sensor_width_px', None)}x"
+            f"{getattr(args, 'camera_sensor_height_px', None)}px "
+            f"ppa=({getattr(args, 'camera_ppa_x', 0.0)}, "
+            f"{getattr(args, 'camera_ppa_y', 0.0)})mm"
+        )
     print(f"Found {len(input_images)} images.")

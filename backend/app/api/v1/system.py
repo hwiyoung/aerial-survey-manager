@@ -2,6 +2,7 @@
 import asyncio
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from celery.exceptions import TimeoutError as CeleryTimeoutError
@@ -19,6 +20,60 @@ from app.services.system_status import (
 router = APIRouter(prefix="/system", tags=["System"])
 
 _gpu_cache: dict[str, Any] = {"ts": 0.0, "ttl": 0.0, "data": None}
+
+
+def _path_total_bytes(path: Path) -> int:
+    try:
+        stat = os.statvfs(str(path))
+        return stat.f_blocks * stat.f_frsize
+    except (OSError, PermissionError):
+        return 0
+
+
+def _iter_media_storage_candidates(media_root: str):
+    root = Path(media_root)
+    if not root.exists() or not root.is_dir():
+        return
+
+    try:
+        children = [child for child in root.iterdir() if child.is_dir() and not child.name.startswith(".")]
+    except PermissionError:
+        return
+
+    for child in children:
+        try:
+            grandchildren = [
+                item
+                for item in child.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            ]
+        except PermissionError:
+            grandchildren = []
+
+        if grandchildren:
+            yield from grandchildren
+        else:
+            yield child
+
+
+def _largest_media_storage_path(media_root: str) -> str | None:
+    candidates = []
+    for path in _iter_media_storage_candidates(media_root) or []:
+        total_bytes = _path_total_bytes(path)
+        if total_bytes > 0:
+            candidates.append((total_bytes, str(path)))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _system_storage_paths(settings) -> list[tuple[str, str, str]]:
+    """Return the user-facing disk path used for capacity display."""
+    storage_path = _largest_media_storage_path(settings.MEDIA_STORAGE_ROOT)
+    if not storage_path:
+        storage_path = settings.SYSTEM_STORAGE_PATH
+    return [("largest_media_storage", "저장공간", storage_path)]
 
 
 def _mark_gpu_stale(data: dict[str, Any], message: str) -> dict[str, Any]:
@@ -120,11 +175,7 @@ async def get_system_resources(
     response.headers["Pragma"] = "no-cache"
 
     gpu_status = await asyncio.to_thread(_runtime_gpu_status)
-    storage_paths = [
-        ("local_storage", "저장공간", settings.LOCAL_STORAGE_PATH),
-        ("processing_data", "처리공간", settings.PROCESSING_DATA_PATH),
-        ("orthomosaic", "정사영상", settings.EXPORT_ROOT_PATH),
-    ]
+    storage_paths = _system_storage_paths(settings)
 
     return {
         "timestamp": utc_now_iso(),

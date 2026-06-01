@@ -141,6 +141,17 @@ function formatProcessingRange(project) {
     return `완료 ${project.processingCompletedAtDisplay || formatDateTime(completedAt)}`;
 }
 
+function getProcessingImageCount(project) {
+    const count = project?.processingImageCount
+        ?? project?.processing_image_count
+        ?? project?.upload_completed_count
+        ?? project?.imageCount
+        ?? project?.image_count
+        ?? 0;
+    const numericCount = Number(count);
+    return Number.isFinite(numericCount) ? numericCount : 0;
+}
+
 function statusClasses(status) {
     switch (status) {
         case 'ok':
@@ -311,7 +322,7 @@ function ResourceStatusPanel() {
                     value={storageValue}
                     detail={storageDetail}
                     status={storageSummary?.status}
-                    title={storageSummary ? `${storageSummary.label}: ${storageSummary.path}` : '저장공간 상태'}
+                    title="저장공간 상태"
                 />
             </div>
             {error && (
@@ -389,6 +400,7 @@ export function ProjectItem({
     const [editValue, setEditValue] = useState(project.title);
     const clickTimeoutRef = useRef(null);
     const CLICK_DELAY = 250;
+    const processingImageCount = getProcessingImageCount(project);
 
     const handleDragStart = (e) => {
         if (!draggable) return;
@@ -477,7 +489,7 @@ export function ProjectItem({
                 ) : (
                     <h4 className="text-sm font-bold text-slate-800 truncate flex-1 min-w-0">{project.title}</h4>
                 )}
-                <span className="text-[10px] text-slate-400 flex items-center gap-0.5 shrink-0"><FileImage size={10} /> {project.imageCount || project.image_count || 0}</span>
+                <span className="text-[10px] text-slate-400 flex items-center gap-0.5 shrink-0"><FileImage size={10} /> {processingImageCount}</span>
                 {(() => {
                     const statusInfo = getProjectStatusDisplay(project);
                     return (
@@ -524,7 +536,7 @@ export function ProjectItem({
                     <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap min-w-0">
                         <span className="bg-slate-100 px-1.5 py-0.5 rounded">{project.region}</span>
                         <span className="text-slate-300">|</span>
-                        <span className="flex items-center gap-1"><FileImage size={12} /> {project.imageCount || 0}장</span>
+                        <span className="flex items-center gap-1"><FileImage size={12} /> {processingImageCount}장</span>
                         {project.area && <><span className="text-slate-300">|</span><span className="font-bold text-blue-600"> {project.area.toFixed(2)} km²</span></>}
                         {processingRangeLabel && (
                             <>

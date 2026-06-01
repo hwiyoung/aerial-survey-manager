@@ -17,6 +17,41 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+APP_DIR_REAL=""
+APP_DIR_LINK=""
+
+init_deployment_paths() {
+    APP_DIR_REAL="$(cd "$(dirname "$0")/.." && pwd -P)"
+    local parent_dir
+    parent_dir="$(dirname "$APP_DIR_REAL")"
+    APP_DIR_LINK="${AERIAL_CURRENT_LINK:-$parent_dir/aerial-survey-manager-current}"
+}
+
+ensure_current_symlink() {
+    if [ -z "$APP_DIR_REAL" ] || [ -z "$APP_DIR_LINK" ]; then
+        init_deployment_paths
+    fi
+
+    if [ -e "$APP_DIR_LINK" ] && [ ! -L "$APP_DIR_LINK" ]; then
+        log_error "고정 경로가 이미 존재하지만 symlink가 아닙니다: $APP_DIR_LINK"
+        log_error "다른 경로를 쓰려면 AERIAL_CURRENT_LINK=/path/to/link 를 지정하세요."
+        exit 1
+    fi
+
+    local current_target=""
+    if [ -L "$APP_DIR_LINK" ]; then
+        current_target="$(readlink -f "$APP_DIR_LINK" 2>/dev/null || true)"
+    fi
+
+    if [ "$current_target" = "$APP_DIR_REAL" ]; then
+        log_info "고정 symlink 확인됨: $APP_DIR_LINK -> $APP_DIR_REAL"
+        return 0
+    fi
+
+    ln -sfn "$APP_DIR_REAL" "$APP_DIR_LINK"
+    log_info "고정 symlink 갱신: $APP_DIR_LINK -> $APP_DIR_REAL"
+}
+
 # root 권한 확인
 check_root() {
     if [ "$EUID" -ne 0 ]; then
@@ -50,8 +85,7 @@ create_app_user() {
 secure_env_file() {
     log_info ".env 파일 권한 설정..."
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-    ENV_FILE="$SCRIPT_DIR/.env"
+    ENV_FILE="$APP_DIR_REAL/.env"
 
     if [ -f "$ENV_FILE" ]; then
         # root만 읽기 가능하도록 설정
@@ -124,14 +158,11 @@ EOF
 }
 
 setup_gpu_watchdog_timer() {
-    local script_dir
     local service_file="/etc/systemd/system/aerial-gpu-watchdog.service"
     local timer_file="/etc/systemd/system/aerial-gpu-watchdog.timer"
 
-    script_dir="$(cd "$(dirname "$0")/.." && pwd)"
-
-    if [ ! -f "$script_dir/scripts/gpu-watchdog.sh" ]; then
-        log_warn "GPU watchdog 스크립트가 없어 systemd timer 생성을 건너뜁니다: $script_dir/scripts/gpu-watchdog.sh"
+    if [ ! -f "$APP_DIR_REAL/scripts/gpu-watchdog.sh" ]; then
+        log_warn "GPU watchdog 스크립트가 없어 systemd timer 생성을 건너뜁니다: $APP_DIR_REAL/scripts/gpu-watchdog.sh"
         return 0
     fi
 
@@ -143,11 +174,11 @@ Wants=aerial-survey.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=$script_dir
-EnvironmentFile=$script_dir/.env
+WorkingDirectory=$APP_DIR_LINK
+EnvironmentFile=$APP_DIR_LINK/.env
 Environment=GPU_WATCHDOG_COLLECT_DIAGNOSTICS=true
 Environment=GPU_WATCHDOG_DIAG_SINCE=2h
-ExecStart=$script_dir/scripts/gpu-watchdog.sh --once
+ExecStart=$APP_DIR_LINK/scripts/gpu-watchdog.sh --once
 EOF
 
     cat > "$timer_file" << EOF
@@ -172,11 +203,8 @@ EOF
 create_systemd_service() {
     log_info "systemd 서비스 생성..."
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
     SERVICE_FILE="/etc/systemd/system/aerial-survey.service"
-    GPU_WATCHDOG_SERVICE="/etc/systemd/system/aerial-gpu-watchdog.service"
-    GPU_WATCHDOG_TIMER="/etc/systemd/system/aerial-gpu-watchdog.timer"
-    READ_WRITE_PATHS="$SCRIPT_DIR/data"
+    READ_WRITE_PATHS="$APP_DIR_REAL/data"
 
     add_existing_read_write_path() {
         local path="$1"
@@ -193,26 +221,31 @@ create_systemd_service() {
         fi
     }
 
-    if [ -f "$SCRIPT_DIR/.env" ]; then
-        storage_backend=$(grep "^STORAGE_BACKEND=" "$SCRIPT_DIR/.env" | cut -d'=' -f2-)
+    if [ -f "$APP_DIR_REAL/.env" ]; then
+        storage_backend=$(grep "^STORAGE_BACKEND=" "$APP_DIR_REAL/.env" | cut -d'=' -f2-)
 
         for key in AERIAL_DATA_ROOT LOCAL_STORAGE_PATH PROCESSING_DATA_PATH EXPORT_ROOT_PATH TILES_PATH; do
-            path=$(grep "^${key}=" "$SCRIPT_DIR/.env" | cut -d'=' -f2-)
+            path=$(grep "^${key}=" "$APP_DIR_REAL/.env" | cut -d'=' -f2-)
             add_existing_read_write_path "$path" "$key"
         done
 
         if [ "$storage_backend" = "minio" ]; then
-            path=$(grep "^MINIO_DATA_PATH=" "$SCRIPT_DIR/.env" | cut -d'=' -f2-)
+            path=$(grep "^MINIO_DATA_PATH=" "$APP_DIR_REAL/.env" | cut -d'=' -f2-)
             add_existing_read_write_path "$path" "MINIO_DATA_PATH"
         fi
     fi
 
-    if [ -d "$SCRIPT_DIR/images" ] && ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q '^aerial-survey-manager:'; then
+    if [ -d "$APP_DIR_REAL/images" ] && ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q '^aerial-survey-manager:'; then
         log_warn "배포 이미지가 아직 로드되지 않았습니다."
         log_warn "서비스 시작 전에 다음 중 하나를 먼저 실행하세요:"
-        echo "  sudo $SCRIPT_DIR/load-images.sh"
-        echo "  sudo $SCRIPT_DIR/scripts/install.sh"
+        echo "  sudo $APP_DIR_LINK/load-images.sh"
+        echo "  sudo $APP_DIR_LINK/scripts/install.sh"
         echo ""
+    fi
+
+    if [ ! -x "$APP_DIR_REAL/scripts/systemd-start.sh" ]; then
+        log_error "systemd 시작 스크립트가 없거나 실행 권한이 없습니다: $APP_DIR_REAL/scripts/systemd-start.sh"
+        exit 1
     fi
 
     cat > "$SERVICE_FILE" << EOF
@@ -225,12 +258,11 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=$SCRIPT_DIR
-EnvironmentFile=$SCRIPT_DIR/.env
+WorkingDirectory=$APP_DIR_LINK
+EnvironmentFile=$APP_DIR_LINK/.env
 
-# 서비스 시작: docker compose up
-# 개발환경: docker-compose.prod.yml 우선, 배포 패키지: docker-compose.yml
-ExecStart=/bin/bash -c 'if [ -f docker-compose.prod.yml ]; then /usr/bin/docker compose -f docker-compose.prod.yml up -d; else /usr/bin/docker compose up -d; fi'
+# 핵심 서비스는 필수로 기동하고, GPU worker-engine은 best-effort로 분리합니다.
+ExecStart=$APP_DIR_LINK/scripts/systemd-start.sh
 
 # 서비스 중지: docker compose down
 ExecStop=/bin/bash -c 'if [ -f docker-compose.prod.yml ]; then /usr/bin/docker compose -f docker-compose.prod.yml down; else /usr/bin/docker compose down; fi'
@@ -272,7 +304,6 @@ EOF
 create_user_scripts() {
     log_info "사용자용 관리 스크립트 생성..."
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
     BIN_DIR="/usr/local/bin"
 
     # 상태 확인 스크립트
@@ -315,16 +346,14 @@ EOF
 secure_deployment_dir() {
     log_info "배포 디렉토리 권한 설정..."
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-
     # 민감한 파일 권한 설정
-    find "$SCRIPT_DIR" -name "*.env*" -type f -exec chmod 600 {} \;
-    find "$SCRIPT_DIR" -name "docker-compose*.yml" -type f -exec chmod 644 {} \;
+    find "$APP_DIR_REAL" -name "*.env*" -type f -exec chmod 600 {} \;
+    find "$APP_DIR_REAL" -name "docker-compose*.yml" -type f -exec chmod 644 {} \;
 
     # SSL 디렉토리 보안
-    if [ -d "$SCRIPT_DIR/ssl" ]; then
-        chmod 700 "$SCRIPT_DIR/ssl"
-        find "$SCRIPT_DIR/ssl" -type f -exec chmod 600 {} \;
+    if [ -d "$APP_DIR_REAL/ssl" ]; then
+        chmod 700 "$APP_DIR_REAL/ssl"
+        find "$APP_DIR_REAL/ssl" -type f -exec chmod 600 {} \;
         log_info "SSL 디렉토리 보안 설정 완료"
     fi
 
@@ -405,11 +434,15 @@ main() {
 
     if [ "${1:-}" = "--gpu-watchdog-timer-only" ]; then
         check_root
+        init_deployment_paths
+        ensure_current_symlink
         setup_gpu_watchdog_timer
         exit 0
     fi
 
     check_root
+    init_deployment_paths
+    ensure_current_symlink
     create_app_user
     secure_env_file
     secure_docker_socket

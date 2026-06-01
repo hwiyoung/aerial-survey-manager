@@ -1,9 +1,23 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Trash2, Play, Camera } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Trash2, Play, Camera, RotateCcw } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 
 const ACTIVE_UPLOAD_STATUSES = new Set(['waiting', 'uploading', 'validating']);
+
+function normalizeRestartChoiceData(data) {
+    if (!data) return null;
+    return {
+        type: 'restart_choice_required',
+        message: data.message || '이전 처리 작업이 완료되지 않았습니다. 처리 방식을 선택해주세요.',
+        job_id: data.job_id || data.id || null,
+        job_status: data.job_status || data.status,
+        can_resume: Boolean(data.can_resume),
+        completed_steps: data.completed_steps || [],
+        failed_step: data.failed_step || null,
+        next_step: data.next_step || null,
+    };
+}
 
 function getProcessingEngineLabel(engineName) {
     const normalized = String(engineName || '').trim().toLowerCase();
@@ -27,6 +41,7 @@ export default function ProcessingSidebar({
     defaultEngine = 'metashape',
 }) {
     const [isStarting, setIsStarting] = useState(false);
+    const startInFlightRef = useRef(false);
     const [startError, setStartError] = useState('');
     const [presets, setPresets] = useState([]);
     const [defaultPresets, setDefaultPresets] = useState([]);
@@ -73,6 +88,8 @@ export default function ProcessingSidebar({
     const [isCompletionModalOpen, setIsCompletionModalOpen] = useState(false);
     const [hasTriggeredComplete, setHasTriggeredComplete] = useState(false); // 완료 처리 중복 방지
     const [hasTriggeredCancel, setHasTriggeredCancel] = useState(false);
+    const [restartChoiceData, setRestartChoiceData] = useState(null);
+    const [restartChoiceDismissedJobId, setRestartChoiceDismissedJobId] = useState(null);
 
     // Real-time processing progress via WebSocket
     const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected, reconnect } = useProcessingProgress(
@@ -90,6 +107,13 @@ export default function ProcessingSidebar({
             .filter((event) => event.message);
         return normalized.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     }, [uploadEvents, processingEvents]);
+    const alertEvents = useMemo(
+        () => visibleEvents.filter((e) => {
+            const lv = String(e.level || '').toLowerCase();
+            return lv === 'error' || lv === 'warning' || lv === 'warn';
+        }),
+        [visibleEvents],
+    );
     const normalizedProjectStatus = (project?.status || '').toLowerCase();
     const isProjectCompleted = normalizedProjectStatus === 'completed' || project?.status === '완료';
     const isProjectProcessing = (
@@ -109,43 +133,19 @@ export default function ProcessingSidebar({
         ?? project?.upload_completed_count
         ?? project?.imageCount
         ?? 0;
-    const uploadSummary = useMemo(() => {
-        const completed = activeUploads.filter(upload => upload.status === 'completed').length;
-        const excluded = activeUploads.filter(upload => upload.status === 'excluded').length;
-        const errors = activeUploads.filter(upload => upload.status === 'error').length;
-        const active = activeUploads.filter(upload => ACTIVE_UPLOAD_STATUSES.has(upload.status)).length;
-        const total = activeUploads.length;
-        const progress = total > 0
-            ? activeUploads.reduce((sum, upload) => sum + (upload.progress || 0), 0) / total
-            : 0;
-        return { completed, excluded, errors, active, total, progress };
-    }, [activeUploads]);
-
-    const getUploadStatusMeta = (status) => {
-        if (status === 'completed') {
-            return { label: '처리 대상', row: 'border-emerald-100 bg-emerald-50/70', text: 'text-emerald-700', bar: 'bg-emerald-500' };
-        }
-        if (status === 'excluded') {
-            return { label: '처리 제외', row: 'border-amber-200 bg-amber-50/80', text: 'text-amber-800', bar: 'bg-amber-500' };
-        }
-        if (status === 'error') {
-            return { label: '오류', row: 'border-red-200 bg-red-50/80', text: 'text-red-700', bar: 'bg-red-500' };
-        }
-        if (status === 'validating') {
-            return { label: '확인 중', row: 'border-blue-100 bg-blue-50/70', text: 'text-blue-700', bar: 'bg-blue-500' };
-        }
-        if (status === 'uploading') {
-            return { label: '업로드 중', row: 'border-blue-100 bg-blue-50/70', text: 'text-blue-700', bar: 'bg-blue-500' };
-        }
-        return { label: '대기', row: 'border-slate-100 bg-slate-50', text: 'text-slate-500', bar: 'bg-slate-400' };
-    };
-
     const fallbackProgress = (wsStatus === 'connecting' && (isProjectProcessing || isStarting))
         ? (project?.progress ?? 0)
         : (isComplete ? 100 : wsProgress);
     const fallbackMessage =
         wsMessage ||
         (isStarting ? '처리 시작 중...' : (wsStatus === 'queued' ? '대기 중...' : (wsStatus === 'processing' ? '처리 진행 중...' : (wsStatus === 'connecting' ? '연결 중...' : ''))));
+    const restartCompletedSteps = useMemo(() => {
+        if (!Array.isArray(restartChoiceData?.completed_steps)) return [];
+        return restartChoiceData.completed_steps
+            .map(step => step?.label || step?.script)
+            .filter(Boolean);
+    }, [restartChoiceData]);
+    const restartFailedStepLabel = restartChoiceData?.failed_step?.label || restartChoiceData?.next_step?.label || '';
 
     useEffect(() => {
         if (!project?.id) {
@@ -161,6 +161,17 @@ export default function ProcessingSidebar({
                     const events = data.processing_events || [];
                     setProcessingEvents(events);
                     onProcessingEventsChange?.(project.id, events);
+
+                    const restartJobId = data.id || data.job_id;
+                    if (
+                        data.restart_choice_required &&
+                        selectedPresetId &&
+                        !restartChoiceData &&
+                        restartChoiceDismissedJobId !== restartJobId &&
+                        !startInFlightRef.current
+                    ) {
+                        setRestartChoiceData(normalizeRestartChoiceData(data));
+                    }
                 }
             } catch (_error) {
                 if (!cancelled) setProcessingEvents([]);
@@ -173,7 +184,7 @@ export default function ProcessingSidebar({
             cancelled = true;
             clearInterval(timer);
         };
-    }, [project?.id, isProcessing, onProcessingEventsChange]);
+    }, [project?.id, isProcessing, onProcessingEventsChange, restartChoiceData, restartChoiceDismissedJobId, selectedPresetId]);
 
     // Load presets on mount
     useEffect(() => {
@@ -232,6 +243,8 @@ export default function ProcessingSidebar({
         setHasTriggeredComplete(false);
         setHasTriggeredCancel(false);
         setStartError('');
+        setRestartChoiceData(null);
+        setRestartChoiceDismissedJobId(null);
     }, [project?.id]);
 
     useEffect(() => {
@@ -340,16 +353,28 @@ export default function ProcessingSidebar({
     };
 
     // Start processing with current options
-    const handleStart = async (forceRestart = false) => {
+    const handleStart = async (forceRestart = false, resumeCheckpoint = undefined) => {
+        if (forceRestart && typeof forceRestart === 'object') {
+            forceRestart.preventDefault?.();
+            forceRestart = false;
+        }
+        forceRestart = Boolean(forceRestart);
+
+        if (startInFlightRef.current) {
+            return;
+        }
+        startInFlightRef.current = true;
         setStartError('');
         if (!selectedPresetId) {
             setStartError('프리셋을 선택해 주세요.');
+            startInFlightRef.current = false;
             return;
         }
 
         const hasEnabledEngine = processingEngines.some((engine) => engine.enabled);
         if (!hasEnabledEngine) {
             setStartError('사용 가능한 처리 엔진이 없습니다. 서버 설정을 확인해 주세요.');
+            startInFlightRef.current = false;
             return;
         }
 
@@ -361,18 +386,36 @@ export default function ProcessingSidebar({
             } else {
                 setStartError('현재 엔진이 비활성입니다.');
             }
+            startInFlightRef.current = false;
             return;
+        }
+
+        if (!forceRestart && resumeCheckpoint === undefined && project?.id) {
+            try {
+                const statusData = await api.getProcessingStatus(project.id);
+                if (statusData?.restart_choice_required) {
+                    setRestartChoiceDismissedJobId(null);
+                    setRestartChoiceData(normalizeRestartChoiceData(statusData));
+                    startInFlightRef.current = false;
+                    return;
+                }
+            } catch (statusError) {
+                console.warn('Failed to check restart choice before starting:', statusError);
+            }
         }
 
         setHasTriggeredCancel(false);
         setIsStarting(true);
+        const startOptions = resumeCheckpoint === undefined
+            ? options
+            : { ...options, resume_checkpoint: resumeCheckpoint };
         try {
-            await onStartProcessing(options, forceRestart);
+            await onStartProcessing(startOptions, forceRestart);
             if (reconnect) reconnect();
         } catch (error) {
             console.error('Failed to start processing:', error);
 
-            const errorData = error.response?.data?.detail || error.response?.data || {};
+            const errorData = error.data || error.response?.data?.detail || error.response?.data || {};
             if (errorData?.type === 'unsupported_engine') {
                 const fallbackEngine = enabledEngines.find((engine) => errorData?.supported_engines?.includes(engine.name))?.name
                     || enabledEngines[0]?.name;
@@ -384,6 +427,30 @@ export default function ProcessingSidebar({
                 }
 
                 setIsStarting(false);
+                startInFlightRef.current = false;
+                return;
+            }
+
+            if (errorData?.type === 'completed_job_restart_requires_explicit_action') {
+                setIsStarting(false);
+                startInFlightRef.current = false;
+                const confirmRerun = window.confirm(
+                    `${errorData.confirm_message || '완료된 프로젝트입니다.'}\n\n` +
+                    `기존 결과는 유지하고, 업로드된 이미지와 EO를 다시 불러와 새 처리 작업을 시작하시겠습니까?`
+                );
+                if (confirmRerun) {
+                    await handleStart(false);
+                    return;
+                }
+                setStartError(errorData.message || '완료된 프로젝트의 자동 재시작 요청이 차단되었습니다.');
+                return;
+            }
+
+            if (errorData?.type === 'restart_choice_required') {
+                setIsStarting(false);
+                startInFlightRef.current = false;
+                setRestartChoiceDismissedJobId(null);
+                setRestartChoiceData(normalizeRestartChoiceData(errorData));
                 return;
             }
 
@@ -397,7 +464,8 @@ export default function ProcessingSidebar({
                     `기존 작업을 중단하고 새로 시작하시겠습니까?`
                 );
                 if (confirmRestart) {
-                    // Retry with force_restart
+                    startInFlightRef.current = false;
+                    setIsStarting(false);
                     await handleStart(true);
                     return;
                 }
@@ -408,7 +476,26 @@ export default function ProcessingSidebar({
                 setStartError(message);
             }
             setIsStarting(false);
+        } finally {
+            startInFlightRef.current = false;
         }
+    };
+
+    const dismissRestartChoice = () => {
+        const jobId = restartChoiceData?.job_id || restartChoiceData?.id || null;
+        if (jobId) {
+            setRestartChoiceDismissedJobId(jobId);
+        }
+        setRestartChoiceData(null);
+    };
+
+    const handleRestartChoice = async (resumeCheckpoint) => {
+        if (!restartChoiceData) return;
+        if (resumeCheckpoint && !restartChoiceData.can_resume) return;
+
+        setRestartChoiceData(null);
+        setStartError('');
+        await handleStart(true, resumeCheckpoint);
     };
 
 
@@ -463,12 +550,19 @@ export default function ProcessingSidebar({
                                 onClick={async () => {
                                     if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
                                     try {
-                                        await api.cancelProcessing(project.id);
                                         setHasTriggeredCancel(true);
                                         setIsStarting(false);
                                         setIsCompletionModalOpen(false);
-                                        if (onCancelled) await onCancelled();
+                                        const cancelledJob = await api.cancelProcessing(project.id);
+                                        if (onCancelled) {
+                                            await onCancelled({
+                                                id: project.id,
+                                                progress: cancelledJob?.progress ?? project?.progress ?? 0,
+                                                completed_at: new Date().toISOString(),
+                                            });
+                                        }
                                     } catch (err) {
+                                        setHasTriggeredCancel(false);
                                         alert('중단 실패: ' + err.message);
                                     }
                                 }}
@@ -616,95 +710,39 @@ export default function ProcessingSidebar({
 
                 </div>
 
-                {(activeUploads.length > 0 || visibleEvents.length > 0) && (
-                    <div className="space-y-3">
-                        {activeUploads.length > 0 && (
-                            <div className="space-y-2">
-                                <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
-                                    업로드 진행상황
-                                </h4>
-                                <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                                    <div className="flex items-center justify-between gap-3 text-xs text-slate-600 mb-2">
-                                        <span>
-                                            처리 대상 {uploadSummary.completed}장
-                                            {uploadSummary.excluded > 0 && ` · 제외 ${uploadSummary.excluded}장`}
-                                            {uploadSummary.errors > 0 && ` · 오류 ${uploadSummary.errors}장`}
-                                        </span>
-                                        <span className="font-semibold text-slate-700">{Math.round(uploadSummary.progress)}%</span>
-                                    </div>
-                                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
-                                        <div
-                                            className="h-full bg-blue-500 transition-all duration-300"
-                                            style={{ width: `${Math.min(100, Math.max(0, uploadSummary.progress))}%` }}
-                                        />
-                                    </div>
-                                    <div className="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5 pr-1">
-                                        {activeUploads.slice(-40).map((upload, index) => {
-                                            const meta = getUploadStatusMeta(upload.status);
-                                            const detail = upload.error
-                                                ? `처리에 사용되지 않음: ${upload.error}`
-                                                : (upload.status === 'excluded' ? '처리에 사용되지 않음' : null);
-
-                                            return (
-                                                <div
-                                                    key={`${upload.name || upload.filename || 'upload'}-${index}`}
-                                                    className={`rounded-md border px-2.5 py-2 ${meta.row}`}
-                                                >
-                                                    <div className="flex items-start justify-between gap-2">
-                                                        <div className="min-w-0">
-                                                            <p className="text-xs font-semibold text-slate-700 truncate">
-                                                                {upload.name || upload.filename || '이미지'}
-                                                            </p>
-                                                            {detail && (
-                                                                <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">
-                                                                    {detail}
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                        <span className={`text-[10px] font-bold whitespace-nowrap ${meta.text}`}>
-                                                            {meta.label}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
+                {alertEvents.length > 0 && (
+                    <div className="space-y-2">
+                        <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
+                            <AlertTriangle size={14} className="text-amber-600" />
+                            이미지 처리 알림
+                        </h4>
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 shadow-sm max-h-60 overflow-y-auto custom-scrollbar">
+                            <div className="space-y-2 text-xs">
+                                {alertEvents.slice(-20).map((event) => {
+                                    const lv = String(event.level || '').toLowerCase();
+                                    const tone = lv === 'error' ? 'text-red-700' : 'text-amber-700';
+                                    // Backend emits UTC ISO; if timezone suffix is missing, treat as UTC.
+                                    let time = '';
+                                    if (event.timestamp) {
+                                        const raw = String(event.timestamp);
+                                        const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
+                                        const d = new Date(hasTz ? raw : raw + 'Z');
+                                        time = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                                    }
+                                    return (
+                                        <div key={event.id} className="flex gap-2 items-start">
+                                            <span className="text-slate-500 font-mono text-[10px] mt-0.5 whitespace-nowrap">{time}</span>
+                                            <span className={tone}>{event.message}</span>
+                                        </div>
+                                    );
+                                })}
                             </div>
-                        )}
-
-                        {visibleEvents.length > 0 && (
-                            <div className="space-y-2">
-                                <h4 className="text-sm font-bold text-slate-700 border-b pb-2 flex items-center gap-2">
-                                    처리 로그
-                                </h4>
-                                <div className="rounded-lg border border-slate-200 bg-slate-950 p-3 shadow-sm max-h-52 overflow-y-auto custom-scrollbar">
-                                    <div className="space-y-2 font-mono text-[11px] leading-relaxed">
-                                        {visibleEvents.slice(-30).map((event) => {
-                                            const level = String(event.level || 'info').toLowerCase();
-                                            const color = level === 'error'
-                                                ? 'text-red-300'
-                                                : (level === 'warning' || level === 'warn' ? 'text-amber-300' : 'text-slate-300');
-                                            const time = event.timestamp
-                                                ? new Date(event.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                                                : '';
-
-                                            return (
-                                                <div key={event.id} className={color}>
-                                                    <span className="text-slate-500 mr-2">{time}</span>
-                                                    <span>{event.message}</span>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+                        </div>
                     </div>
                 )}
             </div>
             <div className="p-5 border-t border-slate-200 bg-slate-50 flex gap-3">
-                <button onClick={onCancel} className="flex-1 py-3 text-slate-600 font-bold text-sm hover:bg-slate-200 rounded-lg">취소</button>
+                <button onClick={onCancel} className="flex-1 py-3 text-slate-600 font-bold text-sm hover:bg-slate-200 rounded-lg">이전</button>
                 {(() => {
                     // 프론트엔드 상태 또는 백엔드 상태로 업로드 진행 여부 확인
                     const frontendUploading = activeUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
@@ -730,7 +768,7 @@ export default function ProcessingSidebar({
 
                     return (
                         <button
-                            onClick={handleStart}
+                            onClick={() => handleStart()}
                             disabled={isDisabled}
                             className={`flex-[2] py-3 font-bold text-sm rounded-lg flex items-center justify-center gap-2 shadow-md transition-all
                 ${isDisabled
@@ -743,6 +781,109 @@ export default function ProcessingSidebar({
                     );
                 })()}
             </div>
+
+            {/* Restart Choice Modal */}
+            {restartChoiceData && (
+                <div
+                    className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm"
+                    onClick={dismissRestartChoice}
+                >
+                    <div
+                        className="w-full max-w-lg overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4">
+                            <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-amber-100 bg-amber-50 text-amber-600">
+                                <AlertTriangle size={20} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <h3 className="text-base font-bold text-slate-900">처리 방식 선택</h3>
+                                <p className="mt-1 text-sm leading-5 text-slate-600">
+                                    {restartChoiceData.message || '이전 작업이 완료되지 않았습니다.'}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={dismissRestartChoice}
+                                className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                                aria-label="닫기"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="space-y-4 px-5 py-4">
+                            <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                                {restartFailedStepLabel ? (
+                                    <>
+                                        마지막 중단/오류 단계{' '}
+                                        <span className="font-semibold text-slate-900">{restartFailedStepLabel}</span>
+                                    </>
+                                ) : (
+                                    '마지막 중단/오류 단계 정보가 없습니다.'
+                                )}
+                            </div>
+
+                            <div>
+                                <div className="mb-2 flex items-center justify-between text-xs font-semibold text-slate-500">
+                                    <span>재사용 가능한 완료 단계</span>
+                                    <span>{restartCompletedSteps.length}개</span>
+                                </div>
+                                {restartCompletedSteps.length > 0 ? (
+                                    <div className="max-h-32 overflow-y-auto rounded-md border border-slate-200 bg-white">
+                                        {restartCompletedSteps.map((step, index) => (
+                                            <div
+                                                key={`${step}-${index}`}
+                                                className="flex items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm text-slate-700 last:border-b-0"
+                                            >
+                                                <CheckCircle2 size={14} className="shrink-0 text-emerald-500" />
+                                                <span className="min-w-0 truncate">{step}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-md border border-dashed border-slate-200 px-3 py-3 text-sm text-slate-500">
+                                        완료된 checkpoint가 없습니다.
+                                    </div>
+                                )}
+                            </div>
+
+                            {!restartChoiceData.can_resume && (
+                                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                                    이어서 처리할 완료 단계가 없어 처음부터 새로 처리해야 합니다.
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:grid-cols-2">
+                            <button
+                                type="button"
+                                onClick={() => handleRestartChoice(true)}
+                                disabled={!restartChoiceData.can_resume || !selectedPresetId || isStarting}
+                                className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-bold shadow-sm transition-colors
+                                    ${restartChoiceData.can_resume && selectedPresetId && !isStarting
+                                        ? 'border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
+                                        : 'cursor-not-allowed border border-slate-200 bg-slate-200 text-slate-400'}`}
+                            >
+                                <CheckCircle2 size={16} />
+                                완료된 단계부터 이어서 처리
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleRestartChoice(false)}
+                                disabled={!selectedPresetId || isStarting}
+                                className={`flex min-h-11 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-bold shadow-sm transition-colors
+                                    ${selectedPresetId && !isStarting
+                                        ? 'border-blue-600 bg-white text-blue-700 hover:bg-blue-50'
+                                        : 'cursor-not-allowed border-slate-200 bg-slate-200 text-slate-400'}`}
+                            >
+                                <RotateCcw size={16} />
+                                처음부터 새로 처리
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Save Preset Modal */}
             {isSaveModalOpen && (

@@ -2,9 +2,90 @@ import Metashape
 import os
 import re
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from common_args import parse_arguments, print_debug_info
 from common_utils import activate_metashape_license, progress_callback, change_task_status_in_ortho
+
+
+def _apply_camera_io(chunk, camera_io):
+    """Apply a user-supplied Interior Orientation to every sensor in the chunk.
+
+    ``camera_io`` is the dict returned by :func:`_camera_io_from_args`. When
+    ``None`` or missing the required focal_length/pixel_size, the function
+    no-ops and Metashape keeps its EXIF-derived auto-calibration. When IO is
+    provided, keep it as the initial calibration without fixing any parameters.
+
+    Units in input: focal_length (mm), pixel_size (mm), ppa_x/y (mm).
+    Metashape's Sensor.focal_length is mm, Sensor.pixel_size is mm,
+    Calibration.f/cx/cy are pixels (offset from image center).
+    """
+    if not camera_io:
+        return
+    focal_mm = camera_io.get("focal_length_mm")
+    pixel_mm = camera_io.get("pixel_size_mm")
+    if focal_mm is None or pixel_mm is None or pixel_mm <= 0:
+        print("⚠️ IO override skipped: focal_length / pixel_size 가 부족합니다 (EXIF 자동 보정 사용).")
+        return
+
+    focal_px = focal_mm / pixel_mm
+    ppa_x_mm = camera_io.get("ppa_x_mm") or 0.0
+    ppa_y_mm = camera_io.get("ppa_y_mm") or 0.0
+    cx_px = ppa_x_mm / pixel_mm
+    cy_px = ppa_y_mm / pixel_mm
+    model_name = camera_io.get("model_name") or "user-supplied"
+
+    sensors = list(getattr(chunk, "sensors", []) or [])
+    if not sensors:
+        print("⚠️ IO override skipped: chunk에 sensor가 없습니다.")
+        return
+
+    for sensor in sensors:
+        try:
+            sensor.type = Metashape.Sensor.Type.Frame
+            sensor.focal_length = float(focal_mm)
+            sensor.pixel_size = Metashape.Vector([pixel_mm, pixel_mm])
+
+            calib = Metashape.Calibration()
+            # Calibration.width/height must match the sensor pixel resolution.
+            width_px = camera_io.get("sensor_width_px") or sensor.width
+            height_px = camera_io.get("sensor_height_px") or sensor.height
+            try:
+                calib.width = int(width_px)
+                calib.height = int(height_px)
+            except Exception:
+                pass
+            calib.f = float(focal_px)
+            calib.cx = float(cx_px)
+            calib.cy = float(cy_px)
+
+            sensor.user_calib = calib
+            sensor.fixed_calibration = False
+            sensor.fixed_params = []
+            print(
+                f"✅ IO 적용: sensor='{getattr(sensor, 'label', '?')}' "
+                f"model='{model_name}' f={focal_px:.2f}px "
+                f"cx={cx_px:.2f}px cy={cy_px:.2f}px "
+                f"pixel_size={pixel_mm:.6f}mm"
+            )
+        except Exception as exc:
+            print(f"⚠️ IO 적용 실패 (sensor='{getattr(sensor, 'label', '?')}'): {exc}")
+
+
+def _camera_io_from_args(args):
+    """Extract IO override dict from parsed CLI args, or return None."""
+    focal = getattr(args, "camera_focal_length", None)
+    pixel = getattr(args, "camera_pixel_size", None)
+    if focal is None or pixel is None:
+        return None
+    return {
+        "focal_length_mm": float(focal),
+        "pixel_size_mm": float(pixel),
+        "sensor_width_px": getattr(args, "camera_sensor_width_px", None),
+        "sensor_height_px": getattr(args, "camera_sensor_height_px", None),
+        "ppa_x_mm": getattr(args, "camera_ppa_x", 0.0),
+        "ppa_y_mm": getattr(args, "camera_ppa_y", 0.0),
+        "model_name": getattr(args, "camera_model_name", None),
+    }
 
 
 def align_photos(
@@ -16,6 +97,7 @@ def align_photos(
     input_epsg="4326",
     reference_path=None,
     eo_only_align=True,
+    camera_io=None,
 ):
     """
     Generate an orthophoto and other outputs with progress tracking and refined seamlines.
@@ -43,7 +125,7 @@ def align_photos(
 
     def _append_processing_event(level, message, filename=None):
         event = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "message": message,
         }
@@ -428,6 +510,11 @@ def align_photos(
         )
     print(f"✅ Added {len(initial_input_images)} EO-matched photos to the core chunk.")
 
+    # Interior Orientation override: when the project specifies a calibrated
+    # camera, apply it as Metashape's initial calibration without fixing
+    # calibration parameters during alignment.
+    _apply_camera_io(chunk, camera_io)
+
     drone_makes = {"DJI", "Parrot", "Yuneec", "Autel Robotics", "senseFly"}
     first_camera = chunk.cameras[0]
     make = first_camera.photo.meta["Exif/Make"].strip() if "Exif/Make" in first_camera.photo.meta else ""
@@ -644,6 +731,9 @@ def align_photos(
         _save_project()
         print(f"✅ Added {len(incremental_cameras)} non-EO photos for incremental alignment.")
 
+        # New photos may introduce additional sensors; re-apply IO override.
+        _apply_camera_io(chunk, camera_io)
+
         incremental_camera_keys = _get_camera_keys(incremental_cameras)
         retry_cameras = [camera for camera in chunk.cameras if not camera.transform]
         retry_incremental = len([
@@ -720,7 +810,8 @@ def main():
         args.process_mode,
         args.input_epsg,
         args.reference_path,
-        args.eo_only_align
+        args.eo_only_align,
+        camera_io=_camera_io_from_args(args),
     )
 
 if __name__ == "__main__":

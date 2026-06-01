@@ -85,9 +85,10 @@ echo "==============================="
 echo " 최종 확인"
 echo "==============================="
 sleep 5
-if docker exec aerial-worker-engine nvidia-smi &>/dev/null; then
+worker_container="$(docker compose "${COMPOSE_ARGS[@]}" ps -q worker-engine 2>/dev/null || true)"
+if [ -n "$worker_container" ] && docker exec "$worker_container" nvidia-smi &>/dev/null; then
     echo "✅ worker-engine GPU 정상 작동"
-    docker exec aerial-worker-engine nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
+    docker exec "$worker_container" nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
     echo ""
     echo "GPU가 정상 연결되었습니다."
     echo "현재 진행 중인 처리는 GPU 없이 진행되고 있으므로,"

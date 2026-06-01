@@ -21,17 +21,17 @@ WARN=0
 # 체크 함수
 check_pass() {
     echo -e "  ${GREEN}✓${NC} $1"
-    ((PASS++))
+    ((PASS+=1))
 }
 
 check_fail() {
     echo -e "  ${RED}✗${NC} $1"
-    ((FAIL++))
+    ((FAIL+=1))
 }
 
 check_warn() {
     echo -e "  ${YELLOW}!${NC} $1"
-    ((WARN++))
+    ((WARN+=1))
 }
 
 # 스크립트 위치로 이동
@@ -79,11 +79,24 @@ echo ""
 # ============================================================
 echo -e "${BLUE}[API Health]${NC}"
 
-api_health=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/health 2>/dev/null || echo "000")
+host_bind="0.0.0.0"
+web_port="18100"
+if [ -f ".env" ]; then
+    host_bind=$(grep "^HOST_BIND=" .env | cut -d'=' -f2)
+    web_port=$(grep "^AERIAL_WEB_PORT=" .env | cut -d'=' -f2)
+    host_bind=${host_bind:-0.0.0.0}
+    web_port=${web_port:-18100}
+fi
+health_host="$host_bind"
+if [ "$health_host" = "0.0.0.0" ]; then
+    health_host="127.0.0.1"
+fi
+
+api_health=$(curl -s -o /dev/null -w "%{http_code}" "http://$health_host:$web_port/health" 2>/dev/null || echo "000")
 if [ "$api_health" = "200" ]; then
     check_pass "API 서버: 정상 (HTTP $api_health)"
 else
-    check_fail "API 서버: 응답 없음 (HTTP $api_health)"
+    check_fail "API 서버: 응답 없음 (HTTP $api_health, http://$health_host:$web_port/health)"
 fi
 
 echo ""
@@ -107,25 +120,41 @@ echo ""
 # ============================================================
 echo -e "${BLUE}[Storage]${NC}"
 
-minio_health=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9002/minio/health/live 2>/dev/null || echo "000")
-if [ "$minio_health" = "200" ]; then
-    check_pass "MinIO: 정상"
+storage_backend="local"
+if [ -f ".env" ]; then
+    storage_backend=$(grep "^STORAGE_BACKEND=" .env | cut -d'=' -f2)
+    storage_backend=${storage_backend:-local}
+fi
+
+if [ "$storage_backend" = "minio" ]; then
+    if docker compose -f "$compose_file" exec -T minio curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+        check_pass "MinIO: 정상"
+    else
+        check_fail "MinIO: 응답 없음"
+    fi
 else
-    check_fail "MinIO: 응답 없음"
+    check_pass "스토리지 백엔드: local (MinIO 미사용)"
 fi
 
 # 디스크 용량 확인
 if [ -f ".env" ]; then
-    minio_path=$(grep "^MINIO_DATA_PATH=" .env | cut -d'=' -f2)
-    if [ -n "$minio_path" ] && [ -d "$minio_path" ]; then
-        disk_usage=$(df -h "$minio_path" | awk 'NR==2 {print $5}' | sed 's/%//')
-        disk_avail=$(df -h "$minio_path" | awk 'NR==2 {print $4}')
+    if [ "$storage_backend" = "minio" ]; then
+        storage_path=$(grep "^MINIO_DATA_PATH=" .env | cut -d'=' -f2)
+        storage_label="MinIO 디스크"
+    else
+        storage_path=$(grep "^AERIAL_DATA_ROOT=" .env | cut -d'=' -f2)
+        storage_path=${storage_path:-$(grep "^LOCAL_STORAGE_PATH=" .env | cut -d'=' -f2)}
+        storage_label="로컬 스토리지"
+    fi
+    if [ -n "$storage_path" ] && [ -d "$storage_path" ]; then
+        disk_usage=$(df -h "$storage_path" | awk 'NR==2 {print $5}' | sed 's/%//')
+        disk_avail=$(df -h "$storage_path" | awk 'NR==2 {print $4}')
         if [ "$disk_usage" -gt 90 ]; then
-            check_fail "MinIO 디스크: ${disk_usage}% 사용 중 (가용: $disk_avail) - 위험!"
+            check_fail "$storage_label: ${disk_usage}% 사용 중 (가용: $disk_avail) - 위험!"
         elif [ "$disk_usage" -gt 80 ]; then
-            check_warn "MinIO 디스크: ${disk_usage}% 사용 중 (가용: $disk_avail)"
+            check_warn "$storage_label: ${disk_usage}% 사용 중 (가용: $disk_avail)"
         else
-            check_pass "MinIO 디스크: ${disk_usage}% 사용 중 (가용: $disk_avail)"
+            check_pass "$storage_label: ${disk_usage}% 사용 중 (가용: $disk_avail)"
         fi
     fi
 fi

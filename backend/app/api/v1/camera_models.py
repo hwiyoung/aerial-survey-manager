@@ -3,7 +3,7 @@ from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.database import get_db
 from app.models.user import User
@@ -29,6 +29,7 @@ async def list_camera_models(
             (CameraModel.organization_id == None)
         )
     
+    query = query.order_by(CameraModel.is_custom, func.lower(CameraModel.name))
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -46,6 +47,10 @@ async def create_camera_model(
         sensor_width=data.sensor_width,
         sensor_height=data.sensor_height,
         pixel_size=data.pixel_size,
+        sensor_width_px=data.sensor_width_px,
+        sensor_height_px=data.sensor_height_px,
+        ppa_x=data.ppa_x,
+        ppa_y=data.ppa_y,
         is_custom=data.is_custom,
         organization_id=current_user.organization_id if data.is_custom else None
     )

@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     LOCAL_STORAGE_PATH: str = "/data/storage"
     PROCESSING_DATA_PATH: str = "/data/processing"
     EXPORT_ROOT_PATH: str = "/data/exports"
+    MEDIA_STORAGE_ROOT: str = "/media"
+    SYSTEM_STORAGE_PATH: str = "/"
+    FILESYSTEM_ALLOWED_ROOTS: Optional[str] = None
     AUTO_EXPORT_ENABLED: bool = False
     AUTO_EXPORT_TARGET_CRS: str = "EPSG:5186"
 

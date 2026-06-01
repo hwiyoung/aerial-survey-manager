@@ -5,18 +5,18 @@ This script parses the io.csv file and inserts camera models into the database.
 import os
 import asyncio
 import sys
-import re
+import csv
 from typing import List, Dict, Any
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 # Add parent directory to path to import app modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import get_settings
-from app.models.project import CameraModel
+from app.models.project import CameraModel, Image
 
 settings = get_settings()
 SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
@@ -40,15 +40,10 @@ def parse_io_csv(file_path: str) -> List[Dict[str, Any]]:
     if content is None:
         raise ValueError(f"Could not read file with any known encoding: {file_path}")
 
-    lines = content.split('\n')
-
-    for line in lines:
-        line = line.strip()
-        if not line:
+    for row in csv.reader(content.splitlines()):
+        parts = [p.strip() for p in row]
+        if not parts or not any(parts):
             continue
-
-        # Parse CSV fields
-        parts = [p.strip() for p in line.split(',')]
 
         if parts[0] == '$CAMERA':
             current_camera = {}
@@ -71,9 +66,10 @@ def parse_io_csv(file_path: str) -> List[Dict[str, Any]]:
                     # Company names (can be multiple)
                     idx = 2 if '$LENS_SN:' in parts[1] else 1
                     companies = []
-                    for i in range(idx, min(idx + 3, len(parts))):
-                        if parts[i] and not parts[i].startswith('$'):
-                            companies.append(parts[i])
+                    for value in parts[idx:]:
+                        if not value or value.startswith('$'):
+                            break
+                        companies.append(value)
                     if companies:
                         current_camera['companies'] = companies
 
@@ -115,7 +111,12 @@ def parse_io_csv(file_path: str) -> List[Dict[str, Any]]:
 
 
 def calculate_sensor_dimensions(camera: Dict[str, Any]) -> Dict[str, Any]:
-    """Calculate sensor dimensions in mm from pixel size."""
+    """Calculate sensor dimensions in mm from io.csv pixel size.
+
+    io.csv stores $PIXEL_SIZE in micrometers. The database keeps that raw
+    value for display/selection, while processing converts it to millimeters
+    immediately before forwarding IO to Metashape.
+    """
     result = camera.copy()
 
     pixel_size = camera.get('pixel_size', 0)  # µm
@@ -132,23 +133,63 @@ def calculate_sensor_dimensions(camera: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _company_values(camera: Dict[str, Any]) -> List[str]:
+    return [
+        str(company).strip()
+        for company in camera.get('companies', [])
+        if str(company).strip()
+    ]
+
+
+def _company_label(camera: Dict[str, Any]) -> str:
+    return ", ".join(_company_values(camera))
+
+
+def _camera_display_name(base_name: str, company_label: str, used_names: set[str]) -> str:
+    display_name = f"{base_name} - {company_label}" if company_label else base_name
+
+    if display_name not in used_names:
+        return display_name
+
+    suffix = 2
+    while f"{display_name} #{suffix}" in used_names:
+        suffix += 1
+    return f"{display_name} #{suffix}"
+
+
+def _legacy_names(base_name: str, companies: List[str]) -> List[str]:
+    legacy_names = [base_name]
+    if companies:
+        legacy_names.append(f"{base_name} - {', '.join(companies)}")
+    if len(companies) > 3:
+        legacy_names.append(f"{base_name} - {', '.join(companies[:3])}")
+    return legacy_names
+
+
 def create_camera_entries(cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Create unique camera entries by $CAMERA_NAME only (no company suffix)."""
+    """Create one camera entry per company shown in each io.csv camera block."""
     entries = []
     seen_names = set()
 
     for camera in cameras:
         camera = calculate_sensor_dimensions(camera)
-        name = camera.get('name', '')
+        base_name = camera.get('name', '').strip()
 
-        if not name:
+        if not base_name:
             continue
 
-        # Only add unique camera names (skip duplicates)
-        if name not in seen_names:
+        companies = _company_values(camera)
+        company_labels = companies or ['']
+        legacy_names = _legacy_names(base_name, companies)
+
+        for company_label in company_labels:
+            name = _camera_display_name(base_name, company_label, seen_names)
             seen_names.add(name)
             entries.append({
                 'name': name,
+                'base_name': base_name,
+                'company_label': company_label,
+                'legacy_names': legacy_names,
                 'focal_length': camera.get('focal_length'),
                 'sensor_width': camera.get('sensor_width'),
                 'sensor_height': camera.get('sensor_height'),
@@ -161,6 +202,18 @@ def create_camera_entries(cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             })
 
     return entries
+
+
+def _apply_camera_entry(camera_model: CameraModel, entry: Dict[str, Any]) -> None:
+    camera_model.name = entry['name']
+    camera_model.focal_length = entry['focal_length']
+    camera_model.sensor_width = entry['sensor_width']
+    camera_model.sensor_height = entry['sensor_height']
+    camera_model.pixel_size = entry['pixel_size']
+    camera_model.sensor_width_px = entry.get('sensor_width_px')
+    camera_model.sensor_height_px = entry.get('sensor_height_px')
+    camera_model.ppa_x = entry.get('ppa_x')
+    camera_model.ppa_y = entry.get('ppa_y')
 
 
 async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_mode: bool = False):
@@ -190,6 +243,10 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
     # Create name -> entry mapping for updates
     entry_by_name = {e['name']: e for e in entries}
     valid_names = set(entry_by_name.keys())
+    first_entry_by_legacy_name: dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        for legacy_name in entry.get('legacy_names', []):
+            first_entry_by_legacy_name.setdefault(legacy_name, entry)
 
     async with async_session() as session:
         if clear_existing:
@@ -204,14 +261,35 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
             existing_cameras = result.scalars().all()
 
             deleted = 0
+            migrated = 0
+            reserved_names = {cam.name for cam in existing_cameras}
             for cam in existing_cameras:
                 if cam.name not in valid_names:
+                    first_entry = first_entry_by_legacy_name.get(cam.name)
+                    if first_entry and first_entry['name'] not in reserved_names:
+                        old_name = cam.name
+                        _apply_camera_entry(cam, first_entry)
+                        reserved_names.discard(old_name)
+                        reserved_names.add(first_entry['name'])
+                        migrated += 1
+                        print(f"  Migrated: {old_name} -> {first_entry['name']}")
+                        continue
+                    referenced_count = await session.scalar(
+                        select(func.count(Image.id)).where(Image.camera_model_id == cam.id)
+                    )
+                    if referenced_count:
+                        print(
+                            f"  Kept referenced camera model not in io.csv: "
+                            f"{cam.name} ({referenced_count} image references)"
+                        )
+                        continue
                     await session.delete(cam)
                     deleted += 1
                     print(f"  Deleted: {cam.name}")
 
-            if deleted > 0:
+            if deleted > 0 or migrated > 0:
                 await session.commit()
+                print(f"Migrated {migrated} legacy camera models.")
                 print(f"Deleted {deleted} camera models not in io.csv.")
 
         # Get existing cameras for update/insert
@@ -227,14 +305,7 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
                 if sync_mode:
                     # Update existing camera with new data
                     cam = existing_cameras[entry['name']]
-                    cam.focal_length = entry['focal_length']
-                    cam.sensor_width = entry['sensor_width']
-                    cam.sensor_height = entry['sensor_height']
-                    cam.pixel_size = entry['pixel_size']
-                    cam.sensor_width_px = entry.get('sensor_width_px')
-                    cam.sensor_height_px = entry.get('sensor_height_px')
-                    cam.ppa_x = entry.get('ppa_x')
-                    cam.ppa_y = entry.get('ppa_y')
+                    _apply_camera_entry(cam, entry)
                     updated += 1
                 else:
                     skipped += 1

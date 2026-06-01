@@ -122,6 +122,12 @@ def get_active_processing_tasks(force_refresh: bool = False) -> dict[str, dict[s
     return dict(active_tasks)
 
 
+def clear_active_processing_task_cache() -> None:
+    """Force the next status/list request to inspect Celery again."""
+    _ACTIVE_TASK_CACHE["tasks"] = {}
+    _ACTIVE_TASK_CACHE["expires_at"] = 0.0
+
+
 def read_processing_status_file(project_id: object) -> dict[str, Any]:
     try:
         status_path = processing_status_path(project_id)

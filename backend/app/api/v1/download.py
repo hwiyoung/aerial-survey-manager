@@ -96,9 +96,13 @@ async def _validate_download_token_access(
 
 
 def _build_cache_key(base_key: str, file_size: int, mtime: int | None = None) -> str:
-    if mtime is None:
-        return f"{base_key}:{file_size}"
-    return f"{base_key}:{file_size}:{mtime}"
+    # Hash so the value is ASCII-only — required for HTTP headers (latin-1).
+    # Non-ASCII storage keys (e.g. 한글 filenames) would otherwise blow up
+    # `X-COG-Cache-Key` serialization. The hash still changes whenever the
+    # underlying file changes, so cache invalidation still works.
+    import hashlib
+    raw = f"{base_key}:{file_size}:{mtime if mtime is not None else ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _extract_bounds_from_wkt(bounds_wkt: str) -> list[float] | None:

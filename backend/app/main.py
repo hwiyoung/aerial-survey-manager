@@ -1,5 +1,7 @@
 """FastAPI application entry point."""
+import json
 from contextlib import asynccontextmanager
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import update, select
@@ -8,8 +10,10 @@ from app.config import get_settings
 from app.api.v1 import router as api_v1_router
 from app.database import async_session
 from app.models.project import ProcessingJob, Project
+from app.utils.storage_paths import processing_status_path
 
 settings = get_settings()
+CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
 
 
 def _active_processing_job_ids() -> set[str] | None:
@@ -43,6 +47,38 @@ def _active_processing_job_ids() -> set[str] | None:
     return active_ids
 
 
+def _celery_task_state(task_id: str | None) -> str | None:
+    if not task_id:
+        return None
+    try:
+        from app.workers.tasks import celery_app
+
+        return celery_app.AsyncResult(task_id).state
+    except Exception as exc:
+        print(f"[startup] Celery task 상태 확인 실패 {task_id}: {exc}")
+        return None
+
+
+def _write_cancelled_status_file(job: ProcessingJob) -> None:
+    try:
+        status_file = processing_status_path(job.project_id)
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "status": "cancelled",
+                    "progress": int(job.progress or 0),
+                    "message": CANCELLED_PROCESSING_MESSAGE,
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except Exception as exc:
+        print(f"[startup] 취소 상태 파일 작성 실패 job_id={job.id}: {exc}")
+
+
 async def _recover_stuck_jobs():
     """서버 재시작(전원 차단 포함) 후 'processing' 상태로 고착된 작업을 복구한다.
 
@@ -73,6 +109,40 @@ async def _recover_stuck_jobs():
                 f"{[str(job.id) for job in active_jobs]}"
             )
 
+        if not stuck_jobs:
+            return
+
+        revoked_jobs = [
+            job for job in stuck_jobs
+            if _celery_task_state(job.celery_task_id) == "REVOKED"
+        ]
+        if revoked_jobs:
+            revoked_job_ids = [job.id for job in revoked_jobs]
+            revoked_project_ids = {job.project_id for job in revoked_jobs}
+            now = datetime.utcnow()
+            print(f"[startup] 취소된 처리 작업 {len(revoked_jobs)}건 복구 중...")
+            await db.execute(
+                update(ProcessingJob)
+                .where(ProcessingJob.id.in_(revoked_job_ids))
+                .values(
+                    status="cancelled",
+                    completed_at=now,
+                    error_message=None,
+                )
+            )
+            await db.execute(
+                update(Project)
+                .where(
+                    Project.id.in_(revoked_project_ids),
+                    Project.status == "processing",
+                )
+                .values(status="cancelled")
+            )
+            for job in revoked_jobs:
+                _write_cancelled_status_file(job)
+            await db.commit()
+
+        stuck_jobs = [job for job in stuck_jobs if job not in revoked_jobs]
         if not stuck_jobs:
             return
 

@@ -174,6 +174,7 @@ function Dashboard() {
     deleteProject,
     batchDeleteProjects,
     batchUpdateProjectStatus,
+    patchProject,
     fetchImages
   } = useProjects();
 
@@ -837,7 +838,7 @@ function Dashboard() {
         const runLocalImport = async () => {
           console.log('Registering local images from:', sourceDir);
           try {
-            const importResult = await api.localImport(created.id, sourceDir, selectedLocalPaths);
+            const importResult = await api.localImport(created.id, sourceDir, selectedLocalPaths, cameraModel);
             console.log('Local import result:', importResult);
             const localExcludedFiles = importResult.invalid_files || [];
             const localImageCount = importResult.registered || 0;
@@ -1308,6 +1309,7 @@ function Dashboard() {
       output_format: options.output_format || 'GeoTiff',
       process_mode: options.process_mode || 'Normal',
       build_point_cloud: options.build_point_cloud || false,
+      resume_checkpoint: options.resume_checkpoint !== false,
     };
 
     try {
@@ -1618,7 +1620,14 @@ function Dashboard() {
             onStartProcessing={handleStartProcessing}
             availableEngines={processingEngines}
             defaultEngine={defaultProcessingEngine}
-            onCancelled={async () => {
+            onCancelled={async (cancelledProject) => {
+              if (cancelledProject?.id) {
+                patchProject(cancelledProject.id, {
+                  status: 'cancelled',
+                  progress: cancelledProject.progress ?? 0,
+                  processing_completed_at: cancelledProject.completed_at || new Date().toISOString(),
+                });
+              }
               await refreshProjects();
               setProcessingProject(prev => prev ? ({ ...prev, status: '취소', progress: 0 }) : prev);
             }}
