@@ -6,13 +6,13 @@
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Use configured TUS URL or dynamically build from current origin
-// This ensures the request goes to the correct port (e.g., :8081 in nginx proxy)
+// This ensures the request goes to the correct port (e.g., :18110 in nginx proxy)
 const getTusUrl = () => {
     const configured = import.meta.env.VITE_TUS_URL;
     if (configured && configured.startsWith('http')) {
         return configured;
     }
-    // Use relative path from current origin (preserves port like :8081)
+    // Use relative path from current origin (preserves port like :18110)
     return `${window.location.origin}${configured || '/files/'}`;
 };
 const TUS_URL = getTusUrl();
@@ -371,6 +371,19 @@ class ApiClient {
         });
     }
 
+    async reserveCrsCorrection(projectId, sourceCrs) {
+        return this.request(`/processing/projects/${projectId}/crs-correction`, {
+            method: 'POST',
+            body: JSON.stringify({ source_crs: sourceCrs }),
+        });
+    }
+
+    async cancelCrsCorrection(projectId) {
+        return this.request(`/processing/projects/${projectId}/crs-correction`, {
+            method: 'DELETE',
+        });
+    }
+
     async scheduleProcessing(projectId, options) {
         return this.request(`/processing/projects/${projectId}/schedule`, {
             method: 'POST',
@@ -450,6 +463,19 @@ class ApiClient {
         return this.request('/camera-models', {
             method: 'POST',
             body: JSON.stringify(data),
+        });
+    }
+
+    async updateCameraModel(cameraId, data) {
+        return this.request(`/camera-models/${cameraId}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async deleteCameraModel(cameraId) {
+        return this.request(`/camera-models/${cameraId}`, {
+            method: 'DELETE',
         });
     }
 

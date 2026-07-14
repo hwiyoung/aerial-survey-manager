@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Trash2, Play, Camera, RotateCcw } from 'lucide-react';
+import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Trash2, Play, Camera, RotateCcw, MapPinned } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
+import CrsCorrectionModal from './CrsCorrectionModal';
+import { formatCrsLabel } from '../../constants/crs';
 
 const ACTIVE_UPLOAD_STATUSES = new Set(['waiting', 'uploading', 'validating']);
+const CRS_CORRECTION_LOCKED_STATUSES = new Set(['closed', 'applying', 'applied']);
 
 function normalizeRestartChoiceData(data) {
     if (!data) return null;
@@ -37,6 +40,7 @@ export default function ProcessingSidebar({
     activeUploads = [],
     uploadEvents = [],
     onProcessingEventsChange = null,
+    onEoPointsChanged = null,
     availableEngines = [],
     defaultEngine = 'metashape',
 }) {
@@ -50,6 +54,20 @@ export default function ProcessingSidebar({
     const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
     const [newPresetName, setNewPresetName] = useState('');
     const [newPresetDesc, setNewPresetDesc] = useState('');
+    const [isCrsCorrectionModalOpen, setIsCrsCorrectionModalOpen] = useState(false);
+    const [selectedCrsCorrection, setSelectedCrsCorrection] = useState('EPSG:5186');
+    const [currentSourceCrs, setCurrentSourceCrs] = useState(null);
+    const [crsCorrection, setCrsCorrection] = useState({
+        sourceCrs: null,
+        status: null,
+        requestedAt: null,
+        appliedAt: null,
+        eoDisplaySourceCrs: null,
+        eoDisplayUpdatedCount: null,
+        error: null,
+    });
+    const [isSavingCrsCorrection, setIsSavingCrsCorrection] = useState(false);
+    const [crsCorrectionError, setCrsCorrectionError] = useState('');
 
     const processingEngines = useMemo(() => {
         if (!Array.isArray(availableEngines)) return [{ name: 'metashape', enabled: true, reason: '기본 엔진' }];
@@ -136,9 +154,27 @@ export default function ProcessingSidebar({
     const fallbackProgress = (wsStatus === 'connecting' && (isProjectProcessing || isStarting))
         ? (project?.progress ?? 0)
         : (isComplete ? 100 : wsProgress);
+    const normalizedWsMessage = String(wsMessage || '');
+    const displayWsMessage = /^좌표계 변경 예약/.test(normalizedWsMessage)
+        ? ''
+        : normalizedWsMessage;
     const fallbackMessage =
-        wsMessage ||
+        displayWsMessage ||
         (isStarting ? '처리 시작 중...' : (wsStatus === 'queued' ? '대기 중...' : (wsStatus === 'processing' ? '처리 진행 중...' : (wsStatus === 'connecting' ? '연결 중...' : ''))));
+    const hasPendingCrsCorrection = crsCorrection.status === 'pending' && Boolean(crsCorrection.sourceCrs);
+    const isCrsCorrectionLocked = CRS_CORRECTION_LOCKED_STATUSES.has(crsCorrection.status);
+    const canEditCrsCorrection = isProcessing && !isCrsCorrectionLocked;
+    const crsCorrectionButtonLabel = hasPendingCrsCorrection ? '좌표계 변경/취소' : '좌표계 변경';
+    const crsCorrectionStatusLabel = (() => {
+        const eoDisplaySourceCrs = crsCorrection.eoDisplaySourceCrs || crsCorrection.sourceCrs;
+        const eoDisplayText = eoDisplaySourceCrs ? ` · 지도 EO 위치도 ${formatCrsLabel(eoDisplaySourceCrs)} 기준으로 맞춰졌습니다` : '';
+        if (crsCorrection.status === 'pending' && crsCorrection.sourceCrs) return `좌표계 변경 예약됨: ${formatCrsLabel(crsCorrection.sourceCrs)}${eoDisplayText}`;
+        if (crsCorrection.status === 'applying' && crsCorrection.sourceCrs) return `좌표계 변경 적용 중: ${formatCrsLabel(crsCorrection.sourceCrs)}${eoDisplayText}`;
+        if (crsCorrection.status === 'applied' && crsCorrection.sourceCrs) return `좌표계 변경 완료: ${formatCrsLabel(crsCorrection.sourceCrs)}${eoDisplayText}`;
+        if (crsCorrection.status === 'closed') return '좌표계를 바꿀 수 있는 단계가 지났습니다.';
+        if (crsCorrection.status === 'failed') return `좌표계 변경 실패${crsCorrection.error ? `: ${crsCorrection.error}` : ''}`;
+        return '';
+    })();
     const restartCompletedSteps = useMemo(() => {
         if (!Array.isArray(restartChoiceData?.completed_steps)) return [];
         return restartChoiceData.completed_steps
@@ -161,6 +197,16 @@ export default function ProcessingSidebar({
                     const events = data.processing_events || [];
                     setProcessingEvents(events);
                     onProcessingEventsChange?.(project.id, events);
+                    setCrsCorrection({
+                        sourceCrs: data.crs_correction_source_crs || null,
+                        status: data.crs_correction_status || null,
+                        requestedAt: data.crs_correction_requested_at || null,
+                        appliedAt: data.crs_correction_applied_at || null,
+                        eoDisplaySourceCrs: data.eo_display_source_crs || null,
+                        eoDisplayUpdatedCount: data.eo_display_updated_count || null,
+                        error: data.crs_correction_error || null,
+                    });
+                    setCurrentSourceCrs(data.current_source_crs || null);
 
                     const restartJobId = data.id || data.job_id;
                     if (
@@ -245,6 +291,18 @@ export default function ProcessingSidebar({
         setStartError('');
         setRestartChoiceData(null);
         setRestartChoiceDismissedJobId(null);
+        setIsCrsCorrectionModalOpen(false);
+        setSelectedCrsCorrection('EPSG:5186');
+        setCrsCorrection({
+            sourceCrs: null,
+            status: null,
+            requestedAt: null,
+            appliedAt: null,
+            eoDisplaySourceCrs: null,
+            eoDisplayUpdatedCount: null,
+            error: null,
+        });
+        setCrsCorrectionError('');
     }, [project?.id]);
 
     useEffect(() => {
@@ -498,6 +556,86 @@ export default function ProcessingSidebar({
         await handleStart(true, resumeCheckpoint);
     };
 
+    const openCrsCorrectionModal = () => {
+        if (!canEditCrsCorrection) {
+            alert('최종 결과 저장 단계에 들어간 뒤에는 좌표계를 바꿀 수 없습니다.');
+            return;
+        }
+        setCrsCorrectionError('');
+        setSelectedCrsCorrection(crsCorrection.sourceCrs || currentSourceCrs || 'EPSG:5186');
+        setIsCrsCorrectionModalOpen(true);
+    };
+
+    const handleReserveCrsCorrection = async () => {
+        if (!project?.id || !selectedCrsCorrection) return;
+
+        const confirmed = window.confirm(
+            'EO 파일에 기록된 원본 좌표가 실제로 사용하는 좌표계를 선택하세요.\n\n' +
+            '최종 결과 저장 전까지 다시 바꾸거나 취소할 수 있습니다.\n\n' +
+            `기존 처리 좌표계: ${formatCrsLabel(currentSourceCrs)}\n` +
+            `선택한 좌표계: ${formatCrsLabel(selectedCrsCorrection)}\n\n` +
+            '좌표계 변경을 예약하시겠습니까?'
+        );
+        if (!confirmed) return;
+
+        setIsSavingCrsCorrection(true);
+        setCrsCorrectionError('');
+        try {
+            const result = await api.reserveCrsCorrection(project.id, selectedCrsCorrection);
+            setCrsCorrection({
+                sourceCrs: result.source_crs || selectedCrsCorrection,
+                status: result.status || 'pending',
+                requestedAt: result.requested_at || new Date().toISOString(),
+                appliedAt: result.applied_at || null,
+                eoDisplaySourceCrs: result.eo_display_source_crs || result.source_crs || selectedCrsCorrection,
+                eoDisplayUpdatedCount: result.eo_display_updated_count || null,
+                error: result.error || null,
+            });
+            setCurrentSourceCrs(result.current_source_crs || currentSourceCrs || null);
+            try {
+                await onEoPointsChanged?.(project.id);
+            } catch (refreshError) {
+                console.error('Failed to refresh EO points after CRS correction reservation:', refreshError);
+            }
+            setIsCrsCorrectionModalOpen(false);
+        } catch (error) {
+            setCrsCorrectionError(error.data?.message || error.data?.detail?.message || error.message || '좌표계 변경 예약에 실패했습니다.');
+        } finally {
+            setIsSavingCrsCorrection(false);
+        }
+    };
+
+    const handleCancelCrsCorrection = async () => {
+        if (!project?.id) return;
+        if (!window.confirm('좌표계 변경 예약을 취소하시겠습니까?')) return;
+
+        setIsSavingCrsCorrection(true);
+        setCrsCorrectionError('');
+        try {
+            const result = await api.cancelCrsCorrection(project.id);
+            setCrsCorrection({
+                sourceCrs: result.source_crs || null,
+                status: result.status || 'cancelled',
+                requestedAt: result.requested_at || crsCorrection.requestedAt || null,
+                appliedAt: result.applied_at || null,
+                eoDisplaySourceCrs: result.eo_display_source_crs || result.current_source_crs || null,
+                eoDisplayUpdatedCount: result.eo_display_updated_count || null,
+                error: result.error || null,
+            });
+            setCurrentSourceCrs(result.current_source_crs || currentSourceCrs || null);
+            try {
+                await onEoPointsChanged?.(project.id);
+            } catch (refreshError) {
+                console.error('Failed to refresh EO points after CRS correction cancellation:', refreshError);
+            }
+            setIsCrsCorrectionModalOpen(false);
+        } catch (error) {
+            setCrsCorrectionError(error.data?.message || error.data?.detail?.message || error.message || '좌표계 변경 예약 취소에 실패했습니다.');
+        } finally {
+            setIsSavingCrsCorrection(false);
+        }
+    };
+
 
     return (
         <aside
@@ -542,34 +680,58 @@ export default function ProcessingSidebar({
                     {fallbackMessage && (
                         <p className="text-xs text-blue-600 mt-1 truncate font-medium">{fallbackMessage}</p>
                     )}
+                    {crsCorrectionStatusLabel && (
+                        <div className={`mt-2 flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] font-semibold
+                            ${crsCorrection.status === 'failed'
+                                ? 'border-red-200 bg-red-50 text-red-700'
+                                : 'border-amber-200 bg-amber-50 text-amber-700'}`}
+                        >
+                            <MapPinned size={13} />
+                            <span className="min-w-0 truncate">{crsCorrectionStatusLabel}</span>
+                        </div>
+                    )}
 
-                    {/* Stop Button - Moved here for visibility */}
+                    {/* Stop / CRS correction buttons */}
                     {(wsStatus === 'processing' || wsStatus === 'queued') && (
                         <div className="mt-4 pt-4 border-t border-blue-100/50">
-                            <button
-                                onClick={async () => {
-                                    if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
-                                    try {
-                                        setHasTriggeredCancel(true);
-                                        setIsStarting(false);
-                                        setIsCompletionModalOpen(false);
-                                        const cancelledJob = await api.cancelProcessing(project.id);
-                                        if (onCancelled) {
-                                            await onCancelled({
-                                                id: project.id,
-                                                progress: cancelledJob?.progress ?? project?.progress ?? 0,
-                                                completed_at: new Date().toISOString(),
-                                            });
+                            <div className="grid grid-cols-2 gap-2">
+                                <button
+                                    onClick={async () => {
+                                        if (!window.confirm('정말 처리를 중단하시겠습니까?')) return;
+                                        try {
+                                            setHasTriggeredCancel(true);
+                                            setIsStarting(false);
+                                            setIsCompletionModalOpen(false);
+                                            const cancelledJob = await api.cancelProcessing(project.id);
+                                            if (onCancelled) {
+                                                await onCancelled({
+                                                    id: project.id,
+                                                    progress: cancelledJob?.progress ?? project?.progress ?? 0,
+                                                    completed_at: new Date().toISOString(),
+                                                });
+                                            }
+                                        } catch (err) {
+                                            setHasTriggeredCancel(false);
+                                            alert('중단 실패: ' + err.message);
                                         }
-                                    } catch (err) {
-                                        setHasTriggeredCancel(false);
-                                        alert('중단 실패: ' + err.message);
-                                    }
-                                }}
-                                className="w-full flex items-center justify-center gap-2 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-all border border-red-200 shadow-sm"
-                            >
-                                <X size={14} /> 처리 중단 (Stop Processing)
-                            </button>
+                                    }}
+                                    className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-2 py-2.5 text-xs font-bold text-red-600 shadow-sm transition-all hover:bg-red-100"
+                                >
+                                    <X size={14} /> 처리 중단
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={openCrsCorrectionModal}
+                                    disabled={!canEditCrsCorrection}
+                                    title={canEditCrsCorrection ? crsCorrectionButtonLabel : '최종 결과 저장 단계에 들어간 뒤에는 좌표계를 바꿀 수 없습니다.'}
+                                    className={`flex min-h-11 items-center justify-center gap-2 rounded-lg border px-2 py-2.5 text-xs font-bold shadow-sm transition-all
+                                        ${canEditCrsCorrection
+                                            ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                            : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'}`}
+                                >
+                                    <MapPinned size={14} /> {crsCorrectionButtonLabel}
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -884,6 +1046,21 @@ export default function ProcessingSidebar({
                     </div>
                 </div>
             )}
+
+            <CrsCorrectionModal
+                isOpen={isCrsCorrectionModalOpen}
+                projectTitle={project?.title || ''}
+                currentSourceCrs={currentSourceCrs}
+                crsCorrection={crsCorrection}
+                eoDisplaySourceCrs={crsCorrection.eoDisplaySourceCrs}
+                selectedCrs={selectedCrsCorrection}
+                onSelectedCrsChange={setSelectedCrsCorrection}
+                onClose={() => setIsCrsCorrectionModalOpen(false)}
+                onReserve={handleReserveCrsCorrection}
+                onCancel={handleCancelCrsCorrection}
+                isSaving={isSavingCrsCorrection}
+                error={crsCorrectionError}
+            />
 
             {/* Save Preset Modal */}
             {isSaveModalOpen && (

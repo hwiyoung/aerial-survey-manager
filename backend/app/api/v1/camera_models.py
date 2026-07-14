@@ -3,11 +3,11 @@ from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import CameraModel
+from app.models.project import CameraModel, Image
 from app.schemas.project import CameraModelCreate, CameraModelResponse
 from app.auth.jwt import get_current_user, is_admin_role
 
@@ -60,6 +60,50 @@ async def create_camera_model(
     return camera_model
 
 
+@router.put("/{camera_id}", response_model=CameraModelResponse)
+async def update_camera_model(
+    camera_id: UUID,
+    data: CameraModelCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a camera model."""
+    result = await db.execute(select(CameraModel).where(CameraModel.id == camera_id))
+    camera_model = result.scalar_one_or_none()
+
+    if not camera_model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera model not found",
+        )
+
+    is_public_model = camera_model.organization_id is None
+    if not is_admin_role(current_user.role) and not is_public_model and camera_model.organization_id != current_user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this camera model",
+        )
+
+    camera_model.name = data.name
+    camera_model.focal_length = data.focal_length
+    camera_model.sensor_width = data.sensor_width
+    camera_model.sensor_height = data.sensor_height
+    camera_model.pixel_size = data.pixel_size
+    camera_model.sensor_width_px = data.sensor_width_px
+    camera_model.sensor_height_px = data.sensor_height_px
+    camera_model.ppa_x = data.ppa_x
+    camera_model.ppa_y = data.ppa_y
+    if is_admin_role(current_user.role):
+        camera_model.is_custom = data.is_custom
+        camera_model.organization_id = current_user.organization_id if data.is_custom else None
+    else:
+        camera_model.is_custom = True
+
+    await db.commit()
+    await db.refresh(camera_model)
+    return camera_model
+
+
 @router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_camera_model(
     camera_id: UUID,
@@ -88,6 +132,11 @@ async def delete_camera_model(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can delete standard camera models",
         )
-        
+
+    await db.execute(
+        update(Image)
+        .where(Image.camera_model_id == camera_model.id)
+        .values(camera_model_id=None)
+    )
     await db.delete(camera_model)
     await db.commit()

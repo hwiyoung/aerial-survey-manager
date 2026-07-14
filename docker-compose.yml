@@ -50,7 +50,7 @@ services:
       dockerfile: Dockerfile
     restart: always
     ports:
-      - "8001:8000"
+      - "${AERIAL_DEV_API_BIND:-127.0.0.1}:${AERIAL_DEV_API_PORT:-18101}:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
       - REDIS_URL=redis://redis:6379/0
@@ -71,7 +71,7 @@ services:
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
       - COG_LOOKUP_WARN_MS=${COG_LOOKUP_WARN_MS:-1000}
     volumes:
       - ./backend:/app
@@ -122,7 +122,7 @@ services:
   #     - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
   #     - AWS_REGION=us-east-1
   #   ports:
-  #     - "1081:8080"
+  #     - "${AERIAL_DEV_TUSD_BIND:-127.0.0.1}:${AERIAL_DEV_TUSD_PORT:-18108}:8080"
   #   depends_on:
   #     - minio
   #   networks:
@@ -142,7 +142,7 @@ services:
   #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
   #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
   #     - MINIO_BUCKET=aerial-survey
-  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
   #     - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
   #   volumes:
   #     - ./backend/app:/app/app
@@ -170,7 +170,7 @@ services:
   #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
   #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
   #     - MINIO_BUCKET=aerial-survey
-  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
   #     - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
   #     - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
   #   volumes:
@@ -278,7 +278,7 @@ services:
       - LOCAL_STORAGE_PATH=/data/storage
       - PROCESSING_DATA_PATH=/data/processing
       - EXPORT_ROOT_PATH=/data/exports
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
     volumes:
       - ./backend:/app
       - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
@@ -314,7 +314,7 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
     volumes:
       - ./backend:/app
@@ -362,7 +362,7 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9002}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
       - PROCESSING_QUEUE_WAIT_WARN_SECONDS=${PROCESSING_QUEUE_WAIT_WARN_SECONDS:-300}
       - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
@@ -407,7 +407,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5434:5432"
+      - "${AERIAL_DEV_DB_BIND:-127.0.0.1}:${AERIAL_DEV_DB_PORT:-18132}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -423,7 +423,7 @@ services:
     restart: always
     command: redis-server --appendonly yes
     ports:
-      - "6380:6379"
+      - "${AERIAL_DEV_REDIS_BIND:-127.0.0.1}:${AERIAL_DEV_REDIS_PORT:-18179}:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -443,8 +443,8 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_API_CORS_ALLOW_ORIGIN=*
     ports:
-      - "9002:9000"
-      - "9003:9001"  # Console UI
+      - "${AERIAL_DEV_MINIO_BIND:-127.0.0.1}:${AERIAL_DEV_MINIO_PORT:-18102}:9000"
+      - "${AERIAL_DEV_MINIO_CONSOLE_BIND:-127.0.0.1}:${AERIAL_DEV_MINIO_CONSOLE_PORT:-18103}:9001"  # Console UI
     volumes:
       - ${MINIO_DATA_PATH:-${DATA_PATH:-./data}}:/data
     healthcheck:
@@ -512,8 +512,8 @@ services:
     image: nginx:alpine
     restart: always
     ports:
-      - "8081:80"
-      - "4443:443"
+      - "${AERIAL_DEV_WEB_BIND:-127.0.0.1}:${AERIAL_DEV_WEB_PORT:-18110}:80"
+      - "${AERIAL_DEV_HTTPS_BIND:-127.0.0.1}:${AERIAL_DEV_HTTPS_PORT:-18111}:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
@@ -538,7 +538,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
     ports:
-      - "5555:5555"
+      - "${AERIAL_DEV_FLOWER_BIND:-127.0.0.1}:${AERIAL_DEV_FLOWER_PORT:-18155}:5555"
     volumes:
       - ./backend:/app
     depends_on:

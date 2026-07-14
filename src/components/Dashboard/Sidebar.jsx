@@ -3,7 +3,7 @@ import {
     UploadCloud, FolderPlus, Search, CheckSquare, Square,
     ChevronRight, ChevronDown, MoreHorizontal, Edit2, Trash2,
     Play, Download, FileImage, Eye, Loader2, Clock,
-    Activity, HardDrive
+    Activity, HardDrive, MapPinned
 } from 'lucide-react';
 import api from '../../api/client';
 import { formatKstDateTime, formatKstTime, parseBackendDate } from '../../utils/dateTime';
@@ -378,6 +378,19 @@ function getProjectStatusDisplay(project) {
     }
 }
 
+function getProjectRawStatus(project) {
+    return String(project?.rawStatus || project?.status || '').toLowerCase();
+}
+
+function isCrsCorrectionCandidate(project) {
+    const rawStatus = getProjectRawStatus(project);
+    const displayStatus = project?.status;
+    return (
+        ['processing', 'queued', 'scheduled', 'running'].includes(rawStatus) ||
+        displayStatus === '진행중'
+    );
+}
+
 export function ProjectItem({
     project,
     isSelected,
@@ -390,6 +403,7 @@ export function ProjectItem({
     onRename,
     onOpenProcessing,
     onOpenExport,
+    onOpenCrsCorrection,
     canStartProcessing = true,
     canExportProject = true,
     canEditProject = true,
@@ -463,6 +477,12 @@ export function ProjectItem({
         onOpenExport();
     };
 
+    const handleCrsCorrection = (e) => {
+        e.stopPropagation();
+        if (!onOpenCrsCorrection || !canEditProject || !isCrsCorrectionCandidate(project)) return;
+        onOpenCrsCorrection();
+    };
+
     const processingDisabledReason = canStartProcessing && onOpenProcessing
         ? '프로젝트 처리 화면으로 이동'
         : '프로젝트 처리 권한이 없습니다.';
@@ -470,6 +490,12 @@ export function ProjectItem({
         if (!canExportProject || !onOpenExport) return '프로젝트 내보내기 권한이 없습니다.';
         if (project.status !== '완료') return '완료된 프로젝트만 내보내기가 가능합니다.';
         return '정사영상 내보내기';
+    })();
+    const canOpenCrsCorrection = Boolean(onOpenCrsCorrection) && canEditProject && isCrsCorrectionCandidate(project);
+    const crsCorrectionDisabledReason = (() => {
+        if (!onOpenCrsCorrection || !canEditProject) return '프로젝트 수정 권한이 없습니다.';
+        if (!isCrsCorrectionCandidate(project)) return '처리 중인 프로젝트에서만 좌표계 변경이 가능합니다.';
+        return '좌표계 변경';
     })();
 
     useEffect(() => {
@@ -515,6 +541,14 @@ export function ProjectItem({
                         title={exportDisabledReason}
                     >
                         <Download size={14} className={canExportProject && onOpenExport && project.status === '완료' ? 'text-slate-500' : 'text-slate-300'} />
+                    </button>
+                    <button
+                        onClick={handleCrsCorrection}
+                        disabled={!canOpenCrsCorrection}
+                        className="p-1.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={crsCorrectionDisabledReason}
+                    >
+                        <MapPinned size={14} className={canOpenCrsCorrection ? 'text-amber-600' : 'text-slate-300'} />
                     </button>
                 </div>
                 
@@ -601,6 +635,15 @@ export function ProjectItem({
                         <Download size={12} className={canExportProject && onOpenExport && project.status === '완료' ? 'text-slate-700' : 'text-slate-400'} />
                         내보내기
                     </button>
+                    <button
+                        onClick={handleCrsCorrection}
+                        disabled={!canOpenCrsCorrection}
+                        className="flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium bg-amber-50 hover:bg-amber-100 text-amber-700 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={crsCorrectionDisabledReason}
+                    >
+                        <MapPinned size={12} className={canOpenCrsCorrection ? 'text-amber-700' : 'text-slate-400'} />
+                        좌표계 변경
+                    </button>
                 </div>
             </div>
         );
@@ -656,6 +699,15 @@ export function ProjectItem({
                         <Download size={12} className={canExportProject && onOpenExport && project.status === '완료' ? 'text-slate-700' : 'text-slate-400'} />
                         내보내기
                     </button>
+                    <button
+                        onClick={handleCrsCorrection}
+                        disabled={!canOpenCrsCorrection}
+                        className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium bg-amber-50 hover:bg-amber-100 text-amber-700 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={crsCorrectionDisabledReason}
+                    >
+                        <MapPinned size={12} className={canOpenCrsCorrection ? 'text-amber-700' : 'text-slate-400'} />
+                        좌표계 변경
+                    </button>
                 </div>
         </div>
     );
@@ -682,6 +734,7 @@ function GroupItem({
     onOpenProcessing,
     canStartProcessing = true,
     onOpenExport,
+    onOpenCrsCorrection,
     canExportProject = true,
     onExportGroupProjects,
     onDeleteProject,
@@ -827,6 +880,7 @@ function GroupItem({
                                 onRename={onRenameProject ? (newName) => onRenameProject(project.id, newName) : null}
                                 onOpenProcessing={onOpenProcessing ? () => onOpenProcessing(project.id) : null}
                                 onOpenExport={onOpenExport ? () => onOpenExport(project.id) : null}
+                                onOpenCrsCorrection={onOpenCrsCorrection ? () => onOpenCrsCorrection(project.id) : null}
                                 canStartProcessing={projectCanStartProcessing}
                                 canExportProject={canExportProject}
                                 canEditProject={projectCanEdit}
@@ -858,6 +912,7 @@ export default function Sidebar({
     onBulkDelete,
     onOpenProcessing,
             onOpenExport,
+            onOpenCrsCorrection,
             groups = [],
             expandedGroupIds = new Set(),
             onToggleGroupExpand,
@@ -981,6 +1036,7 @@ export default function Sidebar({
                             onOpenProcessing={onOpenProcessing}
                             canStartProcessing={canStartProcessing}
                             onOpenExport={onOpenExport}
+                            onOpenCrsCorrection={onOpenCrsCorrection}
                             canExportProject={canExportProject}
                             onExportGroupProjects={onExportGroupProjects}
                             onDeleteProject={onDeleteProject}
@@ -1023,6 +1079,7 @@ export default function Sidebar({
                                         onRename={onRenameProject ? (newName) => onRenameProject(project.id, newName) : null}
                                         onOpenProcessing={onOpenProcessing ? () => onOpenProcessing(project.id) : null}
                                         onOpenExport={onOpenExport ? () => onOpenExport(project.id) : null}
+                                        onOpenCrsCorrection={onOpenCrsCorrection ? () => onOpenCrsCorrection(project.id) : null}
                                         canStartProcessing={projectCanStartProcessing}
                                         canExportProject={canExportProject}
                                         canEditProject={projectCanEdit}

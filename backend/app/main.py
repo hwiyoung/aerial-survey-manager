@@ -14,6 +14,10 @@ from app.utils.storage_paths import processing_status_path
 
 settings = get_settings()
 CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
+UNAPPLIED_CRS_CORRECTION_MESSAGE = (
+    "좌표계 변경 예약이 최종 산출물에 적용되지 않았습니다. "
+    "worker-engine 재시작 후 다시 처리해야 합니다."
+)
 
 
 def _active_processing_job_ids() -> set[str] | None:
@@ -77,6 +81,18 @@ def _write_cancelled_status_file(job: ProcessingJob) -> None:
             )
     except Exception as exc:
         print(f"[startup] 취소 상태 파일 작성 실패 job_id={job.id}: {exc}")
+
+
+def _read_processing_status_file(job: ProcessingJob) -> dict:
+    try:
+        status_file = processing_status_path(job.project_id)
+        if status_file.exists():
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"[startup] 처리 상태 파일 읽기 실패 job_id={job.id}: {exc}")
+    return {}
 
 
 async def _recover_stuck_jobs():
@@ -143,6 +159,57 @@ async def _recover_stuck_jobs():
             await db.commit()
 
         stuck_jobs = [job for job in stuck_jobs if job not in revoked_jobs]
+        if not stuck_jobs:
+            return
+
+        completed_jobs = [
+            job for job in stuck_jobs
+            if (
+                job.result_path
+                or int(job.progress or 0) >= 100
+                or _read_processing_status_file(job).get("status") == "completed"
+            )
+        ]
+        if completed_jobs:
+            completed_job_ids = [job.id for job in completed_jobs]
+            completed_project_ids = {job.project_id for job in completed_jobs}
+            now = datetime.utcnow()
+            print(f"[startup] 완료 상태로 보이는 처리 작업 {len(completed_jobs)}건 복구 중...")
+            await db.execute(
+                update(ProcessingJob)
+                .where(ProcessingJob.id.in_(completed_job_ids))
+                .values(
+                    status="completed",
+                    progress=100,
+                    completed_at=now,
+                    error_message=None,
+                )
+            )
+            unapplied_crs_job_ids = [
+                job.id
+                for job in completed_jobs
+                if job.crs_correction_status == "pending" and job.result_path
+            ]
+            if unapplied_crs_job_ids:
+                await db.execute(
+                    update(ProcessingJob)
+                    .where(ProcessingJob.id.in_(unapplied_crs_job_ids))
+                    .values(
+                        crs_correction_status="failed",
+                        crs_correction_error=UNAPPLIED_CRS_CORRECTION_MESSAGE,
+                    )
+                )
+            await db.execute(
+                update(Project)
+                .where(
+                    Project.id.in_(completed_project_ids),
+                    Project.status == "processing",
+                )
+                .values(status="completed", progress=100)
+            )
+            await db.commit()
+
+        stuck_jobs = [job for job in stuck_jobs if job not in completed_jobs]
         if not stuck_jobs:
             return
 

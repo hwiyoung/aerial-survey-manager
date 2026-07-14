@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { UploadCloud, FileText, CheckCircle2, ChevronRight, ChevronLeft, AlertCircle, X, Camera, FolderOpen, Info, Trash2, Image as ImageIcon, FilePlus, ArrowRight, ArrowLeft, Table as TableIcon, RefreshCw, AlertTriangle } from 'lucide-react';
+import { UploadCloud, FileText, CheckCircle2, ChevronRight, ChevronLeft, AlertCircle, X, Camera, FolderOpen, Info, Trash2, Image as ImageIcon, FilePlus, ArrowRight, ArrowLeft, Table as TableIcon, RefreshCw, AlertTriangle, Pencil } from 'lucide-react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, Rectangle, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import proj4 from 'proj4';
@@ -13,6 +13,19 @@ const createDefaultEoConfig = () => ({
     hasHeader: false,
     crs: 'TM중부 (EPSG:5186)',
     columns: { image_name: 0, x: 1, y: 2, z: 3, omega: 4, phi: 5, kappa: 6 },
+});
+
+const createDefaultCameraModel = () => ({
+    name: '',
+    focal_length: 80,
+    sensor_width: 53.4,
+    sensor_height: 40,
+    pixel_size: 5.2,
+    sensor_width_px: 17310,
+    sensor_height_px: 11310,
+    ppa_x: 0,
+    ppa_y: 0,
+    is_custom: true,
 });
 
 const CRS_LABEL_BY_CODE = {
@@ -681,17 +694,8 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const [cameraModel, setCameraModel] = useState("");
     const [cameraModels, setCameraModels] = useState([]);
     const [isAddingCamera, setIsAddingCamera] = useState(false);
-    const [newCamera, setNewCamera] = useState({
-        name: '',
-        focal_length: 80,
-        sensor_width: 53.4,
-        sensor_height: 40,
-        pixel_size: 5.2,
-        sensor_width_px: 17310,
-        sensor_height_px: 11310,
-        ppa_x: 0,
-        ppa_y: 0
-    });
+    const [editingCameraId, setEditingCameraId] = useState(null);
+    const [newCamera, setNewCamera] = useState(createDefaultCameraModel);
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
     const [autoProcess, setAutoProcess] = useState(true);
@@ -722,14 +726,74 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
         };
     }, [cameraModels]);
 
-    const handleAddCamera = async () => {
+    const closeCameraForm = () => {
+        setIsAddingCamera(false);
+        setEditingCameraId(null);
+        setNewCamera(createDefaultCameraModel());
+    };
+
+    const openAddCameraForm = () => {
+        setEditingCameraId(null);
+        setNewCamera(createDefaultCameraModel());
+        setIsAddingCamera(true);
+    };
+
+    const openEditCameraForm = () => {
+        if (!selectedCamera?.id) return;
+        setEditingCameraId(selectedCamera.id);
+        setNewCamera({
+            name: selectedCamera.name || '',
+            focal_length: selectedCamera.focal_length ?? 0,
+            sensor_width: selectedCamera.sensor_width ?? 0,
+            sensor_height: selectedCamera.sensor_height ?? 0,
+            pixel_size: selectedCamera.pixel_size ?? 0,
+            sensor_width_px: selectedCamera.sensor_width_px ?? 0,
+            sensor_height_px: selectedCamera.sensor_height_px ?? 0,
+            ppa_x: selectedCamera.ppa_x ?? 0,
+            ppa_y: selectedCamera.ppa_y ?? 0,
+            is_custom: Boolean(selectedCamera.is_custom),
+        });
+        setIsAddingCamera(true);
+    };
+
+    const handleSaveCamera = async () => {
         try {
-            const created = await api.createCameraModel({ ...newCamera, name: newCamera.name || 'Custom Camera' });
-            setCameraModels(prev => [...prev, created]);
-            setCameraModel(created.name);
-            setIsAddingCamera(false);
+            const payload = {
+                ...newCamera,
+                name: newCamera.name || 'Custom Camera',
+                is_custom: editingCameraId ? true : newCamera.is_custom,
+            };
+            if (editingCameraId) {
+                const updated = await api.updateCameraModel(editingCameraId, payload);
+                setCameraModels(prev => prev.map(item => item.id === updated.id ? updated : item));
+                setCameraModel(updated.name);
+            } else {
+                const created = await api.createCameraModel(payload);
+                setCameraModels(prev => [...prev, created]);
+                setCameraModel(created.name);
+            }
+            closeCameraForm();
         } catch (err) {
-            alert("Failed to add camera model");
+            alert(err?.message || "카메라 모델 저장에 실패했습니다.");
+        }
+    };
+
+    const handleDeleteCamera = async () => {
+        if (!selectedCamera?.id) return;
+        if (!window.confirm(`${selectedCamera.name} 카메라 모델을 삭제하시겠습니까?`)) return;
+
+        try {
+            await api.deleteCameraModel(selectedCamera.id);
+            setCameraModels(prev => {
+                const next = prev.filter(item => item.id !== selectedCamera.id);
+                setCameraModel(next[0]?.name || '');
+                return next;
+            });
+            if (editingCameraId === selectedCamera.id) {
+                closeCameraForm();
+            }
+        } catch (err) {
+            alert(err?.message || "카메라 모델 삭제에 실패했습니다.");
         }
     };
     const [selectedEoFile, setSelectedEoFile] = useState(null);
@@ -802,6 +866,9 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setAutoProcess(true);
             setIsFinishing(false);
             setEoCrsTouched(false);
+            setIsAddingCamera(false);
+            setEditingCameraId(null);
+            setNewCamera(createDefaultCameraModel());
         }
     }, [isOpen]);
 
@@ -1236,15 +1303,18 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                     <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center shrink-0"><span className="text-sm font-bold text-slate-700 flex items-center gap-2"><TableIcon size={16} className="text-slate-400" /> EO 행 선택</span>{eoFileName && <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded font-bold">표 또는 지도에서 제외 가능</span>}</div>
                                     <div className="flex-1 overflow-auto custom-scrollbar relative">
                                         {!eoFileName ? (<div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300"><FileText size={48} className="mb-3 opacity-30" /><p className="text-sm font-medium">상단에서 EO 파일을 로드하면<br />이곳에 미리보기가 표시됩니다.</p></div>) : (
-                                            <table className="w-full text-sm text-left">
+                                            <table className="w-full min-w-[960px] text-sm text-left">
                                                 <thead className="bg-slate-50 sticky top-0 z-10 text-slate-500 text-xs uppercase">
                                                     <tr>
                                                         <th className="p-3 border-b font-semibold w-[82px]">상태</th>
-                                                        <th className="p-3 border-b font-semibold w-[16%]">File</th>
-                                                        <th className="p-3 border-b font-semibold w-[18%]">Image ID ({eoConfig.columns.image_name})</th>
+                                                        <th className="p-3 border-b font-semibold w-[15%]">EO 파일명</th>
+                                                        <th className="p-3 border-b font-semibold w-[17%]">IMAGE_NAME ({eoConfig.columns.image_name})</th>
                                                         <th className="p-3 border-b font-semibold">X ({eoConfig.columns.x})</th>
                                                         <th className="p-3 border-b font-semibold">Y ({eoConfig.columns.y})</th>
                                                         <th className="p-3 border-b font-semibold">Z ({eoConfig.columns.z})</th>
+                                                        <th className="p-3 border-b font-semibold">Omega ({eoConfig.columns.omega})</th>
+                                                        <th className="p-3 border-b font-semibold">Phi ({eoConfig.columns.phi})</th>
+                                                        <th className="p-3 border-b font-semibold">Kappa ({eoConfig.columns.kappa})</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody className="divide-y divide-slate-100">
@@ -1270,6 +1340,9 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                             <td className="p-3 font-mono text-slate-500">{row.x}</td>
                                                             <td className="p-3 font-mono text-slate-500">{row.y}</td>
                                                             <td className="p-3 font-mono text-slate-500">{row.z}</td>
+                                                            <td className="p-3 font-mono text-slate-500">{row.omega}</td>
+                                                            <td className="p-3 font-mono text-slate-500">{row.phi}</td>
+                                                            <td className="p-3 font-mono text-slate-500">{row.kappa}</td>
                                                         </tr>
                                                     ))}
                                                 </tbody>
@@ -1305,12 +1378,12 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                             <div className="max-w-sm mx-auto space-y-6 w-full pb-4">
                                 <div className="p-6 bg-slate-50 rounded-full w-32 h-32 mx-auto flex items-center justify-center border border-slate-200 shrink-0"><Camera size={56} className="text-slate-400" /></div>
 
-                                {isAddingCamera ? (
-                                    <div className="bg-white p-6 rounded-xl border border-blue-200 shadow-lg space-y-4 text-left animate-in fade-in zoom-in-95 duration-200">
-                                        <div className="flex justify-between items-center mb-2">
-                                            <h5 className="font-bold text-blue-600">새 카메라 추가</h5>
-                                            <button onClick={() => setIsAddingCamera(false)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
-                                        </div>
+	                                {isAddingCamera ? (
+	                                    <div className="bg-white p-6 rounded-xl border border-blue-200 shadow-lg space-y-4 text-left animate-in fade-in zoom-in-95 duration-200">
+	                                        <div className="flex justify-between items-center mb-2">
+	                                            <h5 className="font-bold text-blue-600">{editingCameraId ? '카메라 모델 수정' : '새 카메라 추가'}</h5>
+	                                            <button onClick={closeCameraForm} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+	                                        </div>
                                         <div className="space-y-1">
                                             <label className="text-xs font-bold text-slate-500">모델명</label>
                                             <input type="text" className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none" value={newCamera.name} onChange={e => setNewCamera({ ...newCamera, name: e.target.value })} placeholder="Ex: Sony A7R IV" autoFocus />
@@ -1355,10 +1428,12 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                 <input type="number" step="0.001" className="w-full p-2 border rounded text-sm" value={newCamera.ppa_y} onChange={e => setNewCamera({ ...newCamera, ppa_y: parseFloat(e.target.value) })} />
                                             </div>
                                         </div>
-                                        <button onClick={handleAddCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">저장 및 선택</button>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-3">
+	                                        <button onClick={handleSaveCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">
+                                                {editingCameraId ? '수정 저장' : '저장 및 선택'}
+                                            </button>
+	                                    </div>
+	                                ) : (
+	                                    <div className="space-y-3">
                                         <div className="relative">
                                             <select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none" value={cameraModel} onChange={(e) => setCameraModel(e.target.value)}>
                                                 {Array.isArray(cameraModels) && cameraModels.length > 0 ? (
@@ -1371,13 +1446,21 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                     <option value="" disabled>카메라 모델 로딩 중...</option>
                                                 )}
                                             </select>
-                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
-                                        </div>
-                                        <button onClick={() => setIsAddingCamera(true)} className="w-full py-3 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-2">
-                                            <FilePlus size={18} /> 새 카메라 모델 추가
-                                        </button>
-                                    </div>
-                                )}
+	                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
+	                                        </div>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <button onClick={openAddCameraForm} className="min-h-11 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs">
+                                                    <FilePlus size={16} /> 추가
+                                                </button>
+                                                <button onClick={openEditCameraForm} disabled={!selectedCamera?.id} className="min-h-11 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                    <Pencil size={15} /> 수정
+                                                </button>
+                                                <button onClick={handleDeleteCamera} disabled={!selectedCamera?.id} className="min-h-11 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                    <Trash2 size={15} /> 삭제
+                                                </button>
+                                            </div>
+	                                    </div>
+	                                )}
 
                                 <div className="bg-slate-50 p-5 rounded-xl text-left space-y-2 border border-slate-200">
                                     <div className="flex justify-between text-sm"><span className="text-slate-500">Focal Length</span><span className="font-mono font-bold text-slate-700">{selectedCamera.focal_length} mm</span></div>

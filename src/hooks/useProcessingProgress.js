@@ -60,7 +60,7 @@ export function useProcessingProgress(projectId) {
 
         // Construct WebSocket URL using current origin (nginx proxy handles routing)
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.host; // Includes port (e.g., localhost:8081)
+        const host = window.location.host; // Includes port (e.g., localhost:18110)
         const token = localStorage.getItem('access_token');
         const wsUrl = `${protocol}//${host}/api/v1/processing/ws/projects/${projectId}/status${token ? `?token=${token}` : ''}`;
 
@@ -113,7 +113,9 @@ export function useProcessingProgress(projectId) {
                         // 'scheduled', 'pending' 등은 무시 (idle 유지)
                     }
 
-                    if (data.message) {
+                    const incomingMessage = String(data.message || '');
+                    const isCrsCorrectionReservationMessage = /^좌표계 변경 예약/.test(incomingMessage);
+                    if (incomingMessage && !isCrsCorrectionReservationMessage) {
                         setMessage(data.message);
                     }
                 } catch (e) {

@@ -124,6 +124,7 @@ class ImageResponse(ImageBase):
     # Camera model reference
     camera_model: Optional["CameraModelResponse"] = None
     exterior_orientation: Optional["EOData"] = None
+    source_exterior_orientation: Optional["EOData"] = None
 
     class Config:
         from_attributes = True
@@ -228,6 +229,27 @@ class ProcessingOptions(BaseModel):
     resume_checkpoint: bool = True  # 완료된 단계 checkpoint 재사용 여부
 
 
+class ProcessingCrsCorrectionRequest(BaseModel):
+    """Request to assign the actual source CRS before final COG/warp."""
+    source_crs: str
+
+
+class ProcessingCrsCorrectionResponse(BaseModel):
+    """CRS correction reservation state for a processing job."""
+    job_id: UUID
+    project_id: UUID
+    source_crs: Optional[str] = None
+    current_source_crs: Optional[str] = None
+    eo_display_source_crs: Optional[str] = None
+    eo_display_updated_count: Optional[int] = None
+    status: Optional[str] = None
+    requested_at: Optional[datetime] = None
+    applied_at: Optional[datetime] = None
+    error: Optional[str] = None
+    message: Optional[str] = None
+    crs_correction_options: Optional[List[dict[str, str]]] = None
+
+
 class ProcessingJobResponse(BaseModel):
     """Processing job response schema."""
     id: UUID
@@ -246,6 +268,14 @@ class ProcessingJobResponse(BaseModel):
     result_size: Optional[int] = None
     result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
     process_mode: Optional[str] = None  # Preview, Normal, High
+    current_source_crs: Optional[str] = None
+    eo_display_source_crs: Optional[str] = None
+    crs_correction_source_crs: Optional[str] = None
+    crs_correction_status: Optional[str] = None
+    crs_correction_requested_at: Optional[datetime] = None
+    crs_correction_applied_at: Optional[datetime] = None
+    crs_correction_error: Optional[str] = None
+    crs_correction_options: Optional[List[dict[str, str]]] = None
     metrics: Optional[dict[str, Any]] = None
     step_status: Optional[dict[str, Any]] = None  # 단계별 진행률 (status.json)
     processing_events: Optional[List[dict[str, Any]]] = None

@@ -212,8 +212,8 @@ cp /etc/letsencrypt/live/app.example.com/privkey.pem ./ssl/key.pem
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw deny 5434/tcp    # DB
-sudo ufw deny 6380/tcp    # Redis
+sudo ufw deny 18132/tcp   # 개발 DB
+sudo ufw deny 18179/tcp   # 개발 Redis
 sudo ufw enable
 ```
 

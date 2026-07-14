@@ -65,9 +65,9 @@ docker compose ps
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| Web UI | http://localhost:8081 | 메인 인터페이스 |
-| API Docs | http://localhost:8081/api/docs | Swagger UI |
-| MinIO Console | http://localhost:9003 | 스토리지 관리 (MinIO 모드) |
+| Web UI | http://localhost:18110 | 메인 인터페이스 |
+| API Docs | http://localhost:18101/docs | Swagger UI |
+| MinIO Console | http://localhost:18103 | 스토리지 관리 (MinIO 모드) |
 
 ## Project Structure
 

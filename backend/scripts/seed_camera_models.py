@@ -303,10 +303,13 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
         for entry in entries:
             if entry['name'] in existing_cameras:
                 if sync_mode:
-                    # Update existing camera with new data
                     cam = existing_cameras[entry['name']]
-                    _apply_camera_entry(cam, entry)
-                    updated += 1
+                    if cam.is_custom:
+                        skipped += 1
+                    else:
+                        # Keep packaged io.csv changes synced for untouched standard models.
+                        _apply_camera_entry(cam, entry)
+                        updated += 1
                 else:
                     skipped += 1
                 continue
