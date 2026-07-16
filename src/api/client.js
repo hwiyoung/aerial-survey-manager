@@ -380,7 +380,11 @@ class ApiClient {
 
     // --- WebSocket ---
     connectStatusWebSocket(projectId, onMessage) {
-        const wsUrl = `${API_BASE.replace('http', 'ws')}/api/v1/processing/ws/projects/${projectId}/status`;
+        const httpBase = API_BASE || window.location.origin;
+        const wsBase = httpBase.replace(/^http/, 'ws').replace(/\/$/, '');
+        const token = this.token || localStorage.getItem('access_token');
+        const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+        const wsUrl = `${wsBase}/api/v1/processing/ws/projects/${projectId}/status${tokenQuery}`;
         const ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {

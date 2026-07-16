@@ -37,6 +37,7 @@ from app.schemas.project import (
 from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
+    get_current_active_manager,
     get_current_user,
     is_admin_role,
     resolve_project_permission,
@@ -601,7 +602,7 @@ async def list_projects(
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     data: ProjectCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_manager),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new project."""

@@ -11,6 +11,7 @@ from app.services.upload_sessions import (
     expected_part_size,
     load_local_upload_session,
     multipart_part_count,
+    nonreplaceable_upload_filenames,
     save_local_upload_session,
     validate_completed_part_numbers,
     validate_upload_batch,
@@ -51,6 +52,19 @@ class UploadValidationTests(unittest.TestCase):
     def test_completed_parts_must_be_contiguous(self):
         with self.assertRaisesRegex(UploadSessionError, "contiguous"):
             validate_completed_part_numbers([1, 3])
+
+    def test_completed_files_cannot_be_replaced_in_place(self):
+        existing = [
+            SimpleNamespace(filename="completed.tif", upload_status="completed"),
+            SimpleNamespace(filename="failed.tif", upload_status="failed"),
+            SimpleNamespace(filename="uploading.tif", upload_status="uploading"),
+            SimpleNamespace(filename="completed.tif", upload_status="completed"),
+        ]
+
+        self.assertEqual(
+            nonreplaceable_upload_filenames(existing),
+            ["completed.tif"],
+        )
 
 
 class LocalUploadSessionTests(unittest.TestCase):

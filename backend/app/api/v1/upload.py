@@ -20,6 +20,7 @@ from app.schemas.project import ImageResponse
 from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
+    get_current_active_manager,
     get_current_user,
 )
 from app.config import get_settings
@@ -37,6 +38,7 @@ from app.services.upload_sessions import (
     expected_part_size,
     load_local_upload_session,
     multipart_part_count,
+    nonreplaceable_upload_filenames,
     save_local_upload_session,
     validate_completed_part_numbers,
     validate_upload_batch,
@@ -270,7 +272,7 @@ class LocalImportResponse(BaseModel):
 async def local_import(
     project_id: UUID,
     request: LocalImportRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_manager),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -775,13 +777,27 @@ async def init_multipart_upload(
         file_info.filename = safe_filename
 
     existing_result = await db.execute(
-        select(Image.filename, Image.file_size)
+        select(Image.filename, Image.file_size, Image.upload_status)
         .where(
             Image.project_id == project_id,
             Image.filename.in_(safe_filenames),
         )
     )
-    existing_sizes = {row.filename: row.file_size or 0 for row in existing_result.all()}
+    existing_rows = existing_result.all()
+    completed_conflicts = nonreplaceable_upload_filenames(existing_rows)
+    if completed_conflicts:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": (
+                    "Files that already completed upload cannot be replaced in place. "
+                    "Delete the existing source images or rename the files first."
+                ),
+                "filenames": completed_conflicts,
+            },
+        )
+
+    existing_sizes = {row.filename: row.file_size or 0 for row in existing_rows}
 
     cumulative_sizes = {}
     total_additional_bytes = 0

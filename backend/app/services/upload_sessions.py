@@ -101,6 +101,18 @@ def validate_upload_batch(
     return safe_names
 
 
+def nonreplaceable_upload_filenames(existing_uploads: Iterable[object]) -> list[str]:
+    """Return completed filenames that must not be overwritten by a new session."""
+    return sorted(
+        {
+            str(getattr(upload, "filename", ""))
+            for upload in existing_uploads
+            if getattr(upload, "upload_status", None) == "completed"
+            and getattr(upload, "filename", None)
+        }
+    )
+
+
 def validate_completed_part_numbers(part_numbers: Iterable[int]) -> list[int]:
     numbers = sorted(part_numbers)
     if not numbers:

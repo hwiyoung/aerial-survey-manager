@@ -2109,8 +2109,8 @@ async def websocket_status(
             raise ValueError("Missing user id")
         user_result = await db.execute(select(User).where(User.id == user_id))
         current_user = user_result.scalar_one_or_none()
-        if not current_user:
-            raise ValueError("User not found")
+        if not current_user or not current_user.is_active:
+            raise ValueError("User not found or disabled")
 
         scoped_project = await _get_scoped_project(_safe_uuid(project_id), current_user, db)
         if not scoped_project:

@@ -11,13 +11,13 @@ const ROLE_ALIASES = {
     viewer: 'viewer',
     editor: 'editor',
     admin: 'admin',
-    user: 'editor',
+    user: 'viewer',
     manager: 'editor',
 };
 
 const normalizeRole = (role) => {
     if (!role || typeof role !== 'string') return 'viewer';
-    const mappedRole = ROLE_ALIASES[role.toLowerCase().trim()] || 'user';
+    const mappedRole = ROLE_ALIASES[role.toLowerCase().trim()] || 'viewer';
     return ROLE_ORDER.includes(mappedRole) ? mappedRole : 'viewer';
 };
 
