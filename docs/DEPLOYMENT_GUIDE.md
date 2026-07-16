@@ -180,6 +180,12 @@ systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|
 
 `WorkingDirectory`, `EnvironmentFile`, `ExecStart`가 고정 symlink 경로를 가리켜야 합니다. `.env`는 보안 설정 후 root-only(`600`)가 되므로 일반 사용자의 직접 `docker compose` 실행은 permission denied가 날 수 있습니다. 운영자는 `aerial-status`, `aerial-restart`, `aerial-logs`를 사용하세요.
 
+코드 정비를 계속하는 체크아웃에서 `.env` 권한과 사용자 관리 설정은 유지하고 자동 시작 및 GPU watchdog 경로만 갱신하려면 다음 옵션을 사용합니다.
+
+```bash
+sudo bash scripts/secure-deployment.sh --systemd-only
+```
+
 ### systemd 시작 모델
 
 `aerial-survey.service`는 핵심 서비스를 먼저 시작하고 `worker-engine`은 best-effort로 분리합니다.

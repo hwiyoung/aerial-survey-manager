@@ -374,6 +374,12 @@ systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|
 
 `aerial-survey.service`는 핵심 서비스가 정상 기동되면 success가 될 수 있습니다. GPU 드라이버나 NVIDIA runtime이 늦게 올라와 `worker-engine`만 실패한 경우에는 `aerial-gpu-watchdog.timer`가 이후 복구를 시도합니다.
 
+코드 정비를 계속하는 체크아웃에서는 `.env` 권한을 바꾸지 않고 systemd 서비스와 GPU watchdog 경로만 갱신할 수 있습니다.
+
+```bash
+sudo bash scripts/secure-deployment.sh --systemd-only
+```
+
 보안 설정 후 `.env`는 root-only(`600`)가 됩니다. 일반 사용자가 직접 `docker compose`를 실행하면 permission denied가 날 수 있으므로 운영 명령은 아래를 사용합니다.
 
 ```bash

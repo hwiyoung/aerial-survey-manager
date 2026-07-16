@@ -440,6 +440,14 @@ main() {
         exit 0
     fi
 
+    if [ "${1:-}" = "--systemd-only" ]; then
+        check_root
+        init_deployment_paths
+        ensure_current_symlink
+        create_systemd_service
+        exit 0
+    fi
+
     check_root
     init_deployment_paths
     ensure_current_symlink

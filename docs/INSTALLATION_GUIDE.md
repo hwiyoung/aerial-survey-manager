@@ -88,6 +88,12 @@ sudo bash scripts/secure-deployment.sh
 systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|ExecStart'
 ```
 
+코드 정비용 체크아웃처럼 `.env`를 현재 사용자 권한으로 유지해야 할 때는 자동 시작 및 GPU watchdog만 등록할 수 있습니다.
+
+```bash
+sudo bash scripts/secure-deployment.sh --systemd-only
+```
+
 ## 6. 시작 모델
 
 `aerial-survey.service`는 핵심 서비스를 먼저 시작합니다.
