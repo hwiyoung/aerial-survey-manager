@@ -63,6 +63,10 @@ from app.services.processing_lifecycle import (
     processing_options_for_job,
     stale_processing_job_reason,
 )
+from app.services.processing_steps import (
+    CHECKPOINT_STEP_LABELS,
+    PROJECT_STATE_STEP_RANK,
+)
 from pyproj import Transformer
 
 router = APIRouter(prefix="/processing", tags=["Processing"])
@@ -72,15 +76,6 @@ TERMINAL_PROCESSING_STATUSES = {"error", "failed", "cancelled"}
 FINISHED_PROCESSING_STATUSES = TERMINAL_PROCESSING_STATUSES | {"completed"}
 CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
 RESTART_CHOICE_STATUSES = {"error", "failed", "cancelled"}
-CHECKPOINT_STEP_LABELS = {
-    "align_photos.py": "이미지 정렬",
-    "build_depth_maps.py": "깊이 맵 생성",
-    "build_point_cloud.py": "포인트 클라우드 생성",
-    "build_dem.py": "수치표고모델 생성",
-    "build_orthomosaic.py": "정사모자이크 생성",
-    "export_orthomosaic.py": "정사영상 내보내기",
-    "convert_cog.py": "COG 변환",
-}
 CRS_CORRECTION_OPTIONS = [
     {"value": "EPSG:5186", "label": "TM 중부 (EPSG:5186)"},
     {"value": "EPSG:5185", "label": "TM 서부 (EPSG:5185)"},
@@ -94,13 +89,6 @@ CRS_CORRECTION_ALLOWED_LABEL = ", ".join(option["value"] for option in CRS_CORRE
 CRS_CORRECTION_ACTIVE_STATUSES = set(ACTIVE_PROCESSING_STATUSES)
 CRS_CORRECTION_LOCKED_STATUSES = {"closed", "applying", "applied"}
 RUNTIME_STATUS_STALE_GRACE_SECONDS = 5
-PROJECT_STATE_STEP_RANK = {
-    "align_photos.py": 1,
-    "build_depth_maps.py": 2,
-    "build_point_cloud.py": 3,
-    "build_dem.py": 4,
-    "build_orthomosaic.py": 5,
-}
 
 
 def _remove_queued_celery_message(task_id: str | None, queue_name: str) -> int:

@@ -9,6 +9,7 @@
 | RELIABILITY | Celery 복구 | GPU 작업 redelivery 복구, 썸네일/삭제 작업 late ack, 삭제 잔여 파일 검증 및 재시도 |
 | DEPLOY | 배포 구조 단순화 | 미사용 celery-beat 제거, 설치 폴더 기준 상대경로 및 조직 공동 운영 계정 안내 통일 |
 | CLEANUP | Airflow 레거시 제거 | 미사용 Airflow Compose·DAG·의존성·문서를 제거하고 Metashape 실행 스크립트를 Celery 전용 `pipeline`으로 분리 |
+| REFACTOR | 처리 단계 정의 통합 | API·Celery 엔진·상태 계산의 단계 이름·순서·메시지를 단일 정의로 통합하고 포인트클라우드 진행 표시 누락 수정 |
 
 ---
 

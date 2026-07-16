@@ -13,22 +13,13 @@ from app.utils.storage_paths import (
     processing_status_path,
     processing_work_dir,
 )
+from app.services.processing_steps import STEP_MESSAGE_MAP, STEP_ORDER
 
 logger = logging.getLogger("app.processing.runtime")
 
 PROCESSING_TASK_NAME = "app.workers.tasks.process_orthophoto"
 ACTIVE_TASK_TTL_SECONDS = float(os.getenv("PROCESSING_ACTIVE_TASK_CACHE_TTL_SECONDS", "2.0"))
 ACTIVE_TASK_INSPECT_TIMEOUT = float(os.getenv("PROCESSING_ACTIVE_TASK_INSPECT_TIMEOUT_SECONDS", "0.35"))
-
-STEP_MESSAGE_MAP = {
-    "Align Photos": "이미지 정렬 중...",
-    "Build Depth Maps": "깊이 맵 생성 중...",
-    "Build DEM": "수치표고모델 생성 중...",
-    "Build Orthomosaic": "정사모자이크 생성 중...",
-    "Export Raster": "정사영상 내보내기 중...",
-    "Convert COG": "COG 변환 중...",
-}
-STEP_ORDER = tuple(STEP_MESSAGE_MAP.keys())
 
 _ACTIVE_TASK_CACHE: dict[str, Any] = {
     "expires_at": 0.0,

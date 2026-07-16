@@ -18,6 +18,12 @@ from datetime import timedelta
 
 from app.config import get_settings
 from app.auth.jwt import create_internal_token
+from app.services.processing_steps import (
+    PROJECT_STATE_STEP_RANK as METASHAPE_PROJECT_STATE_STEP_RANK,
+    PROJECT_STATE_STEPS as METASHAPE_PROJECT_STATE_STEPS,
+    processing_step_pairs,
+    task_name_for_script,
+)
 from app.utils.storage_paths import orthomosaic_key, processing_log_path
 
 settings = get_settings()
@@ -435,20 +441,8 @@ class MetashapeEngine(ProcessingEngine):
     Local GPU processing engine.
     Runs locally on worker-engine (aerial-worker-engine container).
     """
-    PROJECT_STATE_STEPS = {
-        "align_photos.py",
-        "build_depth_maps.py",
-        "build_point_cloud.py",
-        "build_dem.py",
-        "build_orthomosaic.py",
-    }
-    PROJECT_STATE_STEP_RANK = {
-        "align_photos.py": 1,
-        "build_depth_maps.py": 2,
-        "build_point_cloud.py": 3,
-        "build_dem.py": 4,
-        "build_orthomosaic.py": 5,
-    }
+    PROJECT_STATE_STEPS = METASHAPE_PROJECT_STATE_STEPS
+    PROJECT_STATE_STEP_RANK = METASHAPE_PROJECT_STATE_STEP_RANK
 
     @staticmethod
     def _format_elapsed(seconds):
@@ -495,15 +489,7 @@ class MetashapeEngine(ProcessingEngine):
 
     @staticmethod
     def _step_task_name(script_name: str) -> str:
-        return {
-            "align_photos.py": "Align Photos",
-            "build_depth_maps.py": "Build Depth Maps",
-            "build_point_cloud.py": "Build Point Cloud",
-            "build_dem.py": "Build DEM",
-            "build_orthomosaic.py": "Build Orthomosaic",
-            "export_orthomosaic.py": "Export Raster",
-            "convert_cog.py": "Convert COG",
-        }.get(script_name, script_name)
+        return task_name_for_script(script_name)
 
     def _build_processing_fingerprint(
         self,
@@ -1016,18 +1002,7 @@ class MetashapeEngine(ProcessingEngine):
             else:
                 eo_only_align = bool(eo_only_align)
 
-            steps = [
-                ("align_photos.py", "이미지 정렬 중..."),
-                ("build_depth_maps.py", "깊이 맵 생성 중..."),
-            ]
-            if build_point_cloud:
-                steps.append(("build_point_cloud.py", "포인트 클라우드 생성 중..."))
-            steps.extend([
-                ("build_dem.py", "수치표고모델 생성 중..."),
-                ("build_orthomosaic.py", "정사모자이크 생성 중..."),
-                ("export_orthomosaic.py", "정사영상 내보내기 중..."),
-                ("convert_cog.py", "COG 변환 중..."),
-            ])
+            steps = processing_step_pairs(build_point_cloud=build_point_cloud)
 
             logger.info(
                 f"[ProcessingEngine] build_point_cloud={build_point_cloud}, "
