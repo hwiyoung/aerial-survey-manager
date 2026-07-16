@@ -16,7 +16,22 @@ NC='\033[0m'
 # 스크립트 위치로 이동
 cd "$(dirname "$0")/.."
 
-VERSION=${1:-$(date +%Y%m%d)}
+BASE_VERSION=$(tr -d '[:space:]' < VERSION)
+VERSION=${1:-v${BASE_VERSION}}
+if [[ "$VERSION" != v* ]]; then
+    VERSION="v${VERSION}"
+fi
+
+if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+    echo "ERROR: 유효한 SemVer가 아닙니다: $VERSION"
+    exit 1
+fi
+
+if [ "${VERSION#v}" != "$BASE_VERSION" ]; then
+    echo "ERROR: 요청 버전 $VERSION 이 VERSION 파일(v$BASE_VERSION)과 다릅니다."
+    exit 1
+fi
+
 RELEASE_NAME="aerial-survey-manager-${VERSION}"
 RELEASE_DIR="./releases/${RELEASE_NAME}"
 IMAGE_PREFIX="aerial-survey-manager"
@@ -35,6 +50,28 @@ echo "Output: ${RELEASE_DIR}.tar.gz"
 echo ""
 
 echo "0. 배포 전 설정 검증 중..."
+./scripts/check-version.sh
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        echo "ERROR: 추적 파일에 커밋되지 않은 변경이 있습니다."
+        exit 1
+    fi
+
+    if [ "${REQUIRE_RELEASE_TAG:-true}" = "true" ]; then
+        TAG_COMMIT=$(git rev-parse "refs/tags/${VERSION}^{commit}" 2>/dev/null || true)
+        HEAD_COMMIT=$(git rev-parse HEAD)
+        if [ -z "$TAG_COMMIT" ]; then
+            echo "ERROR: 릴리스 태그 ${VERSION}가 없습니다."
+            exit 1
+        fi
+        if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "ERROR: 태그 ${VERSION}가 현재 HEAD를 가리키지 않습니다."
+            exit 1
+        fi
+    fi
+fi
+
 docker compose -f docker-compose.prod.yml config >/dev/null
 echo -e "   ${GREEN}✓ docker compose config 통과${NC}"
 
@@ -194,13 +231,23 @@ echo "5. 기타 배포 파일 복사 중..."
 cp .env.production.example "$RELEASE_DIR/.env.example"
 cp nginx.prod.conf "$RELEASE_DIR/nginx.prod.conf"
 cp init.sql "$RELEASE_DIR/"
+cp VERSION "$RELEASE_DIR/VERSION"
+
+GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+cat > "$RELEASE_DIR/BUILD_INFO.txt" << EOF
+version=${VERSION}
+commit=${GIT_COMMIT}
+built_at=${BUILD_TIME}
+EOF
 
 # scripts 디렉토리 복사
 cp -r scripts "$RELEASE_DIR/"
 # 소스 트리와 Dockerfile이 필요한 빌드 전용 도구는 설치 패키지에서 제외한다.
 rm -f \
     "$RELEASE_DIR/scripts/build-release.sh" \
-    "$RELEASE_DIR/scripts/check-release-parity.sh"
+    "$RELEASE_DIR/scripts/check-release-parity.sh" \
+    "$RELEASE_DIR/scripts/check-version.sh"
 
 # docs 복사
 mkdir -p "$RELEASE_DIR/docs"

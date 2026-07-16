@@ -13,6 +13,7 @@ from app.database import async_session
 from app.models.project import ProcessingJob, Project
 from app.services.processing_lifecycle import startup_recovery_in_grace_period
 from app.utils.storage_paths import processing_status_path
+from app.version import APP_VERSION
 
 settings = get_settings()
 CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
@@ -314,7 +315,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description="항공/드론 정사영상 생성 및 프로젝트 관리 플랫폼",
-    version="0.1.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -335,4 +336,8 @@ app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "app": settings.APP_NAME}
+    return {
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "version": APP_VERSION,
+    }

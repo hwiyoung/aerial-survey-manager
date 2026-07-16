@@ -7,6 +7,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+./scripts/check-version.sh
+
 IO_CSV_PATH="${IO_CSV_PATH:-${AERIAL_IO_CSV_PATH:-}}"
 ALLOW_MISSING_IO="false"
 

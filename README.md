@@ -2,6 +2,8 @@
 
 항공/드론 원본 이미지와 EO(외부표정요소)를 입력받아 정사영상을 생성하고 관리하는 플랫폼입니다.
 
+현재 릴리즈 후보: **v2.0.0-rc.1**
+
 ## Features
 
 - **프로젝트 관리**: 항공/드론 촬영 프로젝트 생성, 조회, 수정, 삭제
@@ -115,6 +117,7 @@ PROCESSING_DATA_PATH=./data/projects
 ## Development checks
 
 ```bash
+./scripts/check-version.sh
 npm run lint
 npm run build
 
@@ -122,6 +125,9 @@ python -m pip install -r backend/requirements.txt -r backend/requirements-dev.tx
 pytest -q backend/tests
 ruff check --no-cache backend/app backend/tests backend/scripts
 ```
+
+버전 증가 기준과 릴리즈 절차는 [docs/VERSIONING.md](docs/VERSIONING.md)를
+참조하세요.
 
 ## Documentation
 

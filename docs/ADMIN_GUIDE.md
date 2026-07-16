@@ -213,10 +213,11 @@ docker compose logs -f celery-worker --tail=50
 빌드 전용 스크립트와 소스 코드가 포함되지 않습니다.
 
 ```bash
-./scripts/build-release.sh v1.0.3
+./scripts/build-release.sh
 ```
 
-결과: `releases/aerial-survey-manager-v1.0.3.tar.gz`
+현재 `VERSION`이 `2.0.0-rc.1`이면 결과는
+`releases/aerial-survey-manager-v2.0.0-rc.1.tar.gz`입니다.
 
 검증:
 ```bash

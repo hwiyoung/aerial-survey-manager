@@ -96,7 +96,7 @@ gdal_translate \
 
 ```bash
 # 배포 패키지 생성 (개발 이미지에 영향 없음)
-./scripts/build-release.sh v1.0.3
+./scripts/build-release.sh
 ```
 
 빌드 스크립트가 자동으로:

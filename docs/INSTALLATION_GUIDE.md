@@ -140,11 +140,13 @@ curl http://127.0.0.1:18100/health
 동기화됩니다. 설치 대상 PC에서 별도 절대경로를 지정할 필요가 없습니다.
 
 ```bash
-scripts/build-release.sh vYYYYMMDD
+./scripts/build-release.sh
 ```
 
 이 명령은 소스 저장소가 있는 개발 PC에서만 사용합니다. 생성된 설치
-패키지에는 `build-release.sh`와 `check-release-parity.sh`를 포함하지 않습니다.
+패키지에는 `build-release.sh`, `check-release-parity.sh`,
+`check-version.sh`를 포함하지 않습니다. 버전은 저장소 루트의 `VERSION`
+파일을 사용합니다.
 
 릴리스를 만드는 저장소에도 원본 IO 파일을 `./data/io.csv`로 준비합니다.
 빌드 스크립트가 이를 배포패키지의 같은 상대경로에 포함합니다.

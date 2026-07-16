@@ -106,8 +106,8 @@ docker compose down
 
 # 3. 새 패키지 설치
 cd ~
-tar -xzf aerial-survey-manager-v1.1.0.tar.gz
-cd aerial-survey-manager-v1.1.0
+tar -xzf aerial-survey-manager-<version>.tar.gz
+cd aerial-survey-manager-<version>
 cp ~/env_backup .env
 ./load-images.sh
 
@@ -133,8 +133,8 @@ docker compose down -v
 
 # 3. 새 패키지 설치
 cd ~
-tar -xzf aerial-survey-manager-v1.1.0.tar.gz
-cd aerial-survey-manager-v1.1.0
+tar -xzf aerial-survey-manager-<version>.tar.gz
+cd aerial-survey-manager-<version>
 cp ~/env_backup .env
 echo 'COMPOSE_PROJECT_NAME=aerial_survey_manager' >> .env
 
