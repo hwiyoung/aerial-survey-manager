@@ -42,12 +42,10 @@ from app.auth.jwt import (
 from app.config import get_settings
 from app.services.eo_parser import EOParserService
 from app.services.quota import ensure_organization_quota
-from app.services.storage import get_storage
 from app.services.asset_tokens import build_project_asset_url
 from app.utils.geo import get_region_for_point_db
 from app.utils.audit import log_audit_event
 from app.utils.storage_paths import (
-    orthomosaic_project_prefix,
     processing_exclusion_path,
     processing_images_dir,
     processing_metadata_path,
@@ -151,43 +149,6 @@ async def _collect_project_image_paths(
         )
     )
     return [row[0] for row in image_result.fetchall()]
-
-
-def _cleanup_project_storage(project_id: UUID, original_paths: list[str], ortho_path: str | None = None) -> None:
-    """Delete project files from object storage."""
-    try:
-        storage = get_storage()
-
-        for path in original_paths:
-            # 절대 경로(로컬 임포트)는 외장하드/외부 파일이므로 삭제하지 않음
-            if os.path.isabs(path):
-                continue
-            try:
-                storage.delete_recursive(f"{path}/")
-                try:
-                    storage.delete_object(path)
-                except Exception:
-                    pass
-                storage.delete_recursive(f"{path}.info/")
-                try:
-                    storage.delete_object(f"{path}.info")
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"Failed to delete uploaded file {path}: {e}")
-
-        # Processing outputs are versioned per job. Delete the whole project
-        # prefix so project removal cannot leave historical COG files behind.
-        if ortho_path:
-            try:
-                storage.delete_object(ortho_path)
-            except Exception as e:
-                print(f"Failed to delete current orthomosaic {ortho_path}: {e}")
-        storage.delete_recursive(orthomosaic_project_prefix(project_id))
-
-        storage.delete_recursive(f"projects/{project_id}/")
-    except Exception as e:
-        print(f"Failed to delete MinIO project data for {project_id}: {e}")
 
 
 def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) -> ProjectResponse:
@@ -836,10 +797,22 @@ async def batch_projects(
 
             from app.workers.tasks import delete_project_data
             try:
-                delete_project_data.delay(str(project_id))
+                delete_project_data.delay(
+                    str(project_id),
+                    original_paths,
+                    ortho_path,
+                )
             except Exception as e:
                 print(f"Failed to queue delete task for {project_id}: {e}")
-            _cleanup_project_storage(project_id, original_paths, ortho_path)
+                from app.services.project_cleanup import cleanup_project_data
+
+                try:
+                    cleanup_project_data(project_id, original_paths, ortho_path)
+                except Exception as cleanup_error:
+                    print(
+                        f"Fallback cleanup failed for deleted project {project_id}: "
+                        f"{cleanup_error}"
+                    )
             log_audit_event(
                 "project_batch_deleted",
                 actor=current_user,

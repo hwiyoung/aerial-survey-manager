@@ -52,6 +52,23 @@ class ProcessingCancelled(Exception):
     """Raised when the worker notices that the DB job was cancelled."""
 
 
+def _is_processing_redelivery(
+    *,
+    job_status: str,
+    expected_task_id: str | None,
+    request_task_id: str | None,
+    delivery_info: dict | None,
+) -> bool:
+    """Return True only for Redis redelivery of the same interrupted job."""
+    return bool(
+        job_status == "processing"
+        and expected_task_id
+        and request_task_id
+        and expected_task_id == request_task_id
+        and (delivery_info or {}).get("redelivered")
+    )
+
+
 def _camera_pixel_size_to_mm(value) -> float | None:
     """Return camera pixel size in millimeters.
 
@@ -85,6 +102,8 @@ celery_app.conf.update(
     timezone="Asia/Seoul",
     enable_utc=True,
     task_track_started=True,
+    task_default_queue="celery",
+    result_expires=86400,
     # 기본 visibility_timeout(1시간)이 만료되면 Redis가 task를 재전달함.
     # 2000장 처리 시 24시간+, 여러 프로젝트 대기 시 합산 대기시간을 고려해 7일로 설정.
     broker_transport_options={"visibility_timeout": 604800},
@@ -98,7 +117,6 @@ celery_app.conf.update(
         "app.workers.tasks.generate_thumbnail": {"queue": "thumbnail"},
         "app.workers.tasks.regenerate_missing_thumbnails": {"queue": "thumbnail"},
         "app.workers.tasks.delete_project_data": {"queue": "celery"},
-        "app.workers.tasks.save_eo_metadata": {"queue": "celery"},
         "app.workers.tasks.delete_source_images": {"queue": "celery"},
         "app.workers.tasks.inject_external_cog": {"queue": "celery"},
         "app.workers.tasks.inspect_worker_gpu": {"queue": PROCESSING_ENGINE_QUEUE},
@@ -402,7 +420,12 @@ def _filter_excluded_processing_images(images, excluded_keys: set[str]):
 # Main processing task
 # ============================================================================
 
-@celery_app.task(bind=True, name="app.workers.tasks.process_orthophoto", acks_late=True)
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.process_orthophoto",
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
 def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     """
     Main orthophoto processing task.
@@ -437,14 +460,8 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
         if not job or not project:
             return {"status": "error", "message": "Job or project not found"}
 
-        if job.status != "queued":
-            print(
-                f"[process_orthophoto] Job {job_id} is {job.status}, "
-                "so this delivery cannot claim it."
-            )
-            return {"status": "skipped", "message": f"Job is {job.status}"}
-
         request_task_id = str(getattr(self.request, "id", "") or "")
+        delivery_info = getattr(self.request, "delivery_info", {}) or {}
         if job.celery_task_id and request_task_id and job.celery_task_id != request_task_id:
             print(
                 f"[process_orthophoto] Task ID mismatch for job {job_id}: "
@@ -452,16 +469,31 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             )
             return {"status": "skipped", "message": "Task ID does not own this job"}
 
+        is_redelivery = _is_processing_redelivery(
+            job_status=job.status,
+            expected_task_id=job.celery_task_id,
+            request_task_id=request_task_id,
+            delivery_info=delivery_info,
+        )
+        if job.status != "queued" and not is_redelivery:
+            print(
+                f"[process_orthophoto] Job {job_id} is {job.status}, "
+                "so this delivery cannot claim it."
+            )
+            return {"status": "skipped", "message": f"Job is {job.status}"}
+
+        if is_redelivery:
+            print(
+                f"[process_orthophoto] Reclaiming interrupted job {job_id} "
+                f"task_id={request_task_id}"
+            )
+
         try:
-            queue_name = "unknown"
-            try:
-                queue_name = self.request.delivery_info.get("routing_key", "unknown")
-            except Exception:
-                pass
+            queue_name = delivery_info.get("routing_key", "unknown")
 
             # Update status to processing
             job.status = "processing"
-            job.started_at = datetime.utcnow()
+            job.started_at = job.started_at or datetime.utcnow()
             project.status = "processing"
             db.commit()
 
@@ -1045,6 +1077,8 @@ def _generate_thumbnail_pil(source_path: str, dest_path: str, size: int = 256):
 @celery_app.task(
     bind=True,
     name="app.workers.tasks.generate_thumbnail",
+    acks_late=True,
+    reject_on_worker_lost=True,
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_backoff_max=300,
@@ -1166,82 +1200,35 @@ def regenerate_missing_thumbnails(self, project_id: str = None):
 @celery_app.task(
     bind=True,
     name="app.workers.tasks.delete_project_data",
+    acks_late=True,
+    reject_on_worker_lost=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=3,
 )
-def delete_project_data(self, project_id: str):
-    """프로젝트의 로컬 처리 데이터를 삭제합니다."""
-    import shutil
+def delete_project_data(
+    self,
+    project_id: str,
+    original_paths: list[str] | None = None,
+    ortho_path: str | None = None,
+):
+    """Delete all project-owned storage and local processing data."""
+    from app.services.project_cleanup import cleanup_project_data
 
-    local_path = project_root_dir(project_id)
-
-    if not local_path.exists():
-        print(f"ℹ 삭제할 데이터 없음: {local_path}")
-        return {"status": "not_found", "path": str(local_path)}
-
-    # Best-effort delete: tolerate broken symlinks / ENOENT inside the tree
-    # so a single bad file can't strand the whole project folder.
-    swallowed: list[str] = []
-
-    def _on_error(func, path, exc_info):
-        swallowed.append(f"{path}: {exc_info[1]}")
-
-    shutil.rmtree(local_path, onerror=_on_error)
-
-    if local_path.exists():
-        # Some entries survived; try a second sweep then report.
-        shutil.rmtree(local_path, ignore_errors=True)
-
-    if local_path.exists():
-        print(f"✗ 프로젝트 데이터 일부 잔존 {local_path}: {swallowed[:5]}")
-        return {
-            "status": "partial",
-            "path": str(local_path),
-            "errors": swallowed[:20],
-        }
-
-    if swallowed:
-        print(f"✓ 프로젝트 데이터 삭제 완료 (일부 항목 무시): {local_path} ({len(swallowed)} skipped)")
-    else:
-        print(f"✓ 프로젝트 데이터 삭제 완료: {local_path}")
-    return {
-        "status": "deleted",
-        "path": str(local_path),
-        "skipped": len(swallowed),
-    }
-
-
-@celery_app.task(
-    bind=True,
-    name="app.workers.tasks.save_eo_metadata",
-)
-def save_eo_metadata(self, project_id: str, reference_crs: str, reference_rows: list):
-    """EO 메타데이터를 로컬 파일로 저장합니다.
-
-    Args:
-        project_id: 프로젝트 UUID
-        reference_crs: 좌표계 (예: "EPSG:5186")
-        reference_rows: [(name, x, y, z, omega, phi, kappa), ...] 형식의 데이터
-    """
-    reference_path = processing_metadata_path(project_id)
-    reference_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        with open(reference_path, "w", encoding="utf-8") as f:
-            if reference_crs:
-                f.write(f"# CRS {reference_crs}\n")
-            for row in reference_rows:
-                name, x_val, y_val, z_val, omega, phi, kappa = row
-                f.write(f"{name} {x_val} {y_val} {z_val} {omega} {phi} {kappa}\n")
-
-        print(f"✓ EO 메타데이터 저장 완료: {reference_path} ({len(reference_rows)}개 항목)")
-        return {"status": "saved", "path": str(reference_path), "count": len(reference_rows)}
-    except Exception as e:
-        print(f"✗ EO 메타데이터 저장 실패: {e}")
-        return {"status": "error", "path": str(reference_path), "error": str(e)}
+    return cleanup_project_data(
+        project_id,
+        original_paths or [],
+        ortho_path,
+    )
 
 
 @celery_app.task(
     bind=True,
     name="app.workers.tasks.delete_source_images",
+    acks_late=True,
+    reject_on_worker_lost=True,
+    max_retries=3,
 )
 def delete_source_images(self, project_id: str):
     """프로젝트의 원본 이미지를 스토리지에서 삭제하고 DB를 업데이트합니다."""
@@ -1263,6 +1250,14 @@ def delete_source_images(self, project_id: str):
             objects = storage.list_objects(prefix=images_prefix, recursive=True)
             if objects:
                 storage.delete_recursive(images_prefix)
+                remaining_images = storage.list_objects(
+                    prefix=images_prefix,
+                    recursive=True,
+                )
+                if remaining_images:
+                    raise RuntimeError(
+                        f"원본 이미지 {len(remaining_images)}개가 삭제되지 않았습니다."
+                    )
                 deleted_count = len(objects)
                 print(f"✓ 원본 이미지 삭제: {deleted_count}개 ({images_prefix})")
             else:
@@ -1273,9 +1268,19 @@ def delete_source_images(self, project_id: str):
             thumb_objects = storage.list_objects(prefix=thumbnails_prefix, recursive=True)
             if thumb_objects:
                 storage.delete_recursive(thumbnails_prefix)
+                remaining_thumbnails = storage.list_objects(
+                    prefix=thumbnails_prefix,
+                    recursive=True,
+                )
+                if remaining_thumbnails:
+                    raise RuntimeError(
+                        f"썸네일 {len(remaining_thumbnails)}개가 삭제되지 않았습니다."
+                    )
                 print(f"✓ 썸네일 삭제: {len(thumb_objects)}개")
 
             freed_bytes = project.source_size or 0
+            project.source_deleted = True
+            db.commit()
             freed_gb = freed_bytes / (1024 * 1024 * 1024)
             print(f"✅ 프로젝트 {project_id} 원본 이미지 삭제 완료 ({freed_gb:.2f} GB 확보)")
 
@@ -1287,11 +1292,19 @@ def delete_source_images(self, project_id: str):
             }
 
         except Exception as e:
-            # Revert source_deleted flag on failure (API set it optimistically)
+            if self.request.retries < self.max_retries:
+                countdown = min(60 * (2 ** self.request.retries), 300)
+                print(
+                    f"원본 이미지 삭제 재시도 예약: project={project_id} "
+                    f"retry={self.request.retries + 1}/{self.max_retries} "
+                    f"countdown={countdown}s error={e}"
+                )
+                raise self.retry(exc=e, countdown=countdown)
+
             project.source_deleted = False
             db.commit()
-            print(f"✗ 원본 이미지 삭제 실패 (source_deleted 복원): {e}")
-            return {"status": "error", "message": str(e)}
+            print(f"✗ 원본 이미지 삭제 최종 실패 (source_deleted 복원): {e}")
+            raise
 
 
 @celery_app.task(
