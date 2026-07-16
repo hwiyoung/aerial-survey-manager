@@ -560,7 +560,7 @@ function Dashboard() {
       .catch(err => {
         console.warn('Failed to fetch upload status from backend:', err);
       });
-  }, [viewMode, processingProject, selectedProjectId, projects, uploadsByProject, uploaderControllers]);
+  }, [viewMode, processingProject, selectedProjectId, projects, uploadsByProject, uploaderControllers, fetchImages]);
 
 
 

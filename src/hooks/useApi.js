@@ -1,7 +1,7 @@
 /**
  * Custom hooks for API data fetching
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api/client';
 
 /**
@@ -12,6 +12,7 @@ export function useProjects(options = {}) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [pagination, setPagination] = useState({ total: 0, page: 1, pageSize: 20 });
+    const initialOptionsRef = useRef(options);
 
     const fetchProjects = useCallback(async (params = {}) => {
         setLoading(true);
@@ -118,8 +119,8 @@ export function useProjects(options = {}) {
     }, []);
 
     useEffect(() => {
-        fetchProjects(options);
-    }, []);
+        fetchProjects(initialOptionsRef.current);
+    }, [fetchProjects]);
 
     return {
         projects,

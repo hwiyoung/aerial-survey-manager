@@ -17,11 +17,16 @@ export function useProcessingProgress(projectId) {
 
     const wsRef = useRef(null);
     const pingIntervalRef = useRef(null);
+    const statusRef = useRef(status);
+    const updateStatus = useCallback((nextStatus) => {
+        statusRef.current = nextStatus;
+        setStatus(nextStatus);
+    }, []);
 
     useEffect(() => {
         if (!projectId) {
             setProgress(0);
-            setStatus('idle');
+            updateStatus('idle');
             setMessage('');
             setIsConnected(false);
             return;
@@ -39,17 +44,17 @@ export function useProcessingProgress(projectId) {
                 }
                 if (data.status) {
                     if (data.status === 'completed') {
-                        setStatus('complete');
+                        updateStatus('complete');
                         setProgress(100);
                     } else if (data.status === 'cancelled') {
-                        setStatus('cancelled');
+                        updateStatus('cancelled');
                         setProgress(0);
                     } else if (data.status === 'error' || data.status === 'failed') {
-                        setStatus('error');
+                        updateStatus('error');
                     } else if (data.status === 'queued') {
-                        setStatus('queued');
+                        updateStatus('queued');
                     } else if (data.status === 'processing' || data.status === 'running') {
-                        setStatus('processing');
+                        updateStatus('processing');
                     }
                 }
             } catch (e) {
@@ -64,7 +69,7 @@ export function useProcessingProgress(projectId) {
         const token = localStorage.getItem('access_token');
         const wsUrl = `${protocol}//${host}/api/v1/processing/ws/projects/${projectId}/status${token ? `?token=${token}` : ''}`;
 
-        setStatus('connecting');
+        updateStatus('connecting');
 
         try {
             const ws = new WebSocket(wsUrl);
@@ -98,17 +103,17 @@ export function useProcessingProgress(projectId) {
 
                     if (data.status) {
                         if (data.status === 'completed') {
-                            setStatus('complete');
+                            updateStatus('complete');
                             setProgress(100);
                         } else if (data.status === 'cancelled') {
-                            setStatus('cancelled');
+                            updateStatus('cancelled');
                             setProgress(0);
                         } else if (data.status === 'error' || data.status === 'failed') {
-                            setStatus('error');
+                            updateStatus('error');
                         } else if (data.status === 'queued') {
-                            setStatus('queued');
+                            updateStatus('queued');
                         } else if (data.status === 'processing' || data.status === 'running') {
-                            setStatus('processing');
+                            updateStatus('processing');
                         }
                         // 'scheduled', 'pending' 등은 무시 (idle 유지)
                     }
@@ -125,20 +130,21 @@ export function useProcessingProgress(projectId) {
 
             ws.onerror = (error) => {
                 console.error('[WS] WebSocket error:', error);
-                setStatus('error');
+                updateStatus('error');
                 setIsConnected(false);
             };
 
             ws.onclose = (event) => {
                 console.log('[WS] Disconnected:', event.code, event.reason);
                 setIsConnected(false);
-                if (status !== 'complete' && status !== 'error') {
-                    setStatus('idle');
+                if (cancelled) return;
+                if (statusRef.current !== 'complete' && statusRef.current !== 'error') {
+                    updateStatus('idle');
                 }
             };
         } catch (error) {
             console.error('[WS] Failed to create WebSocket:', error);
-            setStatus('error');
+            updateStatus('error');
         }
 
         // Cleanup on unmount or projectId change
@@ -153,16 +159,16 @@ export function useProcessingProgress(projectId) {
                 wsRef.current = null;
             }
         };
-    }, [projectId, reconnectKey]);
+    }, [projectId, reconnectKey, updateStatus]);
 
     // Manual reconnect function
     const reconnect = useCallback(() => {
         if (wsRef.current) {
             wsRef.current.close();
         }
-        setStatus('connecting');
+        updateStatus('connecting');
         setReconnectKey(prev => prev + 1);
-    }, []);
+    }, [updateStatus]);
 
     return {
         progress,

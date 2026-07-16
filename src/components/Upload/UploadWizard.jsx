@@ -707,8 +707,8 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
             api.getCameraModels().then(models => {
                 setCameraModels(models);
                 // Set default to first camera model if not already set
-                if (models.length > 0 && !cameraModel) {
-                    setCameraModel(models[0].name);
+                if (models.length > 0) {
+                    setCameraModel(current => current || models[0].name);
                 }
             }).catch(console.error);
         }

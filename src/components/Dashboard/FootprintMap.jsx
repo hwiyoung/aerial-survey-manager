@@ -212,7 +212,7 @@ export function TiTilerOrthoLayer({
                 layerRef.current = null;
             }
         };
-    }, [map, projectId, visible, projectBounds]);
+    }, [map, projectId, visible, projectBounds, onLoadComplete, onLoadError]);
 
     // Fit to bounds when available
     useEffect(() => {
@@ -963,12 +963,13 @@ export function FootprintMap({
     const selectedCogProject = (activeProjectId && activeProjectId !== cogDismissedProjectId)
         ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
+    const selectedCogProjectId = selectedCogProject?.id || null;
 
     // Stabilize bounds reference to prevent TiTilerOrthoLayer useEffect re-fires
     // on every periodic refresh (projects re-fetch → footprints recompute → new bounds array)
     const cogBoundsKey = selectedCogProject ? JSON.stringify(selectedCogProject.bounds) : null;
     const stableCogBounds = useMemo(
-        () => selectedCogProject?.bounds || null,
+        () => cogBoundsKey ? JSON.parse(cogBoundsKey) : null,
         [cogBoundsKey]
     );
 
@@ -981,14 +982,14 @@ export function FootprintMap({
 
     // Reset COG status when selected project changes
     useEffect(() => {
-        if (selectedCogProject) {
+        if (selectedCogProjectId) {
             setCogLoadStatus('loading');
             setCogError(null);
         } else {
             setCogLoadStatus(null);
             setCogError(null);
         }
-    }, [selectedCogProject?.id]);
+    }, [selectedCogProjectId]);
 
     // Reset COG dismissal when the active project changes
     useEffect(() => {

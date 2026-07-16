@@ -192,7 +192,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
         } else {
             setIsLoading(false);
         }
-    }, [project?.id, project?.ortho_path]);
+    }, [project?.id, project?.ortho_path, project?.status]);
 
     const processingExcludedImageKeys = useMemo(
         () => getProcessingExcludedImageKeys(processingEvents),

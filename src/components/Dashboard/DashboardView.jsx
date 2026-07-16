@@ -326,6 +326,9 @@ export default function DashboardView({
     const [regionalData, setRegionalData] = useState([]);
     const [storageStats, setStorageStats] = useState(null);
     const [statsLoading, setStatsLoading] = useState(true);
+    const statsRefreshKey = projects
+        .map(project => `${project.id}:${project.status}:${project.source_deleted}`)
+        .join(',');
 
     // Track source_deleted count for delayed storage refresh
     const sourceDeletedCount = useMemo(() => projects.filter(p => p.source_deleted).length, [projects]);
@@ -398,7 +401,7 @@ export default function DashboardView({
         };
 
         fetchStats();
-    }, [projects.length, projects.map(p => `${p.status}:${p.source_deleted}`).join(',')]); // Refetch when projects count, status, or source_deleted changes
+    }, [statsRefreshKey]); // Refetch when projects, status, or source_deleted changes
 
     // Observe container width changes
     useEffect(() => {
