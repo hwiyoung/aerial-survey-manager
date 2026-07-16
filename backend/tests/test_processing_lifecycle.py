@@ -110,7 +110,7 @@ class ProcessingLifecycleTests(unittest.TestCase):
             output_format="GeoTiff",
             process_mode="Normal",
             processing_options={
-                "engine": "odm",
+                "engine": "legacy-engine",
                 "gsd": 99,
                 "build_point_cloud": True,
             },
