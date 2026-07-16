@@ -15,7 +15,7 @@ from sqlalchemy import select, func, delete, extract, or_
 from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
-from app.models.user import User, ProjectPermission
+from app.models.user import User
 from app.models.project import Project, Image, ExteriorOrientation, ProcessingJob
 from app.models.group import ProjectGroup
 from app.schemas.project import (
@@ -37,10 +37,7 @@ from app.schemas.project import (
 from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
-    get_current_active_manager,
     get_current_user,
-    is_admin_role,
-    resolve_project_permission,
 )
 from app.config import get_settings
 from app.services.eo_parser import EOParserService
@@ -127,12 +124,10 @@ async def _get_assignable_group(
     current_user: User,
     db: AsyncSession,
 ) -> ProjectGroup | None:
-    query = select(ProjectGroup).where(ProjectGroup.id == group_id)
-    if not is_admin_role(current_user.role):
-        query = query.where(
-            ProjectGroup.owner_id == current_user.id,
-            ProjectGroup.organization_id == current_user.organization_id,
-        )
+    query = select(ProjectGroup).where(
+        ProjectGroup.id == group_id,
+        ProjectGroup.organization_id == current_user.organization_id,
+    )
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
@@ -140,46 +135,6 @@ async def _get_assignable_group(
 def _apply_project_access_scope(query, current_user: User):
     """Apply organization-first access scope for non-admin users."""
     return apply_project_access_scope(query, current_user)
-
-
-def _resolve_project_permission(
-    project: Project,
-    current_user: User,
-    explicit_permission: Optional[str] = None,
-) -> Optional[str]:
-    """Resolve effective permission for current user on a project."""
-    return resolve_project_permission(project, current_user, explicit_permission)
-
-
-def _build_project_access_fields(
-    project: Project,
-    current_user: User,
-    explicit_permission: Optional[str] = None,
-) -> dict:
-    permission = _resolve_project_permission(project, current_user, explicit_permission)
-    return {
-        "current_user_permission": permission,
-        "can_edit": permission in {"edit", "admin"},
-        "can_delete": permission == "admin",
-    }
-
-
-async def _get_explicit_permission_map(
-    db: AsyncSession,
-    current_user: User,
-    project_ids: list[UUID],
-) -> dict[UUID, str]:
-    if is_admin_role(current_user.role) or not project_ids:
-        return {}
-
-    unique_project_ids = list(dict.fromkeys(project_ids))
-    result = await db.execute(
-        select(ProjectPermission.project_id, ProjectPermission.permission).where(
-            ProjectPermission.user_id == current_user.id,
-            ProjectPermission.project_id.in_(unique_project_ids),
-        )
-    )
-    return {project_id: permission for project_id, permission in result.all()}
 
 
 async def _collect_project_image_paths(
@@ -552,11 +507,6 @@ async def list_projects(
     projects = [row[0] for row in rows]
     project_ids = [project.id for project in projects]
 
-    explicit_permission_map = await _get_explicit_permission_map(
-        db,
-        current_user,
-        project_ids,
-    )
     image_counts_map = await _get_project_image_counts_map(db, project_ids)
     display_job_map, latest_any_job_map, job_by_id = await _get_project_job_maps(db, project_ids)
     active_job_map = await _apply_active_project_overrides(
@@ -583,11 +533,6 @@ async def list_projects(
             upload_excluded_count=image_counts["upload_excluded_count"],
             upload_in_progress=image_counts["upload_uploading_count"] > 0,
             **job_fields,
-            **_build_project_access_fields(
-                project,
-                current_user,
-                explicit_permission_map.get(project.id),
-            ),
         )
         project_responses.append(response)
     
@@ -602,7 +547,7 @@ async def list_projects(
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     data: ProjectCreate,
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new project."""
@@ -649,10 +594,7 @@ async def create_project(
         },
     )
     
-    return _build_project_response(
-        project,
-        **_build_project_access_fields(project, current_user),
-    )
+    return _build_project_response(project)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -693,12 +635,6 @@ async def get_project(
     project = row[0]
     bounds_wkt = row[1]
 
-    explicit_permission_map = await _get_explicit_permission_map(
-        db,
-        current_user,
-        [project.id],
-    )
-
     image_counts = await _get_project_image_counts(db, project.id)
     active_tasks = get_active_processing_tasks()
     display_job_map, latest_any_job_map, job_by_id = await _get_project_job_maps(db, [project.id])
@@ -719,11 +655,6 @@ async def get_project(
         upload_excluded_count=image_counts["upload_excluded_count"],
         upload_in_progress=image_counts["upload_uploading_count"] > 0,
         **job_fields,
-        **_build_project_access_fields(
-            project,
-            current_user,
-            explicit_permission_map.get(project.id),
-        ),
     )
 
 
@@ -778,12 +709,6 @@ async def update_project(
     project = row[0]
     bounds_wkt = row[1]
 
-    explicit_permission_map = await _get_explicit_permission_map(
-        db,
-        current_user,
-        [project.id],
-    )
-    
     image_counts = await _get_project_image_counts(db, project.id)
 
     # Get latest COMPLETED processing job for result_gsd and process_mode
@@ -840,11 +765,6 @@ async def update_project(
         result_gsd=result_gsd, process_mode=process_mode,
         processing_started_at=processing_started_at,
         processing_completed_at=processing_completed_at,
-        **_build_project_access_fields(
-            project,
-            current_user,
-            explicit_permission_map.get(project.id),
-        ),
     )
 
 

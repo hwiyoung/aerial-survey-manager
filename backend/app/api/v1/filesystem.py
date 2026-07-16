@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.models.user import User
-from app.auth.jwt import get_current_active_manager
+from app.auth.jwt import get_current_user
 
 router = APIRouter(prefix="/filesystem", tags=["Filesystem"])
 
@@ -147,7 +147,7 @@ class RootsResponse(BaseModel):
 
 @router.get("/roots", response_model=RootsResponse)
 async def get_filesystem_roots(
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
 ):
     """List mounted devices/volumes available for browsing."""
     roots = []
@@ -194,7 +194,7 @@ async def get_filesystem_roots(
 async def browse_filesystem(
     path: str = Query("/", description="Absolute directory path to browse"),
     file_types: str = Query("images", description="File type preset: 'images' or 'eo'"),
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
 ):
     """Browse the server filesystem and return directory contents.
 
@@ -304,7 +304,7 @@ MAX_READ_TEXT_SIZE = 10 * 1024 * 1024
 @router.get("/read-text", response_model=ReadTextResponse)
 async def read_text_file(
     path: str = Query(..., description="Absolute path to a text file"),
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
 ):
     """Read the contents of a text file on the server.
 

@@ -22,8 +22,8 @@ ORG_B = UUID("22222222-2222-2222-2222-222222222222")
 CAMERA_ID = UUID("33333333-3333-3333-3333-333333333333")
 
 
-def _user(*, organization_id=None, role="user"):
-    return SimpleNamespace(organization_id=organization_id, role=role)
+def _user(*, organization_id=None):
+    return SimpleNamespace(organization_id=organization_id)
 
 
 def _camera(*, organization_id=None, is_custom=False):
@@ -58,10 +58,6 @@ class CameraModelScopeTests(unittest.TestCase):
         self.assertIn("camera_models.is_custom IS false", sql)
         self.assertNotIn("camera_models.is_custom IS true", sql)
 
-    def test_admin_scope_is_unfiltered(self):
-        sql = self._compile(_user(role="admin"))
-        self.assertNotIn("WHERE", sql)
-
     def test_only_same_org_custom_models_are_user_managed(self):
         user = _user(organization_id=ORG_A)
 
@@ -89,15 +85,6 @@ class CameraModelScopeTests(unittest.TestCase):
                 _user(),
             )
         )
-
-    def test_admin_can_manage_any_camera_model(self):
-        self.assertTrue(
-            can_manage_camera_model(
-                _camera(organization_id=ORG_B, is_custom=True),
-                _user(role="admin"),
-            )
-        )
-
 
 class CameraModelContractTests(unittest.TestCase):
     def test_names_are_trimmed_and_empty_names_are_rejected(self):

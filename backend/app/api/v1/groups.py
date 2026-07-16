@@ -16,7 +16,7 @@ from app.schemas.group import (
     GroupTreeNode,
     GroupUpdate,
 )
-from app.auth.jwt import get_current_active_manager, get_current_user, is_admin_role
+from app.auth.jwt import get_current_user
 from app.utils.audit import log_audit_event
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -47,11 +47,13 @@ def build_tree(groups: List[ProjectGroup], parent_id: Optional[UUID] = None) -> 
 
 
 def _apply_group_scope(query, current_user: User):
-    if is_admin_role(current_user.role):
-        return query
-
+    """All groups are shared inside the authenticated account's organization."""
+    if current_user.organization_id is not None:
+        return query.where(
+            ProjectGroup.organization_id == current_user.organization_id,
+        )
     return query.where(
-        ProjectGroup.organization_id == current_user.organization_id,
+        ProjectGroup.organization_id.is_(None),
         ProjectGroup.owner_id == current_user.id,
     )
 
@@ -106,13 +108,12 @@ async def list_groups(
 async def create_group(
     group_data: GroupCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
 ):
     """Create a new project group."""
     if group_data.parent_id:
         parent_query = select(ProjectGroup).where(
             ProjectGroup.id == group_data.parent_id,
-            ProjectGroup.owner_id == current_user.id,
             ProjectGroup.organization_id == current_user.organization_id,
         )
         parent_result = await db.execute(parent_query)
@@ -201,7 +202,7 @@ async def update_group(
     group_id: UUID,
     group_data: GroupUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a group."""
     group = await _get_scoped_group(group_id, current_user, db)
@@ -222,7 +223,6 @@ async def update_group(
     if group_data.parent_id:
         parent_query = select(ProjectGroup).where(
             ProjectGroup.id == group_data.parent_id,
-            ProjectGroup.owner_id == current_user.id,
             ProjectGroup.organization_id == current_user.organization_id,
         )
         parent_result = await db.execute(parent_query)
@@ -273,7 +273,7 @@ async def update_group(
 async def delete_group(
     group_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
 ):
     """Delete a group while preserving its projects."""
     group = await _get_scoped_group(group_id, current_user, db)

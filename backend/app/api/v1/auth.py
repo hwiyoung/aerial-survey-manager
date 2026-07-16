@@ -5,10 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
-from app.models.user import Organization, User
+from app.models.user import User
 from app.schemas.user import (
     LoginRequest,
-    RegisterRequest,
     TokenResponse,
     TokenRefreshRequest,
     UserResponse,
@@ -62,7 +61,7 @@ async def login(
     user.last_login = datetime.utcnow()
     
     # Create tokens
-    access_token = create_access_token(str(user.id), user.role)
+    access_token = create_access_token(str(user.id))
     refresh_token = create_refresh_token(str(user.id))
     
     return TokenResponse(
@@ -92,7 +91,7 @@ async def refresh_token(
         )
     
     # Create new tokens
-    access_token = create_access_token(str(user.id), user.role)
+    access_token = create_access_token(str(user.id))
     refresh_token = create_refresh_token(str(user.id))
     
     return TokenResponse(

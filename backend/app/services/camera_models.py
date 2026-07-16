@@ -6,7 +6,6 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.jwt import is_admin_role
 from app.models.project import CameraModel
 from app.models.user import User
 
@@ -21,9 +20,6 @@ def normalize_camera_model_name(name: str) -> str:
 
 def apply_camera_model_access_scope(query, user: User):
     """Limit camera models to public standards and the user's organization."""
-    if is_admin_role(user.role):
-        return query
-
     public_standard = and_(
         CameraModel.organization_id.is_(None),
         CameraModel.is_custom.is_(False),
@@ -52,8 +48,6 @@ async def resolve_accessible_camera_model(
 
 def can_manage_camera_model(camera_model: CameraModel, user: User) -> bool:
     """Return whether a user may update or delete the model."""
-    if is_admin_role(user.role):
-        return True
     return bool(
         user.organization_id is not None
         and camera_model.is_custom

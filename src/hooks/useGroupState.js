@@ -6,10 +6,9 @@ import api from '../api/client';
  *
  * @param {Object} params
  * @param {Function} params.refreshProjects - Callback to refresh project list after group changes
- * @param {Function} params.canEditProjectById - Permission check for project moves
  * @returns Group state and handler functions
  */
-export function useGroupState({ refreshProjects, canEditProjectById }) {
+export function useGroupState({ refreshProjects }) {
     const [groups, setGroups] = useState([]);
     const [expandedGroupIds, setExpandedGroupIds] = useState(new Set());
     const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
@@ -56,18 +55,13 @@ export function useGroupState({ refreshProjects, canEditProjectById }) {
     }, [refreshProjects]);
 
     const handleMoveProjectToGroup = useCallback(async (projectId, groupId) => {
-        if (!canEditProjectById(projectId)) {
-            alert('프로젝트 이동 권한이 없습니다.');
-            return;
-        }
-
         try {
             await api.moveProjectToGroup(projectId, groupId);
             refreshProjects();
         } catch (err) {
             console.error('Failed to move project:', err);
         }
-    }, [canEditProjectById, refreshProjects]);
+    }, [refreshProjects]);
 
     const toggleGroupExpand = useCallback((groupId) => {
         setExpandedGroupIds(prev => {

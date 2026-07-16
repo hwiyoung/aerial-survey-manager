@@ -20,7 +20,6 @@ from app.schemas.project import ImageResponse
 from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
-    get_current_active_manager,
     get_current_user,
 )
 from app.config import get_settings
@@ -272,7 +271,7 @@ class LocalImportResponse(BaseModel):
 async def local_import(
     project_id: UUID,
     request: LocalImportRequest,
-    current_user: User = Depends(get_current_active_manager),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """

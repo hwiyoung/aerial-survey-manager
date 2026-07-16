@@ -122,21 +122,6 @@ class ApiClient {
         return data;
     }
 
-    async register(email, password, name) {
-        const response = await fetch(`${API_BASE}/api/v1/auth/register`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password, name }),
-        });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Registration failed');
-        }
-
-        return response.json();
-    }
-
     async logout() {
         try {
             await this.request('/auth/logout', { method: 'POST' });
@@ -147,97 +132,6 @@ class ApiClient {
 
     async getCurrentUser() {
         return this.request('/auth/me');
-    }
-
-    // --- User & Organization Management (Admin) ---
-    async getUsers(params = {}) {
-        const query = new URLSearchParams(params).toString();
-        return this.request(`/users${query ? `?${query}` : ''}`);
-    }
-
-    async createUser(data) {
-        return this.request('/users', {
-            method: 'POST',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async inviteUser(data) {
-        return this.request('/users/invite', {
-            method: 'POST',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async transferUser(userId, data) {
-        return this.request(`/users/${userId}/transfer`, {
-            method: 'POST',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async updateUser(userId, data) {
-        return this.request(`/users/${userId}`, {
-            method: 'PATCH',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async deactivateUser(userId) {
-        return this.request(`/users/${userId}`, {
-            method: 'DELETE',
-        });
-    }
-
-    async deleteUser(userId) {
-        return this.request(`/users/${userId}/permanent`, {
-            method: 'DELETE',
-        });
-    }
-
-    async getOrganizations() {
-        return this.request('/organizations');
-    }
-
-    async createOrganization(data) {
-        return this.request('/organizations', {
-            method: 'POST',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async updateOrganization(organizationId, data) {
-        return this.request(`/organizations/${organizationId}`, {
-            method: 'PATCH',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async deleteOrganization(organizationId, force = false) {
-        return this.request(`/organizations/${organizationId}?force=${force ? 'true' : 'false'}`, {
-            method: 'DELETE',
-        });
-    }
-
-    async getPermissionCatalog() {
-        return this.request('/permissions/roles');
-    }
-
-    async getProjectPermissions(projectId) {
-        return this.request(`/permissions/projects/${projectId}`);
-    }
-
-    async setProjectPermission(projectId, userId, data) {
-        return this.request(`/permissions/projects/${projectId}/users/${userId}`, {
-            method: 'PUT',
-            body: JSON.stringify(data),
-        });
-    }
-
-    async removeProjectPermission(projectId, userId) {
-        return this.request(`/permissions/projects/${projectId}/users/${userId}`, {
-            method: 'DELETE',
-        });
     }
 
     // --- Projects ---

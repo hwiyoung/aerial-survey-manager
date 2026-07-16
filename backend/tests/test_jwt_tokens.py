@@ -25,11 +25,11 @@ class JwtTokenTests(unittest.TestCase):
         self.assertFalse(verify_password(password, "not-a-bcrypt-hash"))
 
     def test_access_token_round_trip(self):
-        token = create_access_token("user-123", "manager")
+        token = create_access_token("user-123")
         payload = verify_token(token, "access")
 
         self.assertEqual(payload["sub"], "user-123")
-        self.assertEqual(payload["role"], "manager")
+        self.assertNotIn("role", payload)
         self.assertEqual(payload["type"], "access")
 
     def test_refresh_token_type_is_enforced(self):
@@ -40,7 +40,6 @@ class JwtTokenTests(unittest.TestCase):
     def test_expired_token_is_rejected(self):
         token = create_access_token(
             "user-123",
-            "user",
             expires_delta=timedelta(seconds=-1),
         )
         with self.assertRaises(HTTPException):

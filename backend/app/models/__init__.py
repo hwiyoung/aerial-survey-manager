@@ -1,5 +1,5 @@
 """Model exports."""
-from app.models.user import User, Organization, ProjectPermission
+from app.models.user import User, Organization
 from app.models.project import (
     Project,
     Image,
@@ -15,7 +15,6 @@ from app.models.region import Region
 __all__ = [
     "User",
     "Organization",
-    "ProjectPermission",
     "Project",
     "Image",
     "ExteriorOrientation",

@@ -45,7 +45,7 @@ def _project(*, owner_id: str, organization_id=None):
 
 
 class ProjectAccessScopeTests(unittest.TestCase):
-    def test_unorganized_user_scope_requires_ownership_or_explicit_share(self):
+    def test_unorganized_account_scope_requires_ownership(self):
         user = _user(user_id="11111111-1111-1111-1111-111111111111")
         query = apply_project_access_scope(select(Project), user)
         sql = str(
@@ -57,43 +57,57 @@ class ProjectAccessScopeTests(unittest.TestCase):
 
         self.assertIn("projects.organization_id IS NULL", sql)
         self.assertIn("projects.owner_id =", sql)
-        self.assertIn("project_permissions.user_id =", sql)
+        self.assertNotIn("project_permissions", sql)
 
-    def test_null_organizations_do_not_imply_shared_view_permission(self):
+    def test_same_organization_has_full_project_access(self):
+        user = _user(
+            user_id="11111111-1111-1111-1111-111111111111",
+            organization_id=UUID("33333333-3333-3333-3333-333333333333"),
+        )
+        project = _project(
+            owner_id="22222222-2222-2222-2222-222222222222",
+            organization_id=UUID("33333333-3333-3333-3333-333333333333"),
+        )
+
+        self.assertEqual(resolve_project_permission(project, user), "admin")
+
+    def test_null_organizations_do_not_imply_shared_access(self):
         user = _user(user_id="11111111-1111-1111-1111-111111111111")
         project = _project(owner_id="22222222-2222-2222-2222-222222222222")
 
         self.assertIsNone(resolve_project_permission(project, user))
-        self.assertEqual(
-            resolve_project_permission(project, user, "view"),
-            "view",
-        )
 
 
 class PermissionCheckerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_unorganized_user_cannot_view_unshared_project(self):
+    async def test_unorganized_account_cannot_edit_unowned_project(self):
         user = _user(user_id="11111111-1111-1111-1111-111111111111")
         project = _project(owner_id="22222222-2222-2222-2222-222222222222")
-        checker = PermissionChecker("view")
+        checker = PermissionChecker("edit")
 
         allowed = await checker.check(
             "33333333-3333-3333-3333-333333333333",
             user,
-            _SequenceDb(project, None),
+            _SequenceDb(project),
         )
 
         self.assertFalse(allowed)
 
-    async def test_unorganized_user_can_view_explicitly_shared_project(self):
-        user = _user(user_id="11111111-1111-1111-1111-111111111111")
-        project = _project(owner_id="22222222-2222-2222-2222-222222222222")
-        permission = SimpleNamespace(permission="view")
-        checker = PermissionChecker("view")
+    async def test_same_organization_can_delete_project(self):
+        organization_id = UUID("33333333-3333-3333-3333-333333333333")
+        user = _user(
+            user_id="11111111-1111-1111-1111-111111111111",
+            organization_id=organization_id,
+        )
+        project = _project(
+            owner_id="22222222-2222-2222-2222-222222222222",
+            organization_id=organization_id,
+        )
+        checker = PermissionChecker("admin")
 
         allowed = await checker.check(
             "33333333-3333-3333-3333-333333333333",
             user,
-            _SequenceDb(project, permission),
+            _SequenceDb(project),
         )
 
         self.assertTrue(allowed)

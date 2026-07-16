@@ -3,8 +3,8 @@ import unittest
 
 from fastapi.routing import APIRoute
 
-from app.api.v1 import filesystem, projects, upload
-from app.auth.jwt import get_current_active_manager, get_current_user
+from app.api.v1 import filesystem, projects, router as api_router, upload
+from app.auth.jwt import get_current_user
 
 
 def _route_dependency_calls(router, path: str, method: str):
@@ -19,25 +19,34 @@ def _route_dependency_calls(router, path: str, method: str):
 
 
 class RoutePermissionContractTests(unittest.TestCase):
-    def assert_manager_only(self, router, path: str, method: str):
+    def assert_authenticated(self, router, path: str, method: str):
         dependency_calls = _route_dependency_calls(router, path, method)
-        self.assertIn(get_current_active_manager, dependency_calls)
-        self.assertNotIn(get_current_user, dependency_calls)
+        self.assertIn(get_current_user, dependency_calls)
 
-    def test_project_creation_requires_manager_role(self):
-        self.assert_manager_only(projects.router, "/projects", "POST")
+    def test_project_creation_requires_only_the_authenticated_account(self):
+        self.assert_authenticated(projects.router, "/projects", "POST")
 
-    def test_server_filesystem_access_requires_manager_role(self):
-        self.assert_manager_only(filesystem.router, "/filesystem/roots", "GET")
-        self.assert_manager_only(filesystem.router, "/filesystem/browse", "GET")
-        self.assert_manager_only(filesystem.router, "/filesystem/read-text", "GET")
+    def test_server_filesystem_access_uses_the_authenticated_account(self):
+        self.assert_authenticated(filesystem.router, "/filesystem/roots", "GET")
+        self.assert_authenticated(filesystem.router, "/filesystem/browse", "GET")
+        self.assert_authenticated(filesystem.router, "/filesystem/read-text", "GET")
 
-    def test_server_local_import_requires_manager_role(self):
-        self.assert_manager_only(
+    def test_server_local_import_uses_the_authenticated_account(self):
+        self.assert_authenticated(
             upload.router,
             "/upload/projects/{project_id}/local-import",
             "POST",
         )
+
+    def test_multi_account_management_routes_are_not_mounted(self):
+        mounted_paths = {
+            route.path
+            for route in api_router.routes
+            if isinstance(route, APIRoute)
+        }
+        self.assertFalse(any(path.startswith("/users") for path in mounted_paths))
+        self.assertFalse(any(path.startswith("/organizations") for path in mounted_paths))
+        self.assertFalse(any(path.startswith("/permissions") for path in mounted_paths))
 
     def test_multipart_completion_isolates_each_file_with_a_savepoint(self):
         completion_source = inspect.getsource(upload.complete_multipart_upload)

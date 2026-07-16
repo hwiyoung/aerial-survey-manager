@@ -654,7 +654,7 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
 }
 
 export default function UploadWizard({ isOpen, onClose, onComplete }) {
-    const { isAdmin, organizationId } = useAuth();
+    const { organizationId } = useAuth();
     const [step, setStep] = useState(1);
     const [imageCount, setImageCount] = useState(0);
     const [eoFileName, setEoFileName] = useState(null);
@@ -688,14 +688,9 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
 
     const canManageSelectedCamera = Boolean(
         selectedCamera?.id
-        && (
-            isAdmin
-            || (
-                selectedCamera.is_custom
-                && organizationId
-                && selectedCamera.organization_id === organizationId
-            )
-        )
+        && selectedCamera.is_custom
+        && organizationId
+        && selectedCamera.organization_id === organizationId
     );
     const canCreateCamera = Boolean(organizationId);
 

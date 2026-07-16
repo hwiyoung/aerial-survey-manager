@@ -59,11 +59,6 @@ class ProjectResponse(ProjectBase):
     # 처리 시간 정보
     processing_started_at: Optional[datetime] = None
     processing_completed_at: Optional[datetime] = None
-    # 현재 사용자 기준 권한(유효 권한)
-    current_user_permission: Optional[str] = None  # view | edit | admin
-    can_edit: bool = False
-    can_delete: bool = False
-
 class ProjectListResponse(BaseModel):
     """Paginated project list response."""
     items: List[ProjectResponse]

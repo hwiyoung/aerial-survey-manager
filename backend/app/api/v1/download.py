@@ -22,7 +22,6 @@ from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
     get_current_user,
-    is_admin_role,
     verify_token,
 )
 from app.services.storage import get_storage
@@ -78,7 +77,7 @@ async def _validate_download_token_access(
     """Validate optional bearer token against download token scope.
 
     - If token has user_id, authenticated user must match same user.
-    - If token has organization_id, authenticated non-admin user must be in same org.
+    - If token has organization_id, authenticated user must be in the same org.
     - If no Authorization header is provided, download remains allowed for public one-time links.
     """
     token_user_id = token_payload.get("user_id")
@@ -116,7 +115,7 @@ async def _validate_download_token_access(
         )
 
     # Enforce org boundary when token is scoped to organization.
-    if token_org_id and not is_admin_role(current_user.role):
+    if token_org_id:
         if not current_user.organization_id or str(current_user.organization_id) != str(token_org_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

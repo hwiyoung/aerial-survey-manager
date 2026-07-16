@@ -9,7 +9,6 @@ import api from './api/client';
 import S3MultipartUploader from './services/s3Upload';
 import { formatSpeed } from './utils/formatting';
 import { formatDuration, formatKstDate, formatKstDateTime } from './utils/dateTime';
-import { useAdminPanel } from './hooks/useAdminPanel';
 import { useGroupState } from './hooks/useGroupState';
 
 // Modularized Components
@@ -22,7 +21,6 @@ import CrsCorrectionModal from './components/Processing/CrsCorrectionModal';
 import UploadWizard from './components/Upload/UploadWizard';
 import InspectorPanel from './components/Project/InspectorPanel';
 import ProjectMap from './components/Project/ProjectMap';
-import AdminPanel from './components/Admin/AdminPanel';
 
 // Leaflet
 import 'leaflet/dist/leaflet.css';
@@ -146,17 +144,11 @@ class ErrorBoundary extends React.Component {
 // --- 3. MAIN DASHBOARD ---
 function Dashboard() {
   const {
-    role,
     canCreateProject,
     canEditProject,
     canDeleteProject,
-    canManageUsers,
-    canManageOrganizations,
-    canManagePermissions,
-    user: currentUser,
   } = useAuth();
   const canExportProject = canCreateProject || canEditProject;
-  const hasAdminMenuAccess = canManageUsers || canManageOrganizations || canManagePermissions;
   // Use API hook for projects
   const {
     projects: apiProjects,
@@ -244,22 +236,12 @@ function Dashboard() {
     });
   }, [apiProjects, uploadsByProject]);
 
-  const isAdminUser = role === 'admin';
-
   const getProjectMutationCapabilities = useCallback((project) => {
-    if (!project) {
-      return { canEdit: false, canDelete: false };
-    }
-
-    const isOwner = Boolean(currentUser?.id) && project.owner_id === currentUser.id;
-    const canEditFromApi = project.can_edit === true;
-    const canDeleteFromApi = project.can_delete === true;
-
     return {
-      canEdit: canEditFromApi || canDeleteFromApi || isAdminUser || isOwner,
-      canDelete: canDeleteFromApi || isAdminUser || isOwner,
+      canEdit: Boolean(project),
+      canDelete: Boolean(project),
     };
-  }, [isAdminUser, currentUser?.id]);
+  }, []);
 
   const canEditProjectById = useCallback((projectId) => {
     const project = projects.find((item) => item.id === projectId);
@@ -299,7 +281,7 @@ function Dashboard() {
   }, []);
 
   // Groups state via hook
-  const groupState = useGroupState({ refreshProjects, canEditProjectById });
+  const groupState = useGroupState({ refreshProjects });
   const {
     groups, expandedGroupIds, isGroupModalOpen, editingGroup, activeGroupId,
     setEditingGroup, handleCreateGroup, handleUpdateGroup, handleDeleteGroup,
@@ -676,16 +658,6 @@ function Dashboard() {
 
   // Map reset key - increment to reset map to default view
   const [mapResetKey, setMapResetKey] = useState(0);
-  // Admin panel (extracted to useAdminPanel hook + AdminPanel component)
-  const adminPanel = useAdminPanel({
-    currentUser,
-    canManageUsers,
-    canManageOrganizations,
-    canManagePermissions,
-    hasAdminMenuAccess,
-    projects,
-  });
-
   const selectedProject = useMemo(() => {
     // Try to find in projects list first
     const proj = projects.find(p => p.id === selectedProjectId);
@@ -1728,10 +1700,6 @@ function Dashboard() {
           refreshProjects();
           window.history.pushState({}, '', window.location.pathname);
         }}
-        onOpenAdminMenu={adminPanel.openAdminPanel}
-        canManageUsers={canManageUsers}
-        canManageOrganizations={canManageOrganizations}
-        canManagePermissions={canManagePermissions}
       />
       <div className="flex flex-1 overflow-hidden relative">
         {viewMode === 'processing' ? (
@@ -2098,17 +2066,6 @@ function Dashboard() {
             </form>
           </div>
         </div>
-      )}
-
-      {/* Admin Management Modal */}
-      {adminPanel.isAdminPanelOpen && hasAdminMenuAccess && (
-        <AdminPanel
-          {...adminPanel}
-          canManageUsers={canManageUsers}
-          canManageOrganizations={canManageOrganizations}
-          canManagePermissions={canManagePermissions}
-          projects={projects}
-        />
       )}
 
       {/* Upload Progress Overlay - 멀티 프로젝트 업로드 지원 */}

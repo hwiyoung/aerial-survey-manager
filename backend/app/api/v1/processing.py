@@ -40,7 +40,6 @@ from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
     get_current_user,
-    is_admin_role,
     verify_internal_token,
     verify_token,
 )
@@ -2052,8 +2051,8 @@ async def get_processing_metrics(
 
     return ProcessingMetricsResponse(
         generated_at=datetime.utcnow(),
-        scope="admin" if is_admin_role(current_user.role) else "organization",
-        organization_id=current_user.organization_id if not is_admin_role(current_user.role) else None,
+        scope="organization",
+        organization_id=current_user.organization_id,
         total_jobs=len(jobs),
         status_counts=dict(status_counts),
         summary=ProcessingMetricsSummary(

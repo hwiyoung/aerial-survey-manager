@@ -25,7 +25,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.group import ProjectGroup
-    from app.models.user import Organization, ProjectPermission, User
+    from app.models.user import Organization, User
 
 
 class Project(Base):
@@ -72,9 +72,6 @@ class Project(Base):
     owner: Mapped["User"] = relationship("User", back_populates="owned_projects")
     organization: Mapped["Organization"] = relationship("Organization", back_populates="projects")
     group: Mapped["ProjectGroup | None"] = relationship("ProjectGroup", back_populates="projects")
-    permissions: Mapped[list["ProjectPermission"]] = relationship(
-        "ProjectPermission", back_populates="project", cascade="all, delete-orphan"
-    )
     images: Mapped[list["Image"]] = relationship(
         "Image", back_populates="project", cascade="all, delete-orphan"
     )

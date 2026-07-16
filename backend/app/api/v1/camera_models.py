@@ -7,7 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.jwt import get_current_user, is_admin_role
+from app.auth.jwt import get_current_user
 from app.database import get_db
 from app.models.project import CameraModel, Image
 from app.models.user import User
@@ -95,9 +95,8 @@ async def create_camera_model(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a public standard model or an organization-shared custom model."""
-    is_admin = is_admin_role(current_user.role)
-    is_custom = data.is_custom if is_admin else True
+    """Create an organization-shared custom model."""
+    is_custom = True
     try:
         organization_id = (
             custom_model_organization_id(current_user)
@@ -156,26 +155,11 @@ async def update_camera_model(
             detail="Not authorized to update this camera model",
         )
 
-    is_admin = is_admin_role(current_user.role)
-    if is_admin:
-        is_custom = data.is_custom
-        if is_custom:
-            try:
-                organization_id = (
-                    camera_model.organization_id
-                    if camera_model.is_custom and camera_model.organization_id is not None
-                    else custom_model_organization_id(current_user)
-                )
-            except ValueError as exc:
-                raise _organization_required_error(exc) from exc
-        else:
-            organization_id = None
-    else:
-        is_custom = True
-        try:
-            organization_id = custom_model_organization_id(current_user)
-        except ValueError as exc:
-            raise _organization_required_error(exc) from exc
+    is_custom = True
+    try:
+        organization_id = custom_model_organization_id(current_user)
+    except ValueError as exc:
+        raise _organization_required_error(exc) from exc
 
     name = normalize_camera_model_name(data.name)
     await _ensure_unique_name(

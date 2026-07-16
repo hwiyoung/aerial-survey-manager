@@ -6,8 +6,6 @@ from app.auth.jwt import (
     create_refresh_token,
     verify_token,
     get_current_user,
-    get_current_active_admin,
-    get_current_active_manager,
     PermissionChecker,
 )
 
@@ -18,7 +16,5 @@ __all__ = [
     "create_refresh_token",
     "verify_token",
     "get_current_user",
-    "get_current_active_admin",
-    "get_current_active_manager",
     "PermissionChecker",
 ]

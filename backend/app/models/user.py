@@ -54,31 +54,6 @@ class User(Base):
     # Relationships
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     owned_projects: Mapped[list["Project"]] = relationship("Project", back_populates="owner")
-    permissions: Mapped[list["ProjectPermission"]] = relationship(
-        "ProjectPermission", back_populates="user"
-    )
     presets: Mapped[list["ProcessingPreset"]] = relationship(
         "ProcessingPreset", back_populates="user", cascade="all, delete-orphan"
     )
-
-
-class ProjectPermission(Base):
-    """Project permission for multi-user access control."""
-    
-    __tablename__ = "project_permissions"
-    
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
-    )
-    permission: Mapped[str] = mapped_column(String(20), default="view")  # view, edit, admin
-    granted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    
-    # Relationships
-    user: Mapped["User"] = relationship("User", back_populates="permissions")
-    project: Mapped["Project"] = relationship("Project", back_populates="permissions")
