@@ -176,23 +176,32 @@ check_requirements() {
             fi
         fi
 
-        # Docker 컨테이너 GPU 전달 검증
-        if docker info 2>/dev/null | grep -qi "nvidia"; then
-            log_info "Docker GPU 전달 테스트 중..."
-            if test_docker_gpu_runtime; then
-                log_info "Docker GPU 전달: 정상"
-            else
-                log_warn "Docker에서 GPU를 사용할 수 없습니다."
-                log_warn "nvidia runtime 재등록을 시도합니다..."
-                sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null && sudo systemctl restart docker 2>/dev/null
-                if test_docker_gpu_runtime; then
-                    log_info "Docker GPU 전달: 복구 완료"
-                else
-                    log_warn "Docker GPU 전달 실패. 처리 속도가 매우 느릴 수 있습니다."
-                    read -p "GPU 없이 계속 진행하시겠습니까? (y/N): " continue_without_gpu_docker
-                    if [[ ! "$continue_without_gpu_docker" =~ ^[Yy]$ ]]; then
-                        exit 1
+        # docker info의 runtime 목록과 관계없이 실제 컨테이너 전달을 검증합니다.
+        log_info "Docker GPU 전달 테스트 중..."
+        if test_docker_gpu_runtime; then
+            log_info "Docker GPU 전달: 정상"
+        else
+            log_warn "Docker에서 GPU를 사용할 수 없습니다."
+            if command -v nvidia-ctk &> /dev/null; then
+                log_warn "복구를 진행하면 Docker가 재시작되어 실행 중인 모든 컨테이너가 잠시 중단됩니다."
+                read -r -p "NVIDIA runtime을 재등록하고 Docker를 재시작하시겠습니까? (y/N): " repair_gpu_runtime
+                if [[ "$repair_gpu_runtime" =~ ^[Yy]$ ]]; then
+                    log_info "NVIDIA runtime 재등록 및 Docker 재시작 중..."
+                    if sudo nvidia-ctk runtime configure --runtime=docker \
+                        && sudo systemctl restart docker \
+                        && test_docker_gpu_runtime; then
+                        log_info "Docker GPU 전달: 복구 완료"
+                    else
+                        log_warn "Docker GPU 전달 자동 복구에 실패했습니다."
                     fi
+                fi
+            fi
+
+            if ! test_docker_gpu_runtime; then
+                log_warn "Docker GPU 전달 실패. GPU 처리 기능을 사용할 수 없습니다."
+                read -r -p "GPU 없이 계속 진행하시겠습니까? (y/N): " continue_without_gpu_docker
+                if [[ ! "$continue_without_gpu_docker" =~ ^[Yy]$ ]]; then
+                    exit 1
                 fi
             fi
         fi
@@ -221,6 +230,59 @@ generate_secret() {
 
 generate_password() {
     openssl rand -base64 24 | tr -d '/+=' | head -c 24
+}
+
+prompt_initial_admin_credentials() {
+    local requested_email
+    local requested_password
+    local confirmed_password
+
+    echo ""
+    echo -e "${YELLOW}최초 관리자 계정 설정${NC}"
+    echo "기존 DB에 사용자가 있으면 계정을 새로 만들거나 비밀번호를 변경하지 않습니다."
+
+    while true; do
+        read -r -p "최초 관리자 아이디 [admin]: " requested_email
+        requested_email=${requested_email:-admin}
+        if [[ "$requested_email" =~ ^[A-Za-z0-9._@+-]+$ ]]; then
+            admin_email="$requested_email"
+            break
+        fi
+        log_warn "관리자 아이디에는 영문, 숫자, ., _, @, +, -만 사용할 수 있습니다."
+    done
+
+    while true; do
+        read -r -s -p "최초 관리자 비밀번호 (자동 생성하려면 Enter): " requested_password
+        echo ""
+
+        if [ -z "$requested_password" ]; then
+            admin_password=$(generate_password)
+            admin_password_generated=true
+            log_info "최초 관리자 비밀번호를 자동 생성했습니다."
+            break
+        fi
+
+        if [ "${#requested_password}" -lt 12 ]; then
+            log_warn "관리자 비밀번호는 12자 이상이어야 합니다."
+            continue
+        fi
+
+        if [[ ! "$requested_password" =~ ^[A-Za-z0-9._~!@%^*+=:,/?-]+$ ]]; then
+            log_warn "비밀번호에는 공백, 따옴표, #, $, &, |, 역슬래시를 사용할 수 없습니다."
+            continue
+        fi
+
+        read -r -s -p "관리자 비밀번호 확인: " confirmed_password
+        echo ""
+        if [ "$requested_password" != "$confirmed_password" ]; then
+            log_warn "입력한 비밀번호가 일치하지 않습니다."
+            continue
+        fi
+
+        admin_password="$requested_password"
+        admin_password_generated=false
+        break
+    done
 }
 
 # 환경 변수 설정
@@ -322,14 +384,15 @@ setup_environment() {
         log_warn "라이선스 키 없이 설치합니다. 처리 기능은 .env의 ENGINE_LICENSE_KEY 설정 후 사용 가능합니다."
     fi
 
-    # 비밀번호 자동 생성
+    # 내부 보안 값은 자동 생성하고, 최초 관리자 비밀번호는 사용자가
+    # 직접 입력하거나 Enter를 눌러 자동 생성할 수 있습니다.
     echo ""
-    log_info "보안 키 및 비밀번호 자동 생성 중..."
+    log_info "내부 보안 키 자동 생성 중..."
 
     postgres_password=$(generate_password)
     jwt_secret=$(generate_secret)
-    admin_email="admin"
-    admin_password=$(generate_password)
+    prompt_initial_admin_credentials
+
     # .env 파일 업데이트
     upsert_env "POSTGRES_PASSWORD" "$postgres_password"
     upsert_env "JWT_SECRET_KEY" "$jwt_secret"
@@ -371,10 +434,14 @@ setup_environment() {
     echo ""
     log_info "환경 설정 완료"
     echo ""
-    echo -e "${YELLOW}=== 생성된 인증 정보 (안전하게 보관하세요) ===${NC}"
-    echo "PostgreSQL 비밀번호: $postgres_password"
+    echo -e "${YELLOW}=== 최초 관리자 로그인 정보 ===${NC}"
     echo "관리자 아이디: $admin_email"
-    echo "관리자 비밀번호: $admin_password"
+    if [ "$admin_password_generated" = "true" ]; then
+        echo "관리자 비밀번호: $admin_password"
+        echo "자동 생성된 비밀번호는 지금 안전한 곳에 보관하세요."
+    else
+        echo "관리자 비밀번호: 설치 중 직접 입력한 값"
+    fi
     echo ""
 }
 

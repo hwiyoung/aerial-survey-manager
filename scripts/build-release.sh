@@ -39,7 +39,7 @@ docker compose -f docker-compose.prod.yml config >/dev/null
 echo -e "   ${GREEN}✓ docker compose config 통과${NC}"
 
 IO_CSV_SRC=""
-for candidate in "$IO_CSV_PATH" "./data/io.csv" "./data/regions/io.csv"; do
+for candidate in "./data/io.csv" "./data/regions/io.csv" "$IO_CSV_PATH"; do
     if [ -n "$candidate" ] && [ -f "$candidate" ]; then
         IO_CSV_SRC="$candidate"
         break
@@ -48,8 +48,8 @@ done
 
 if [ -z "$IO_CSV_SRC" ] && [ "${REQUIRE_IO_CSV:-true}" = "true" ]; then
     echo "   ⚠ io.csv 파일을 찾을 수 없습니다."
-    echo "     - 기본 위치: data/io.csv"
-    echo "     - 별도 위치 사용: IO_CSV_PATH=/path/to/io.csv scripts/build-release.sh $VERSION"
+    echo "     - 권장 위치: 현재 저장소의 ./data/io.csv"
+    echo "     - io.csv를 ./data/io.csv에 둔 뒤 다시 실행하세요."
     echo "     - io.csv 없이 배포 패키지를 만들려면 REQUIRE_IO_CSV=false 를 명시하세요."
     exit 1
 fi
@@ -277,8 +277,7 @@ if [ -n "$IO_CSV_SRC" ]; then
     echo "    ✓ $(basename "$IO_CSV_SRC") → data/io.csv 복사 완료"
 else
     echo "    ⚠ io.csv 파일을 찾을 수 없습니다."
-    echo "      - 기본 위치: data/io.csv"
-    echo "      - 별도 위치 사용: IO_CSV_PATH=/path/to/io.csv scripts/build-release.sh $VERSION"
+    echo "      - 권장 위치: 현재 저장소의 ./data/io.csv"
     if [ "${REQUIRE_IO_CSV:-true}" = "true" ]; then
         echo "      - io.csv 없이 배포 패키지를 만들려면 REQUIRE_IO_CSV=false 를 명시하세요."
         exit 1

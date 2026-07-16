@@ -213,7 +213,7 @@ if io_csv:
 else:
     candidates = [Path("data/io.csv"), Path("data/regions/io.csv")]
     if not any(path.is_file() for path in candidates):
-        message = "io.csv is required for release parity. Set IO_CSV_PATH=/path/to/io.csv."
+        message = "io.csv is required for release parity. Place it at ./data/io.csv."
         if allow_missing_io == "true":
             warnings.append(message)
         else:

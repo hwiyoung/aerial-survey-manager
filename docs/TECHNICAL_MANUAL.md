@@ -717,7 +717,7 @@ deactivate_engine_license.py
 **설치 흐름:**
 1. 시스템 요구사항 확인 (Docker, NVIDIA)
 2. **Docker GPU 전달 검증** — nvidia runtime 등록 확인 + 실제 컨테이너 GPU 테스트. 실패 시 자동 복구 시도
-3. `.env` 생성 (비밀번호 자동 생성)
+3. `.env` 생성 (최초 관리자 비밀번호 직접 입력 또는 Enter 시 자동 생성)
 4. nginx 설정 (도메인)
 5. SSL 설정 (선택)
 6. Docker 이미지 로드 또는 빌드

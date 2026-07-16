@@ -33,6 +33,8 @@ docker compose config
 - `aerial-survey.service`, `aerial-gpu-watchdog.timer` 상태
 
 커널은 올라갔지만 `linux-modules-nvidia-*$(uname -r)` 패키지가 없으면 `nvidia-smi`와 `worker-engine`이 실패할 수 있습니다.
+설치 스크립트가 NVIDIA runtime 재등록을 제안하는 경우 Docker가 재시작되어
+실행 중인 다른 컨테이너도 잠시 중단된다는 안내를 확인한 뒤 승인합니다.
 
 ## 4. 설치 실행
 
@@ -42,9 +44,10 @@ docker compose config
 
 설치 스크립트는 `.env`를 생성하고 서비스를 시작합니다. 신규 설치에서는 아래 구조를 권장합니다.
 
-신규 DB에서는 설치 스크립트가 강한 최초 관리자 비밀번호를 생성해 한 번
-출력합니다. 이 아이디와 비밀번호를 안전하게 보관해야 하며, 기존 사용자가
-있는 업그레이드 설치에서는 기존 로그인 정보를 변경하지 않습니다.
+신규 DB에서는 설치 중 최초 관리자 아이디와 비밀번호를 입력합니다.
+비밀번호 입력 없이 Enter를 누르면 강한 임의 비밀번호를 자동 생성해 한 번
+출력합니다. 기존 사용자가 있는 업그레이드 설치에서는 기존 로그인 정보를
+변경하지 않습니다.
 
 ```text
 AERIAL_DATA_ROOT=/data/aerial-survey
@@ -117,11 +120,15 @@ docker compose exec worker-engine nvidia-smi
 curl http://127.0.0.1:18100/health
 ```
 
-카메라 IO 목록은 패키지의 `data/io.csv`에서 API 시작 시 DB로 동기화됩니다. 별도 위치의 IO 파일로 릴리스를 만들 때는 개발PC에서 아래처럼 지정합니다.
+카메라 IO 목록은 패키지의 상대경로 `./data/io.csv`에서 API 시작 시 DB로
+동기화됩니다. 설치 대상 PC에서 별도 절대경로를 지정할 필요가 없습니다.
 
 ```bash
-IO_CSV_PATH=/path/to/io.csv scripts/build-release.sh vYYYYMMDD
+scripts/build-release.sh vYYYYMMDD
 ```
+
+릴리스를 만드는 저장소에도 원본 IO 파일을 `./data/io.csv`로 준비합니다.
+빌드 스크립트가 이를 배포패키지의 같은 상대경로에 포함합니다.
 
 `io.csv`의 pixel size는 µm 단위로 유지되며, 처리 엔진 실행 직전에 mm로 변환됩니다.
 
