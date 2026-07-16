@@ -15,9 +15,17 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          'map-vendor': ['leaflet', 'react-leaflet', 'proj4'],
-          'chart-vendor': ['recharts'],
+        manualChunks(id) {
+          if (
+            id.includes('/node_modules/leaflet/') ||
+            id.includes('/node_modules/react-leaflet/') ||
+            id.includes('/node_modules/proj4/')
+          ) {
+            return 'map-vendor'
+          }
+          if (id.includes('/node_modules/recharts/')) {
+            return 'chart-vendor'
+          }
         },
       },
     },

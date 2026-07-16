@@ -15,6 +15,13 @@ RUN apt-get update && apt-get install -y \
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 
+# Pin packaging tools so image builds do not inherit vulnerable versions from
+# a moving base image.
+RUN python -m pip install --no-cache-dir --upgrade \
+    pip==26.1.2 \
+    setuptools==83.0.0 \
+    wheel==0.47.0
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

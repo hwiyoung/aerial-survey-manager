@@ -32,8 +32,11 @@ RUN apt-get update && \
       libgdal-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# 업그레이드 pip
-RUN pip install --upgrade pip
+# 빌드 도구 보안 버전 고정
+RUN python3 -m pip install --no-cache-dir --upgrade \
+    pip==26.1.2 \
+    setuptools==83.0.0 \
+    wheel==0.47.0
 
 # 백엔드 공통 의존성 설치 (celery, pydantic-settings 등 포함)
 COPY backend/requirements.txt /tmp/requirements.txt
@@ -100,6 +103,12 @@ WORKDIR /app
 # Python 패키지 복사
 COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+
+# 런타임 베이스 이미지에 남은 구버전 패키징 메타데이터 제거
+RUN python3 -m pip install --no-cache-dir --upgrade \
+    pip==26.1.2 \
+    setuptools==83.0.0 \
+    wheel==0.47.0
 
 # 컴파일된 앱 코드 복사 (바이트코드만)
 COPY --from=builder /app/app /app/app

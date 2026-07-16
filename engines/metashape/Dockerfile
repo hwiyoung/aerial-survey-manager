@@ -27,8 +27,11 @@ RUN apt-get update && \
       libgdal-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# 업그레이드 pip
-RUN pip install --upgrade pip
+# 빌드 도구 보안 버전 고정
+RUN python3 -m pip install --no-cache-dir --upgrade \
+    pip==26.1.2 \
+    setuptools==83.0.0 \
+    wheel==0.47.0
 
 # 백엔드 공통 의존성 설치 (celery, pydantic-settings 등 포함)
 COPY backend/requirements.txt /tmp/requirements.txt
