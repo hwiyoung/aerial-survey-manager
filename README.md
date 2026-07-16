@@ -91,7 +91,13 @@ aerial-survey-manager/
 POSTGRES_PASSWORD=your-password
 
 # JWT Authentication
-JWT_SECRET_KEY=your-secret-key
+# Generate with: openssl rand -hex 32
+JWT_SECRET_KEY=replace-with-at-least-32-random-characters
+ALLOW_WEAK_JWT_SECRET=false
+
+# First administrator (used once only when the users table is empty)
+ADMIN_EMAIL=admin
+ADMIN_PASSWORD=choose-a-strong-password
 
 # Storage Backend: "local" (단일 서버) 또는 "minio" (S3 호환)
 STORAGE_BACKEND=local

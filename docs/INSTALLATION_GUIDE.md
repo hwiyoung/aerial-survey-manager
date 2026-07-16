@@ -42,6 +42,10 @@ docker compose config
 
 설치 스크립트는 `.env`를 생성하고 서비스를 시작합니다. 신규 설치에서는 아래 구조를 권장합니다.
 
+신규 DB에서는 설치 스크립트가 강한 최초 관리자 비밀번호를 생성해 한 번
+출력합니다. 이 아이디와 비밀번호를 안전하게 보관해야 하며, 기존 사용자가
+있는 업그레이드 설치에서는 기존 로그인 정보를 변경하지 않습니다.
+
 ```text
 AERIAL_DATA_ROOT=/data/aerial-survey
 LOCAL_STORAGE_PATH=/data/aerial-survey

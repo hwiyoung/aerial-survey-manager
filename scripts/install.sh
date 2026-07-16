@@ -328,9 +328,15 @@ setup_environment() {
 
     postgres_password=$(generate_password)
     jwt_secret=$(generate_secret)
+    admin_email="admin"
+    admin_password=$(generate_password)
     # .env 파일 업데이트
     upsert_env "POSTGRES_PASSWORD" "$postgres_password"
     upsert_env "JWT_SECRET_KEY" "$jwt_secret"
+    upsert_env "ALLOW_WEAK_JWT_SECRET" "false"
+    upsert_env "ADMIN_EMAIL" "$admin_email"
+    upsert_env "ADMIN_PASSWORD" "$admin_password"
+    upsert_env "ADMIN_NAME" "관리자"
     upsert_env "AERIAL_DATA_ROOT" "$data_root"
     upsert_env "PROCESSING_DATA_PATH" "$processing_path"
     upsert_env "LOCAL_STORAGE_PATH" "$storage_path"
@@ -367,6 +373,8 @@ setup_environment() {
     echo ""
     echo -e "${YELLOW}=== 생성된 인증 정보 (안전하게 보관하세요) ===${NC}"
     echo "PostgreSQL 비밀번호: $postgres_password"
+    echo "관리자 아이디: $admin_email"
+    echo "관리자 비밀번호: $admin_password"
     echo ""
 }
 
@@ -632,7 +640,7 @@ print_completion() {
     echo "  Flower URL: http://127.0.0.1:18055"
     echo ""
     echo -e "${YELLOW}다음 단계:${NC}"
-    echo "  1. 웹 UI에 접속하여 관리자 계정 생성"
+    echo "  1. 설치 시 출력된 관리자 계정으로 웹 UI 로그인"
     echo "  2. 테스트 프로젝트 생성 및 이미지 업로드 테스트"
     echo "  3. 처리 기능 테스트"
     echo ""

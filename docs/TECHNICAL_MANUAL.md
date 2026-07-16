@@ -594,10 +594,10 @@ getTileConfig() → {
 
 **실행 순서:**
 1. PostgreSQL 연결 대기 (30회 재시도)
-2. Alembic 마이그레이션 (다중 head 자동 머지)
+2. Alembic 마이그레이션 (단일 head 확인 후 적용, 실패 시 서비스 시작 중단)
 3. 카메라 모델 시드 (`seed_camera_models.py`)
 4. 권역 데이터 시드 (`regions_seed.sql` 우선 → GeoJSON 폴백)
-5. 기본 관리자 계정 생성 (`admin` / `siqms`)
+5. 사용자가 없는 신규 DB에서 환경변수 기반 최초 관리자 계정 생성
 6. Uvicorn 서버 시작 (0.0.0.0:8000)
 
 ---

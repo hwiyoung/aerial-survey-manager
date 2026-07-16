@@ -23,7 +23,6 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         - VITE_API_URL=
-        - VITE_TUS_URL=/files/
         - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-false}
         - VITE_TILE_URL=${VITE_TILE_URL:-}
     expose:
@@ -31,7 +30,6 @@ services:
       - "5173" # Vite dev port
     environment:
       - VITE_API_URL=
-      - VITE_TUS_URL=/files/
       - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-false}
       - VITE_TILE_URL=${VITE_TILE_URL:-}
     volumes:
@@ -65,7 +63,13 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-key-at-least-32-bytes}
+      - ALLOW_WEAK_JWT_SECRET=true
+      # 개발 환경 전용 기본 계정. 운영 Compose에는 기본 비밀번호가 없습니다.
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-siqms}
+      - ADMIN_NAME=${ADMIN_NAME:-관리자}
+      - ALLOW_WEAK_ADMIN_PASSWORD=${ALLOW_WEAK_ADMIN_PASSWORD:-true}
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
@@ -223,7 +227,8 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-key-at-least-32-bytes}
+      - ALLOW_WEAK_JWT_SECRET=true
       - ENGINE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
@@ -315,7 +320,8 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-key-at-least-32-bytes}
+      - ALLOW_WEAK_JWT_SECRET=true
     volumes:
       - ./backend:/app
       - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
@@ -363,7 +369,8 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-key-at-least-32-bytes}
+      - ALLOW_WEAK_JWT_SECRET=true
       - PROCESSING_QUEUE_WAIT_WARN_SECONDS=${PROCESSING_QUEUE_WAIT_WARN_SECONDS:-300}
       - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
       - PROCESSING_MEMORY_WARN_MB=${PROCESSING_MEMORY_WARN_MB:-8192}
@@ -469,7 +476,7 @@ services:
         mc alias set myminio http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin}
         mc mb --ignore-existing myminio/aerial-survey
         mc anonymous set download myminio/aerial-survey/public
-        mc anonymous set download myminio/aerial-survey/projects
+        mc anonymous set none myminio/aerial-survey/projects || true
         echo "MinIO bucket initialized successfully"
     environment:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -500,7 +507,6 @@ services:
       - CPL_VSIL_CURL_USE_HEAD=NO
     volumes:
       # 로컬 모드에서 file:// URL로 직접 읽기
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects:ro
       - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic:ro
       - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports:ro
     networks:

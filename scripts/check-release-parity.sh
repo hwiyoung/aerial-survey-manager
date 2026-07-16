@@ -22,7 +22,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         --help|-h)
             cat <<'EOF'
-Usage: scripts/check-release-parity.sh [--io-csv /path/to/io.csv]
+Usage: scripts/check-release-parity.sh [--io-csv /path/to/io.csv] [--allow-missing-io]
 
 Checks:
   - dev/prod compose config validity
@@ -141,7 +141,12 @@ rw_services = [
     "celery-worker-thumbnail",
     "celery-beat",
 ]
-ro_services = ["titiler", "nginx"]
+ro_service_targets = {
+    # TiTiler only needs final COGs. Mounting project sources would create a
+    # browser-reachable file:// path around the authenticated API.
+    "titiler": ("/data/storage/orthomosaic", "/data/exports"),
+    "nginx": ("/data/storage/projects", "/data/storage/orthomosaic", "/data/exports"),
+}
 
 for name in rw_services:
     for compose_name, services in (("dev", dev_services), ("prod", prod_services)):
@@ -180,19 +185,23 @@ for compose_name, services in (("dev", dev_services), ("prod", prod_services)):
                 f"{compose_name} api: {key}={env.get(key)!r}, expected {expected!r}"
             )
 
-for name in ro_services:
-    targets = volume_targets(prod_services.get(name, {}))
-    for target in (
-        "/data/storage/projects",
-        "/data/storage/orthomosaic",
-        "/data/exports",
-    ):
-        volume = targets.get(target)
-        if not volume:
-            failures.append(f"prod {name}: missing read-only volume target {target}")
-            continue
-        if not volume.get("read_only"):
-            failures.append(f"prod {name}: {target} must be read-only")
+for name, expected_targets in ro_service_targets.items():
+    for compose_name, services in (("dev", dev_services), ("prod", prod_services)):
+        targets = volume_targets(services.get(name, {}))
+        for target in expected_targets:
+            volume = targets.get(target)
+            if not volume:
+                failures.append(
+                    f"{compose_name} {name}: missing read-only volume target {target}"
+                )
+                continue
+            if not volume.get("read_only"):
+                failures.append(f"{compose_name} {name}: {target} must be read-only")
+
+        if name == "titiler" and "/data/storage/projects" in targets:
+            failures.append(
+                f"{compose_name} titiler: project source storage must not be mounted"
+            )
 
 api_targets = volume_targets(api)
 if "/app/data" not in api_targets:
@@ -266,7 +275,8 @@ print("  - prod API is not GPU-bound")
 print("  - prod worker-engine keeps GPU dependency")
 print("  - storage/export/processing mounts and env are aligned")
 print("  - prod Dockerfiles include backend/frontend/worker changed source paths")
-print("  - io.csv source is available for packaging")
+if not warnings:
+    print("  - io.csv source is available for packaging")
 
 if warnings:
     print("Warnings:")

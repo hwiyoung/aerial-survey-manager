@@ -45,6 +45,7 @@ cd aerial-survey-manager
 |------|------|------|
 | `POSTGRES_PASSWORD` | DB 비밀번호 | `openssl rand -hex 16` |
 | `JWT_SECRET_KEY` | JWT 서명 키 (32자+) | `openssl rand -hex 32` |
+| `ALLOW_WEAK_JWT_SECRET` | 약한 JWT 키 허용 여부 | 배포는 반드시 `false` |
 | `STORAGE_BACKEND` | `local` 또는 `minio` | `local` |
 | `AERIAL_DATA_ROOT` | 신규 설치용 데이터 기준 경로 | `/data/aerial-survey` |
 | `LOCAL_STORAGE_PATH` | 로컬 스토리지 기준 경로 | `/data/aerial-survey` |
@@ -82,7 +83,9 @@ curl http://127.0.0.1:18100/health   # API 응답 확인
 ### 5. 접속
 - 기본 웹 UI: `http://배포PC_IP:18100`
 - 배포PC에서만 접속하게 제한하려면 `.env`의 `HOST_BIND`를 `127.0.0.1`로 변경
-- 기본 계정: `admin` / `siqms`
+- 최초 계정: `.env`의 `ADMIN_EMAIL` / `ADMIN_PASSWORD`
+- 신규 DB에서 두 값이 없거나 비밀번호가 12자 미만이면 API가 시작되지 않습니다.
+- 기존 사용자가 있는 업그레이드 설치에서는 기존 계정과 비밀번호가 그대로 유지됩니다.
 
 ---
 

@@ -45,14 +45,12 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         - VITE_API_URL=
-        - VITE_TUS_URL=/files/
         - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-true}
         # 확장자 없음 - nginx try_files가 자동으로 .jpg/.png 감지
         - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}}
     restart: always
     environment:
       - VITE_API_URL=
-      - VITE_TUS_URL=/files/
       - VITE_MAP_OFFLINE=${VITE_MAP_OFFLINE:-true}
       # 확장자 없음 - nginx try_files가 자동으로 .jpg/.png 감지
       - VITE_TILE_URL=${VITE_TILE_URL:-/tiles/{z}/{x}/{y}}
@@ -89,7 +87,13 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - ALLOW_WEAK_JWT_SECRET=false
+      # 기존 설치는 사용자가 있으면 그대로 시작하며, 신규 설치만 아래 값이 필수입니다.
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - ADMIN_NAME=${ADMIN_NAME:-관리자}
+      - ALLOW_WEAK_ADMIN_PASSWORD=false
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
@@ -163,7 +167,8 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - ALLOW_WEAK_JWT_SECRET=false
       - ENGINE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
       - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
@@ -245,7 +250,8 @@ services:
       - PROCESSING_DATA_PATH=/data/processing
       - EXPORT_ROOT_PATH=/data/exports
       - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - ALLOW_WEAK_JWT_SECRET=false
     volumes:
       - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
@@ -285,7 +291,8 @@ services:
       - PROCESSING_DATA_PATH=/data/processing
       - EXPORT_ROOT_PATH=/data/exports
       - AUTO_EXPORT_TARGET_CRS=${AUTO_EXPORT_TARGET_CRS:-EPSG:5186}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - ALLOW_WEAK_JWT_SECRET=false
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
     volumes:
       - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
@@ -378,7 +385,7 @@ services:
         mc alias set myminio http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin}
         mc mb --ignore-existing myminio/aerial-survey
         mc anonymous set download myminio/aerial-survey/public
-        mc anonymous set download myminio/aerial-survey/projects
+        mc anonymous set none myminio/aerial-survey/projects || true
         mc anonymous set download myminio/aerial-survey/orthomosaic
         echo "MinIO bucket initialized successfully"
     environment:
@@ -402,7 +409,6 @@ services:
       - AWS_HTTPS=NO
       - AWS_NO_SIGN_REQUEST=NO
     volumes:
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects:ro
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic:ro
       - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports:ro
     networks:
