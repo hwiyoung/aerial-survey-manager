@@ -62,8 +62,6 @@ class Settings(BaseSettings):
     METASHAPE_LICENSE_KEY: str = ""
     
     # Upload / Data
-    TUS_ENDPOINT: str = "http://localhost:1080/files/"
-    TUS_WEBHOOK_TOKEN: str = ""
     MAX_UPLOAD_SIZE_GB: int = 500
     LOCAL_DATA_PATH: str = "/data"
     

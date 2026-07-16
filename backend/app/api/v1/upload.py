@@ -1,7 +1,5 @@
-"""Upload API endpoints with tus webhook handling and S3 multipart upload."""
-import json
+"""Upload API endpoints for local and S3 multipart uploads."""
 import hashlib
-import hmac
 import logging
 import os
 import shutil
@@ -10,7 +8,7 @@ from datetime import datetime
 from uuid import UUID
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text
 from pydantic import BaseModel, Field
@@ -18,7 +16,7 @@ from pydantic import BaseModel, Field
 from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, Image, CameraModel, ExteriorOrientation
-from app.schemas.project import ImageResponse, ImageUploadResponse
+from app.schemas.project import ImageResponse
 from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
@@ -57,35 +55,6 @@ def _processing_queue_name(engine_name: str | None) -> str:
         return PROCESSING_ENGINE_QUEUE
     return engine_name
 
-
-def _verify_tus_webhook_request(token: str, signature: str, body: bytes) -> None:
-    """Verify tus hook caller.
-
-    - If TUS_WEBHOOK_TOKEN is configured, caller must provide either:
-      - X-Tus-Webhook-Token header (exact match)
-      - token query param match
-      - or X-Tus-Signature (HMAC-SHA256) in header
-    - If token is not configured, behavior keeps backward compatibility.
-    """
-    if not settings.TUS_WEBHOOK_TOKEN:
-        return
-
-    token_ok = (
-        token == settings.TUS_WEBHOOK_TOKEN
-        or signature == hashlib.sha256(body + settings.TUS_WEBHOOK_TOKEN.encode()).hexdigest()
-    )
-    if token_ok:
-        return
-
-    # HMAC verification
-    if signature:
-        expected_signature = hmac.new(
-            settings.TUS_WEBHOOK_TOKEN.encode(), body, hashlib.sha256
-        ).hexdigest()
-        if hmac.compare_digest(signature, expected_signature):
-            return
-
-    raise HTTPException(status_code=403, detail="Invalid TUS webhook auth")
 
 logger = logging.getLogger(__name__)
 
@@ -162,195 +131,6 @@ async def _get_scoped_project(
 def _get_s3_multipart_service():
     from app.services.s3_multipart import get_s3_multipart_service
     return get_s3_multipart_service()
-
-
-@router.post("/projects/{project_id}/images/init", response_model=ImageUploadResponse)
-async def initiate_image_upload(
-    project_id: UUID,
-    filename: str,
-    file_size: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Initiate a resumable image upload.
-    Returns tus upload URL for client to use.
-    """
-    # Check permission
-    permission_checker = PermissionChecker("edit")
-    if not await permission_checker.check(str(project_id), current_user, db):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
-    
-    scoped_project = await _get_scoped_project(project_id, current_user, db)
-    if not scoped_project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-
-    # Check if image with same filename already exists (prevent duplicates)
-    existing_result = await db.execute(
-        select(Image).where(
-            Image.project_id == project_id,
-            Image.filename == filename,
-        )
-    )
-    existing_image = existing_result.scalar_one_or_none()
-
-    if existing_image:
-        additional_bytes = max(file_size - (existing_image.file_size or 0), 0)
-        # Reset status to uploading for retry/re-upload
-        existing_image.upload_status = "uploading"
-        existing_image.file_size = file_size
-        await ensure_organization_quota(
-            db,
-            current_user.organization_id,
-            additional_storage_bytes=additional_bytes,
-        )
-        await db.commit()
-        await db.refresh(existing_image)
-        image = existing_image
-    else:
-        await ensure_organization_quota(
-            db,
-            current_user.organization_id,
-            additional_storage_bytes=file_size,
-        )
-        # Create new image record
-        image = Image(
-            project_id=project_id,
-            filename=filename,
-            file_size=file_size,
-            upload_status="uploading",
-        )
-        db.add(image)
-        await db.commit()
-        await db.refresh(image)
-    
-    # The upload_id will be set by tus server via webhook
-    # For now, we generate a placeholder that maps to the image
-    upload_id = f"img_{image.id}"
-    
-    return ImageUploadResponse(
-        image_id=image.id,
-        upload_url=f"{settings.TUS_ENDPOINT}",
-        upload_id=upload_id,
-    )
-
-
-@router.post("/hooks")
-async def tus_webhook(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Handle tus server webhooks for upload lifecycle events.
-    
-    Events:
-    - pre-create: Validate upload before creation
-    - post-finish: Process completed upload
-    - post-terminate: Handle cancelled upload
-    """
-    body = await request.body()
-
-    _verify_tus_webhook_request(
-        request.headers.get("X-Tus-Webhook-Token")
-        or request.query_params.get("token")
-        or request.headers.get("Authorization")
-        or "",
-        request.headers.get("X-Tus-Signature") or "",
-        body,
-    )
-
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-    
-    event_type = data.get("Type")
-    # tusd sends metadata under Event.Upload (not direct Upload)
-    event_data = data.get("Event", {})
-    upload_info = event_data.get("Upload", {})
-    metadata = upload_info.get("MetaData", {})
-    
-    if event_type == "pre-create":
-        # Check if this is a partial upload (from parallel uploads)
-        is_partial = upload_info.get("IsPartial", False)
-        
-        # Partial uploads don't have metadata - allow them
-        if is_partial:
-            return {}  # Accept partial upload
-        
-        # Validate the upload (check user auth, file type, etc.)
-        project_id = metadata.get("projectId")
-        filename = metadata.get("filename", "")
-        
-        if not project_id:
-            return {"RejectUpload": True, "Message": "Missing projectId"}
-        
-        # Check file extension
-        allowed_extensions = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".raw"]
-        ext = "." + filename.split(".")[-1].lower() if "." in filename else ""
-        if ext not in allowed_extensions:
-            return {"RejectUpload": True, "Message": f"Invalid file type: {ext}"}
-        
-        return {}  # Accept upload
-    
-    elif event_type == "post-finish":
-        # Upload completed successfully
-        upload_id = upload_info.get("ID")
-        storage_path = upload_info.get("Storage", {}).get("Key")
-        
-        # Find and update the image record
-        project_id = metadata.get("projectId")
-        filename = metadata.get("filename")
-        
-        if project_id and filename:
-            result = await db.execute(
-                select(Image).where(
-                    Image.project_id == project_id,
-                    Image.filename == filename,
-                    Image.upload_status == "uploading",
-                )
-            )
-            image = result.scalar_one_or_none()
-            
-            if image:
-                image.upload_id = upload_id
-                image.original_path = storage_path
-                image.upload_status = "completed"
-                await db.commit()
-                
-                # Trigger thumbnail generation in background
-                try:
-                    from app.workers.tasks import generate_thumbnail
-                    generate_thumbnail.delay(str(image.id))
-                except Exception as e:
-                    print(f"Failed to trigger thumbnail task: {e}")
-        
-        return {}
-    
-    elif event_type == "post-terminate":
-        # Upload was cancelled
-        upload_id = upload_info.get("ID")
-        
-        # Mark image as failed
-        result = await db.execute(
-            select(Image).where(Image.upload_id == upload_id)
-        )
-        image = result.scalar_one_or_none()
-        
-        if image:
-            image.upload_status = "failed"
-            image.has_error = True
-            await db.commit()
-        
-        return {}
-    
-    return {}
 
 
 @router.get("/projects/{project_id}/images", response_model=list[ImageResponse])

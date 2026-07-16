@@ -829,11 +829,35 @@ function Dashboard() {
       });
       console.log('Project created:', created);
 
+      const multipartPartSize = 32 * 1024 * 1024;
+      let preparedUploader = null;
+      let initializedUploads = null;
+
+      const abortInitializedUploads = async () => {
+        const uploads = initializedUploads?.uploads || [];
+        if (!preparedUploader || uploads.length === 0) return;
+        try {
+          await preparedUploader.abortMultipartUploads(
+            created.id,
+            uploads.map(({ filename, upload_id, object_key }) => ({
+              filename,
+              upload_id,
+              object_key,
+            }))
+          );
+        } catch (abortError) {
+          console.warn('Failed to abort initialized multipart uploads:', abortError);
+        } finally {
+          initializedUploads = null;
+        }
+      };
+
       const formatEoUploadError = (error) => (
         error?.data?.message || error?.message || '알 수 없는 EO 업로드 오류'
       );
 
       const cleanupCreatedProject = async (reason) => {
+        await abortInitializedUploads();
         try {
           await deleteProject(created.id);
           console.log(`Cleaned up project ${created.id}: ${reason}`);
@@ -1056,17 +1080,22 @@ function Dashboard() {
         return { ok: true, projectId: created.id };
       }
 
-      // 2b. Initialize Images for HTTP upload (Create records in DB)
-      // NOTE: init_multipart_upload (step 4) also creates Image records, but this step is
-      // needed first so that EO upload (step 3) can match filenames to existing Image records.
+      // 2b. Initialize multipart sessions before EO upload so image records
+      // exist when EO rows are matched. The same sessions are reused below.
       if (files && files.length > 0) {
-        console.log('Initializing image records...');
+        console.log('Initializing multipart uploads...');
         try {
-          await Promise.all(files.map(file => api.initImageUpload(created.id, file.name, file.size)));
+          preparedUploader = new S3MultipartUploader(api.token);
+          initializedUploads = await preparedUploader.initMultipartUploads(
+            created.id,
+            Array.from(files),
+            multipartPartSize,
+            cameraModel,
+          );
         } catch (err) {
-          console.error('Failed to initialize images:', err);
-          alert('이미지 초기화 실패: ' + err.message);
-          await cleanupCreatedProject('image initialization failed');
+          console.error('Failed to initialize multipart uploads:', err);
+          alert('이미지 업로드 초기화 실패: ' + err.message);
+          await cleanupCreatedProject('multipart initialization failed');
           return { ok: false };
         }
       }
@@ -1140,13 +1169,14 @@ function Dashboard() {
           [projectId]: initialUploads
         }));
 
-        const uploader = new S3MultipartUploader(api.token);
+        const uploader = preparedUploader || new S3MultipartUploader(api.token);
         const controller = uploader.uploadFiles(files, projectId, {
           // HDD 환경(Local storage)에서는 파트 크기를 키우고 동시성은 낮춰 I/O 오버헤드를 줄입니다.
           concurrency: 3,
           partConcurrency: 2,
-          partSize: 32 * 1024 * 1024, // 32MB parts
+          partSize: multipartPartSize,
           cameraModelName: cameraModel, // Link images to camera model
+          initializedUploads,
           onFileProgress: (idx, name, progress) => {
             setUploadsByProject(prev => {
               const projectUploads = prev[projectId] || [];

@@ -126,13 +126,6 @@ class ImageResponse(ImageBase):
     exterior_orientation: Optional["EOData"] = None
     source_exterior_orientation: Optional["EOData"] = None
 
-class ImageUploadResponse(BaseModel):
-    """Response after initiating image upload."""
-    image_id: UUID
-    upload_url: str  # tus upload URL
-    upload_id: str
-
-
 # --- EO Schemas ---
 class EOData(BaseModel):
     """Single EO data point."""

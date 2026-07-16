@@ -27,7 +27,8 @@ export class S3MultipartUploader {
         concurrency = 6,      // Files in parallel
         partConcurrency = 4,  // Parts per file in parallel
         partSize = 10 * 1024 * 1024,  // 10MB
-        cameraModelName = null  // Camera model to link to images
+        cameraModelName = null,  // Camera model to link to images
+        initializedUploads = null  // Optional response prepared before EO upload
     } = {}) {
         const abortController = { aborted: false };
         const fileArray = Array.from(files);
@@ -54,7 +55,8 @@ export class S3MultipartUploader {
             concurrency,
             partConcurrency,
             partSize,
-            cameraModelName
+            cameraModelName,
+            initializedUploads
         });
 
         return controller;
@@ -73,11 +75,13 @@ export class S3MultipartUploader {
         concurrency,
         partConcurrency,
         partSize,
-        cameraModelName
+        cameraModelName,
+        initializedUploads
     }) {
         try {
             // 1. Initialize all uploads at once (batch API call)
-            const initResponse = await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelName);
+            const initResponse = initializedUploads
+                || await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelName);
 
             if (!initResponse.uploads || initResponse.uploads.length === 0) {
                 throw new Error('Failed to initialize uploads');

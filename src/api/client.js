@@ -311,12 +311,6 @@ class ApiClient {
         return this.request(`/upload/images/${imageId}/regenerate-thumbnail`, { method: 'POST' });
     }
 
-    async initImageUpload(projectId, filename, fileSize) {
-        return this.request(`/upload/projects/${projectId}/images/init?filename=${encodeURIComponent(filename)}&file_size=${fileSize}`, {
-            method: 'POST',
-        });
-    }
-
     // --- Local Import ---
     async localImport(projectId, sourceDir, filePaths = null, cameraModelName = null) {
         const body = { source_dir: sourceDir };
