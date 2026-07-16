@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PresetOptionsSchema(BaseModel):
@@ -37,6 +37,8 @@ class PresetUpdate(BaseModel):
 
 class PresetResponse(PresetBase):
     """Preset response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     user_id: UUID
     options: PresetOptionsSchema
@@ -44,10 +46,6 @@ class PresetResponse(PresetBase):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
-
-
 class PresetListResponse(BaseModel):
     """List of presets response."""
     items: List[PresetResponse]

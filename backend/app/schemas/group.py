@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GroupBase(BaseModel):
@@ -27,6 +27,8 @@ class GroupUpdate(BaseModel):
 
 class GroupResponse(GroupBase):
     """Group response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     parent_id: Optional[UUID] = None
     owner_id: Optional[UUID] = None
@@ -35,16 +37,9 @@ class GroupResponse(GroupBase):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
-
-
 class GroupTreeNode(GroupResponse):
     """Group with children for tree structure."""
-    children: List["GroupTreeNode"] = []
-    
-    class Config:
-        from_attributes = True
+    children: List["GroupTreeNode"] = Field(default_factory=list)
 
 
 class GroupListResponse(BaseModel):

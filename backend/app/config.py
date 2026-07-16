@@ -1,12 +1,19 @@
 """Application configuration using pydantic-settings."""
 from functools import lru_cache
 from typing import Optional
-from pydantic_settings import BaseSettings
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
-    
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
     # Application
     APP_NAME: str = "Aerial Survey Manager"
     DEBUG: bool = False
@@ -20,6 +27,7 @@ class Settings(BaseSettings):
     
     # JWT Auth
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
+    ALLOW_WEAK_JWT_SECRET: bool = True
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -66,12 +74,24 @@ class Settings(BaseSettings):
         "http://localhost:18110",
         "http://127.0.0.1:18110",
     ]
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"  # Allow extra fields in .env file
 
+    @model_validator(mode="after")
+    def validate_jwt_secret(self):
+        if self.ALLOW_WEAK_JWT_SECRET:
+            return self
+
+        normalized = self.JWT_SECRET_KEY.strip().lower()
+        placeholder_markers = (
+            "change-this",
+            "change_this",
+            "your-super-secret",
+            "placeholder",
+        )
+        if len(self.JWT_SECRET_KEY.encode("utf-8")) < 32:
+            raise ValueError("JWT_SECRET_KEY must be at least 32 bytes in deployment mode")
+        if any(marker in normalized for marker in placeholder_markers):
+            raise ValueError("JWT_SECRET_KEY must not use a packaged placeholder")
+        return self
 
 @lru_cache()
 def get_settings() -> Settings:

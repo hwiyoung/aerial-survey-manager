@@ -1,7 +1,7 @@
 # FastAPI & Server
-fastapi==0.109.2
+fastapi==0.139.0
 uvicorn[standard]==0.27.1
-python-multipart==0.0.9
+python-multipart==0.0.32
 
 # Database
 sqlalchemy==2.0.25
@@ -11,14 +11,13 @@ alembic==1.13.1
 geoalchemy2==0.14.3  # Using WKT parsing for geometry serialization
 
 # Authentication
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+PyJWT[crypto]==2.13.0
 bcrypt==4.0.1
 
 # Validation
-pydantic==2.6.1
-pydantic-settings==2.1.0
-email-validator==2.1.0.post1
+pydantic==2.13.4
+pydantic-settings==2.14.2
+email-validator==2.3.0
 
 # Async
 celery==5.3.6
@@ -36,6 +35,6 @@ rasterio==1.3.9
 pyproj==3.6.1
 
 # Utilities
-python-dotenv==1.0.1
-requests==2.31.0
+python-dotenv==1.2.2
+requests==2.34.2
 Pillow>=10.2.0

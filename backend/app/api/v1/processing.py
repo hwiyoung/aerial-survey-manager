@@ -4,7 +4,7 @@ import math
 import os
 import re
 from collections import Counter
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from fastapi import (
     APIRouter,
@@ -17,7 +17,8 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import case, select, func
+from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError
 from pathlib import Path
 
 from app.config import get_settings
@@ -57,6 +58,10 @@ from app.services.processing_runtime import (
     read_processing_status_file as _read_processing_status_file,
     read_step_status_file as _read_step_status_file,
 )
+from app.services.processing_lifecycle import (
+    ACTIVE_PROCESSING_STATUSES,
+    stale_processing_job_reason,
+)
 from pyproj import Transformer
 
 router = APIRouter(prefix="/processing", tags=["Processing"])
@@ -85,7 +90,7 @@ CRS_CORRECTION_OPTIONS = [
 ]
 CRS_CORRECTION_ALLOWED = {option["value"] for option in CRS_CORRECTION_OPTIONS}
 CRS_CORRECTION_ALLOWED_LABEL = ", ".join(option["value"] for option in CRS_CORRECTION_OPTIONS)
-CRS_CORRECTION_ACTIVE_STATUSES = {"queued", "processing", "scheduled"}
+CRS_CORRECTION_ACTIVE_STATUSES = set(ACTIVE_PROCESSING_STATUSES)
 CRS_CORRECTION_LOCKED_STATUSES = {"closed", "applying", "applied"}
 RUNTIME_STATUS_STALE_GRACE_SECONDS = 5
 PROJECT_STATE_STEP_RANK = {
@@ -123,6 +128,7 @@ def _write_processing_terminal_status_file(
     progress: int,
     message: str,
     metrics: dict | None = None,
+    job_id: UUID | None = None,
 ) -> None:
     try:
         status_file = processing_status_path(project_id)
@@ -133,6 +139,8 @@ def _write_processing_terminal_status_file(
             "message": message,
             "updated_at": datetime.utcnow().isoformat(),
         }
+        if job_id:
+            payload["job_id"] = str(job_id)
         if metrics:
             payload["metrics"] = metrics
         with open(status_file, "w", encoding="utf-8") as f:
@@ -168,6 +176,7 @@ def _mark_job_cancelled(
         "cancelled",
         cancel_progress,
         message,
+        job_id=job.id,
     )
     return cancel_progress
 
@@ -743,6 +752,9 @@ def _read_current_processing_status_file(project_id: UUID, job: ProcessingJob) -
     payload = _read_processing_status_file(project_id)
     if not payload:
         return {}
+    payload_job_id = payload.get("job_id")
+    if payload_job_id and str(payload_job_id) != str(job.id):
+        return {}
     if job.status not in CRS_CORRECTION_ACTIVE_STATUSES:
         return payload
     if not job.started_at:
@@ -793,12 +805,22 @@ def _mark_unapplied_crs_correction(job: ProcessingJob) -> bool:
 async def _select_crs_correction_job(
     db: AsyncSession,
     project_id: UUID,
+    *,
+    for_update: bool = False,
 ) -> ProcessingJob | None:
-    active_task = _active_task_for_project(project_id, force_refresh=True)
-    job = await _select_status_job(db, project_id, active_task)
-    if job and job.status in CRS_CORRECTION_ACTIVE_STATUSES:
-        return job
-    return None
+    query = (
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.status.in_(CRS_CORRECTION_ACTIVE_STATUSES),
+        )
+        .order_by(ProcessingJob.created_at.desc())
+        .limit(1)
+    )
+    if for_update:
+        query = query.with_for_update()
+    result = await db.execute(query)
+    return result.scalars().first()
 
 
 async def _sync_completed_job_result_path(
@@ -850,6 +872,7 @@ async def _select_status_job(
                 else_=1,
             ),
             ProcessingJob.started_at.desc().nullslast(),
+            ProcessingJob.created_at.desc(),
             ProcessingJob.completed_at.desc().nullslast(),
         )
         .limit(1)
@@ -1084,10 +1107,14 @@ async def _get_scoped_project(
     project_id: UUID,
     current_user: User,
     db: AsyncSession,
+    *,
+    for_update: bool = False,
 ):
     query = select(Project).where(Project.id == project_id)
     if not is_admin_role(current_user.role):
         query = query.where(Project.organization_id == current_user.organization_id)
+    if for_update:
+        query = query.with_for_update()
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
@@ -1273,39 +1300,42 @@ async def start_processing(
             completed_only=True,
         )
 
-    # Check if there's already a running job
+    # Serialize lifecycle changes for this project. This closes the window where
+    # two API requests both observe "no active job" and enqueue duplicate work.
+    project = await _get_scoped_project(
+        project_id,
+        current_user,
+        db,
+        for_update=True,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    # Check if there's already an active or scheduled job.
     result = await db.execute(
         select(ProcessingJob).where(
             ProcessingJob.project_id == project_id,
-            ProcessingJob.status.in_(["queued", "processing"]),
+            ProcessingJob.status.in_(ACTIVE_PROCESSING_STATUSES),
         )
     )
     existing_job = result.scalar_one_or_none()
     if existing_job:
         now = datetime.utcnow()
-        is_stale = False
-        stale_reason = ""
-        status_payload = _read_processing_status_file(project_id)
-        status_payload_value = status_payload.get("status")
+        status_payload = _read_current_processing_status_file(project_id, existing_job)
+        stale_reason = stale_processing_job_reason(
+            status=existing_job.status,
+            created_at=existing_job.created_at,
+            queued_at=existing_job.queued_at,
+            started_at=existing_job.started_at,
+            runtime_status=status_payload.get("status"),
+            force_restart=force_restart,
+            now=now,
+        )
 
-        if status_payload_value in TERMINAL_PROCESSING_STATUSES:
-            is_stale = True
-            stale_reason = f"처리 상태 파일이 {status_payload_value} 상태입니다"
-
-        # Case 1: Job never started and has been queued for more than 6 hours
-        elif existing_job.started_at is None:
-            is_stale = True
-            stale_reason = "작업이 시작되지 않고 대기 중이었습니다"
-
-        # Case 2: Job started more than 24 hours ago
-        elif (now - existing_job.started_at) > timedelta(hours=24):
-            is_stale = True
-            stale_reason = "작업이 24시간 이상 진행 중이었습니다"
-
-        # Case 3: User requested force restart
         if force_restart:
-            is_stale = True
-            stale_reason = "사용자가 강제 재시작을 요청했습니다"
             print(
                 "[processing.force_restart] accepted for non-active queued/processing job "
                 f"caller={_caller_label(current_user)} project_id={project_id} "
@@ -1324,11 +1354,12 @@ async def start_processing(
                 except Exception:
                     pass
 
-        if is_stale:
+        if stale_reason:
             # Auto-reset stale job
             existing_job.status = "failed"
             existing_job.error_message = f"작업이 자동 초기화되었습니다: {stale_reason}"
-            await db.commit()
+            existing_job.completed_at = now
+            await db.flush()
         else:
             # Return detailed error for frontend to handle
             raise HTTPException(
@@ -1403,9 +1434,22 @@ async def start_processing(
         output_format=options.output_format,
         status="queued",
         process_mode=options.process_mode,  # 처리 모드 저장
+        queued_at=datetime.utcnow(),
+        celery_task_id=str(uuid4()),
     )
     db.add(job)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "job_already_running",
+                "message": "이 프로젝트에 이미 진행 중인 처리 작업이 있습니다.",
+                "can_force_restart": True,
+            },
+        ) from exc
     await db.refresh(job)
     
     # Update project status
@@ -1421,13 +1465,11 @@ async def start_processing(
     queue_name = _get_queue_name(options.engine)
 
     try:
-        task = process_orthophoto.apply_async(
+        process_orthophoto.apply_async(
             args=[str(job.id), str(project_id), options.model_dump()],
             queue=queue_name,
+            task_id=job.celery_task_id,
         )
-        # Store celery task ID (non-critical)
-        job.celery_task_id = task.id
-        await db.commit()
     except Exception:
         # Celery submission failed — revert DB state
         job.status = "error"
@@ -1488,11 +1530,23 @@ async def schedule_processing(
             completed_only=False,
         )
 
+    project = await _get_scoped_project(
+        project_id,
+        current_user,
+        db,
+        for_update=True,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     # Check for existing active/scheduled jobs
     result = await db.execute(
         select(ProcessingJob).where(
             ProcessingJob.project_id == project_id,
-            ProcessingJob.status.in_(["queued", "processing", "scheduled"]),
+            ProcessingJob.status.in_(ACTIVE_PROCESSING_STATUSES),
         )
     )
     existing_job = result.scalar_one_or_none()
@@ -1524,7 +1578,14 @@ async def schedule_processing(
         process_mode=options.process_mode,
     )
     db.add(job)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="이 프로젝트에 이미 진행 중인 처리 작업이 있습니다.",
+        ) from exc
     await db.refresh(job)
 
     # Update project status
@@ -1549,6 +1610,8 @@ async def schedule_processing(
     if pending_or_uploading == 0 and completed_images > 0:
         # All images already uploaded — transition to queued and submit task
         job.status = "queued"
+        job.queued_at = datetime.utcnow()
+        job.celery_task_id = str(uuid4())
         project.status = "queued"
         project.progress = 0
 
@@ -1566,15 +1629,16 @@ async def schedule_processing(
                 "build_point_cloud": options.build_point_cloud,
             }
             queue_name = _get_queue_name(job.engine or DEFAULT_PROCESSING_ENGINE)
-            task = process_orthophoto.apply_async(
+            process_orthophoto.apply_async(
                 args=[str(job.id), str(project_id), options_dict],
                 queue=queue_name,
+                task_id=job.celery_task_id,
             )
-            job.celery_task_id = task.id
-            await db.commit()
         except Exception as celery_err:
             # Celery submission failed — revert to scheduled
             job.status = "scheduled"
+            job.queued_at = None
+            job.celery_task_id = None
             project.status = "scheduled"
             await db.commit()
     else:
@@ -1632,11 +1696,16 @@ async def reserve_crs_correction(
             detail="Access denied",
         )
 
-    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    scoped_project = await _get_scoped_project(
+        project_id,
+        current_user,
+        db,
+        for_update=True,
+    )
     if not scoped_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    job = await _select_crs_correction_job(db, project_id)
+    job = await _select_crs_correction_job(db, project_id, for_update=True)
     if not job:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1702,11 +1771,16 @@ async def cancel_crs_correction(
             detail="Access denied",
         )
 
-    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    scoped_project = await _get_scoped_project(
+        project_id,
+        current_user,
+        db,
+        for_update=True,
+    )
     if not scoped_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    job = await _select_crs_correction_job(db, project_id)
+    job = await _select_crs_correction_job(db, project_id, for_update=True)
     if not job:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1781,7 +1855,12 @@ async def cancel_processing(
             detail="Access denied",
         )
 
-    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    scoped_project = await _get_scoped_project(
+        project_id,
+        current_user,
+        db,
+        for_update=True,
+    )
     if not scoped_project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1789,14 +1868,23 @@ async def cancel_processing(
         )
     
     active_task = _active_task_for_project(project_id, force_refresh=True)
-    if active_task:
-        job = await _select_status_job(db, project_id, active_task)
-    else:
+    active_job_id = _uuid_or_none((active_task or {}).get("job_id"))
+    query = select(ProcessingJob).where(
+        ProcessingJob.project_id == project_id,
+        ProcessingJob.status.in_(ACTIVE_PROCESSING_STATUSES),
+    )
+    if active_job_id:
+        query = query.where(ProcessingJob.id == active_job_id)
+    result = await db.execute(query.with_for_update())
+    job = result.scalars().first()
+    if not job and active_job_id:
         result = await db.execute(
-            select(ProcessingJob).where(
+            select(ProcessingJob)
+            .where(
                 ProcessingJob.project_id == project_id,
-                ProcessingJob.status.in_(["queued", "processing"]),
+                ProcessingJob.id == active_job_id,
             )
+            .with_for_update()
         )
         job = result.scalar_one_or_none()
     
@@ -1853,7 +1941,7 @@ async def list_processing_jobs(
     query = (
         select(ProcessingJob)
         .join(Project)
-        .order_by(ProcessingJob.started_at.desc().nullslast())
+        .order_by(ProcessingJob.created_at.desc())
     )
     
     query = _apply_project_access_scope(query, current_user)
@@ -1863,7 +1951,7 @@ async def list_processing_jobs(
     
     responses = []
     for job in jobs:
-        status_payload = _read_processing_status_file(job.project_id)
+        status_payload = _read_current_processing_status_file(job.project_id, job)
         response = ProcessingJobResponse.model_validate(job)
         if status_payload.get("message"):
             response.message = status_payload.get("message")
@@ -1883,7 +1971,7 @@ async def get_processing_metrics(
     query = (
         select(ProcessingJob, Project.title)
         .join(Project)
-        .order_by(ProcessingJob.started_at.desc().nullslast())
+        .order_by(ProcessingJob.created_at.desc())
     )
     query = _apply_project_access_scope(query, current_user)
 
@@ -1905,10 +1993,17 @@ async def get_processing_metrics(
     recent_jobs = []
     for job in jobs:
         status_counts[job.status] = status_counts.get(job.status, 0) + 1
-        status_payload = _read_processing_status_file(job.project_id)
+        status_payload = _read_current_processing_status_file(job.project_id, job)
         metrics = status_payload.get("metrics") if isinstance(status_payload.get("metrics"), dict) else {}
 
         queue_wait_seconds = _to_float(metrics.get("queue_wait_seconds"))
+        if queue_wait_seconds is None and job.started_at:
+            queued_at = job.queued_at or job.created_at
+            if queued_at:
+                queue_wait_seconds = max(
+                    0.0,
+                    (job.started_at - queued_at).total_seconds(),
+                )
         total_elapsed_seconds = _to_float(metrics.get("total_elapsed_seconds"))
         memory_usage_mb = _to_float(metrics.get("memory_usage_mb"))
 

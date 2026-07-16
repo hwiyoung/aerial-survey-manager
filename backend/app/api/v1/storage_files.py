@@ -1,15 +1,18 @@
 """Local storage file serving endpoint.
 
-Serves private files (e.g. uploaded images) from local storage
-when STORAGE_BACKEND=local. Public files (projects/*) are served
-directly by nginx.
+Serves private files (e.g. original uploaded images) from local storage
+when STORAGE_BACKEND=local. Public thumbnails and generated artifacts are
+served directly by nginx.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from pathlib import Path
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
-from app.auth.jwt import get_current_user
+from app.auth.jwt import PermissionChecker, get_current_user
+from app.database import get_db
 from app.services.storage import get_storage
 
 router = APIRouter(prefix="/storage", tags=["Storage"])
@@ -19,11 +22,12 @@ router = APIRouter(prefix="/storage", tags=["Storage"])
 async def serve_storage_file(
     path: str,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Serve a file from local storage (authenticated).
 
     Only used in local storage mode for private files.
-    Public files (projects/*) are served by nginx directly.
+    Project paths are additionally checked against project permissions.
     """
     # Reject obvious path traversal attempts early
     if ".." in path or path.startswith("/"):
@@ -31,6 +35,28 @@ async def serve_storage_file(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
+
+    # Project files require permission on the project encoded in the key.
+    path_parts = Path(path).parts
+    if path_parts and path_parts[0] == "projects":
+        if len(path_parts) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
+        try:
+            project_id = UUID(path_parts[1])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            ) from exc
+        permission_checker = PermissionChecker("view")
+        if not await permission_checker.check(str(project_id), current_user, db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     storage = get_storage()
 

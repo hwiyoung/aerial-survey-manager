@@ -4,7 +4,7 @@
 # - 초기 데이터 시드 (카메라 모델, 권역)
 # - API 서버 시작
 
-set -e
+set -euo pipefail
 
 echo "=== Aerial Survey Manager API Starting ==="
 
@@ -39,25 +39,19 @@ echo "Database is ready."
 # 마이그레이션 실행 (테이블 생성/업데이트)
 echo "Running database migrations..."
 
-# 다중 헤드 문제 확인 및 머지
+# 다중 head는 배포 중 자동 병합하지 않고 빌드/개발 단계에서 명시적으로 해결한다.
 HEAD_COUNT=$(alembic heads 2>/dev/null | wc -l)
 if [ "$HEAD_COUNT" -gt 1 ]; then
-    echo "  Multiple migration heads detected ($HEAD_COUNT), merging..."
-    alembic merge heads -m "auto_merge_$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    echo "Error: Multiple Alembic migration heads detected ($HEAD_COUNT)."
+    echo "Resolve the migration graph before starting the service."
+    alembic heads
+    exit 1
 fi
 
-# 마이그레이션 적용 (에러 발생 시 로그 출력)
+# 마이그레이션은 전부 성공해야만 서비스를 시작한다.
 echo "  Applying migrations..."
-if alembic upgrade head; then
-    echo "  Migrations applied successfully."
-else
-    echo "  WARNING: Migration encountered an error. Checking current state..."
-    alembic current || true
-
-    # 마이그레이션이 부분적으로 실패해도 계속 진행
-    # (regions 테이블 충돌 등은 무시하고 다른 테이블은 생성됨)
-    echo "  Attempting to continue despite migration error..."
-fi
+alembic upgrade head
+echo "  Migrations applied successfully."
 echo "Migrations completed."
 
 # 초기 데이터 시드 (최초 실행 시에만)
@@ -169,45 +163,21 @@ else
     echo "  - Regions already seeded ($REGION_COUNT records), skipping..."
 fi
 
-# 기본 관리자 계정 생성 (유저가 없을 때만)
+# 최초 관리자 계정 생성 (유저가 없을 때만, 배포 환경변수 필수)
 echo "  - Checking admin account..."
-python -c "
-import asyncio
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-import os
+ADMIN_BOOTSTRAP_SCRIPT=""
+if [ -f "scripts/bootstrap_admin.pyc" ]; then
+    ADMIN_BOOTSTRAP_SCRIPT="scripts/bootstrap_admin.pyc"
+elif [ -f "scripts/bootstrap_admin.py" ]; then
+    ADMIN_BOOTSTRAP_SCRIPT="scripts/bootstrap_admin.py"
+fi
 
-async def seed_admin():
-    engine = create_async_engine(os.environ.get('DATABASE_URL'))
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with async_session() as session:
-        result = await session.execute(text('SELECT COUNT(*) FROM users'))
-        count = result.scalar()
-        if count == 0:
-            from app.auth.jwt import hash_password
-            pw = hash_password('siqms')
-            # 기본 조직 생성
-            await session.execute(text(
-                \"INSERT INTO organizations (id, name, quota_storage_gb, quota_projects, created_at) \"
-                \"VALUES (gen_random_uuid(), '기본 조직', 10000, 1000, now()) \"
-                \"ON CONFLICT DO NOTHING\"
-            ))
-            org_result = await session.execute(text(\"SELECT id FROM organizations LIMIT 1\"))
-            org_id = org_result.scalar()
-            # 관리자 계정 생성 (조직 연결)
-            await session.execute(text(
-                \"INSERT INTO users (id, email, password_hash, name, role, is_active, organization_id, created_at) \"
-                \"VALUES (gen_random_uuid(), 'admin', :pw, '관리자', 'admin', true, :org_id, now())\"
-            ), {'pw': pw, 'org_id': org_id})
-            await session.commit()
-            print('    Default organization and admin account created (admin / siqms)')
-        else:
-            print(f'    Admin account already exists ({count} users), skipping...')
-    await engine.dispose()
+if [ -z "$ADMIN_BOOTSTRAP_SCRIPT" ]; then
+    echo "Error: administrator bootstrap script not found"
+    exit 1
+fi
 
-asyncio.run(seed_admin())
-" 2>/dev/null || echo "    (admin seed skipped)"
+python "$ADMIN_BOOTSTRAP_SCRIPT"
 
 echo "Initial data seeding completed."
 

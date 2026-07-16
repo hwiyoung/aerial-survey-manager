@@ -30,6 +30,32 @@ def source_image_key(project_id: str | UUID, filename: str) -> str:
     return f"{source_images_prefix(project_id)}{safe_filename(filename)}"
 
 
+def is_source_image_key(object_name: str) -> bool:
+    """Return True only for original project images, not thumbnails/exports."""
+    parts = str(object_name or "").split("/")
+    return (
+        len(parts) >= 5
+        and parts[0] == "projects"
+        and bool(parts[1])
+        and parts[2:4] == ["source", "images"]
+        and all(parts[4:])
+    )
+
+
+def is_public_project_artifact_key(object_name: str) -> bool:
+    """Return True for the small project artifacts intentionally served publicly."""
+    parts = str(object_name or "").split("/")
+    if len(parts) < 4 or parts[0] != "projects" or not parts[1]:
+        return False
+    return parts[2] == "exports" or parts[2:4] == ["source", "thumbnails"]
+
+
+def is_private_project_key(object_name: str) -> bool:
+    return str(object_name or "").startswith("projects/") and not is_public_project_artifact_key(
+        object_name
+    )
+
+
 def source_thumbnail_prefix(project_id: str | UUID) -> str:
     return f"{project_prefix(project_id)}/source/thumbnails/"
 
@@ -48,6 +74,11 @@ def project_preview_key(project_id: str | UUID) -> str:
 
 def orthomosaic_prefix() -> str:
     return "orthomosaic/"
+
+
+def orthomosaic_project_prefix(project_id: str | UUID) -> str:
+    """Return the collision-free final-output prefix for a project."""
+    return f"{orthomosaic_prefix()}{project_id_str(project_id)}/"
 
 
 def normalize_crs_label(value: str | None, default: str = "EPSG:5186") -> str:
@@ -88,20 +119,21 @@ def orthomosaic_key(
 ) -> str:
     """Compute the orthomosaic storage key / export filename.
 
-    When a sanitized ``title`` is provided, uses ``{region}_{title}.tif``
-    (or just ``{title}.tif`` if region is empty). Otherwise falls back to
-    the legacy UUID + timestamp naming so existing artifacts keep working.
+    New outputs always live below a project UUID prefix so two projects with
+    the same region/title cannot overwrite one another. Existing output keys
+    stored in the database remain readable; this function only controls new
+    writes.
     """
+    prefix = orthomosaic_project_prefix(project_id)
     safe_title = sanitize_filename_component(title)
     if safe_title:
         safe_region = sanitize_filename_component(region)
         basename = f"{safe_region}_{safe_title}" if safe_region else safe_title
-        return f"{orthomosaic_prefix()}{basename}.tif"
+        return f"{prefix}{basename}.tif"
 
     stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
     return (
-        f"{orthomosaic_prefix()}{project_id_str(project_id)}_"
-        f"orthomosaic_{normalize_crs_label(target_crs)}_{stamp}.tif"
+        f"{prefix}orthomosaic_{normalize_crs_label(target_crs)}_{stamp}.tif"
     )
 
 

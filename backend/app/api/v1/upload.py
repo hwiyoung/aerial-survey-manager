@@ -4,13 +4,15 @@ import hashlib
 import hmac
 import logging
 import os
+import shutil
 import uuid as uuid_mod
+from datetime import datetime
 from uuid import UUID
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from pydantic import BaseModel, Field
 
 from app.database import get_db
@@ -21,11 +23,24 @@ from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role
 from app.config import get_settings
 from app.services.storage import get_storage
 from app.services.quota import ensure_organization_quota
+from app.services.upload_sessions import (
+    MAX_MULTIPART_PARTS,
+    MAX_MULTIPART_PART_SIZE,
+    MAX_UPLOAD_FILES_PER_REQUEST,
+    MIN_MULTIPART_PART_SIZE,
+    LocalUploadSession,
+    UploadSessionError,
+    expected_part_size,
+    load_local_upload_session,
+    multipart_part_count,
+    save_local_upload_session,
+    validate_completed_part_numbers,
+    validate_upload_batch,
+)
 from app.api.v1.filesystem import get_allowed_roots, is_within_allowed_root
 from app.utils.storage_paths import (
     processing_metadata_path,
     source_image_key,
-    source_images_prefix,
     source_thumbnail_key,
 )
 
@@ -799,15 +814,22 @@ async def regenerate_image_thumbnail(
 
 class FileInfo(BaseModel):
     """File information for multipart upload initialization."""
-    filename: str
-    size: int
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(gt=0)
     content_type: Optional[str] = "application/octet-stream"
 
 
 class MultipartInitRequest(BaseModel):
     """Request body for multipart upload initialization."""
-    files: List[FileInfo]
-    part_size: Optional[int] = 10 * 1024 * 1024  # 10MB default
+    files: List[FileInfo] = Field(
+        min_length=1,
+        max_length=MAX_UPLOAD_FILES_PER_REQUEST,
+    )
+    part_size: int = Field(
+        default=10 * 1024 * 1024,
+        ge=MIN_MULTIPART_PART_SIZE,
+        le=MAX_MULTIPART_PART_SIZE,
+    )
     camera_model_name: Optional[str] = None  # Link images to camera model
 
 
@@ -836,21 +858,24 @@ class MultipartInitResponse(BaseModel):
 
 class CompletedPart(BaseModel):
     """Completed part information."""
-    part_number: int
-    etag: str
+    part_number: int = Field(ge=1, le=MAX_MULTIPART_PARTS)
+    etag: str = Field(min_length=1, max_length=512)
 
 
 class CompletedUpload(BaseModel):
     """Completed upload information."""
-    filename: str
-    upload_id: str
-    object_key: str
-    parts: List[CompletedPart]
+    filename: str = Field(min_length=1, max_length=255)
+    upload_id: str = Field(min_length=1, max_length=255)
+    object_key: str = Field(min_length=1, max_length=1024)
+    parts: List[CompletedPart] = Field(min_length=1, max_length=MAX_MULTIPART_PARTS)
 
 
 class MultipartCompleteRequest(BaseModel):
     """Request body for completing multipart uploads."""
-    uploads: List[CompletedUpload]
+    uploads: List[CompletedUpload] = Field(
+        min_length=1,
+        max_length=MAX_UPLOAD_FILES_PER_REQUEST,
+    )
 
 
 class CompletedFileInfo(BaseModel):
@@ -880,14 +905,17 @@ class MultipartCompleteResponse(BaseModel):
 
 class AbortUpload(BaseModel):
     """Upload to abort."""
-    filename: str
-    upload_id: str
-    object_key: str
+    filename: str = Field(min_length=1, max_length=255)
+    upload_id: str = Field(min_length=1, max_length=255)
+    object_key: str = Field(min_length=1, max_length=1024)
 
 
 class MultipartAbortRequest(BaseModel):
     """Request body for aborting multipart uploads."""
-    uploads: List[AbortUpload]
+    uploads: List[AbortUpload] = Field(
+        min_length=1,
+        max_length=MAX_UPLOAD_FILES_PER_REQUEST,
+    )
 
 
 @router.post("/projects/{project_id}/multipart/init", response_model=MultipartInitResponse)
@@ -918,17 +946,26 @@ async def init_multipart_upload(
             detail="Project not found",
         )
 
-    # Sanitize filenames and calculate incremental storage demand
-    safe_filenames = []
-    import os
-    for file_info in request.files:
-        safe_filename = os.path.basename(file_info.filename)
-        if not safe_filename or safe_filename.startswith(".") or ".." in file_info.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid filename: {file_info.filename}",
-            )
-        safe_filenames.append(safe_filename)
+    # Serialize filename allocation per project. The DB unique constraint remains
+    # the final guard against concurrent requests from multiple API processes.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": f"multipart-init:{project_id}"},
+    )
+
+    try:
+        safe_filenames = validate_upload_batch(
+            request.files,
+            request.part_size,
+            max_file_size=settings.MAX_UPLOAD_SIZE_GB * 1024 * 1024 * 1024,
+        )
+    except UploadSessionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    for file_info, safe_filename in zip(request.files, safe_filenames):
         file_info.filename = safe_filename
 
     existing_result = await db.execute(
@@ -956,10 +993,12 @@ async def init_multipart_upload(
 
     uploads = []
     existing_image_rows = await db.execute(
-        select(Image).where(
+        select(Image)
+        .where(
             Image.project_id == project_id,
             Image.filename.in_(safe_filenames),
         )
+        .with_for_update()
     )
     existing_images = {img.filename: img for img in existing_image_rows.scalars().all()}
 
@@ -983,6 +1022,32 @@ async def init_multipart_upload(
         existing_image = existing_images.get(file_info.filename)
 
         if existing_image:
+            previous_upload_id = existing_image.upload_id
+            if previous_upload_id and existing_image.upload_status == "uploading":
+                if is_local:
+                    try:
+                        uuid_mod.UUID(previous_upload_id)
+                    except ValueError:
+                        pass
+                    else:
+                        old_staging_dir = (
+                            Path(settings.LOCAL_STORAGE_PATH)
+                            / ".uploads"
+                            / previous_upload_id
+                        )
+                        shutil.rmtree(old_staging_dir, ignore_errors=True)
+                else:
+                    try:
+                        s3_service.abort_multipart_upload(
+                            object_key=source_image_key(project_id, file_info.filename),
+                            upload_id=previous_upload_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to abort superseded multipart upload %s: %s",
+                            previous_upload_id,
+                            exc,
+                        )
             existing_image.upload_status = "uploading"
             existing_image.file_size = file_info.size
             if camera_model_id:
@@ -1023,9 +1088,20 @@ async def init_multipart_upload(
                 offset += part_size
                 part_number += 1
 
-            # Create staging directory
             staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload_id
-            staging_dir.mkdir(parents=True, exist_ok=True)
+            save_local_upload_session(
+                staging_dir,
+                LocalUploadSession(
+                    upload_id=upload_id,
+                    project_id=str(project_id),
+                    image_id=str(image.id),
+                    filename=file_info.filename,
+                    object_key=object_key,
+                    file_size=file_info.size,
+                    part_size=part_size,
+                    part_count=multipart_part_count(file_info.size, part_size),
+                ),
+            )
         else:
             # MinIO mode: use S3 multipart upload
             upload_id = s3_service.create_multipart_upload(
@@ -1039,6 +1115,9 @@ async def init_multipart_upload(
                 part_size=request.part_size
             )
             parts = [PartInfo(**p) for p in raw_parts]
+
+        # Bind all subsequent chunk/complete/abort requests to this DB record.
+        image.upload_id = upload_id
 
         uploads.append(UploadInfo(
             filename=file_info.filename,
@@ -1087,133 +1166,140 @@ async def complete_multipart_upload(
     failed = []
     excluded = []
     thumbnail_image_ids = []
+    completed_staging_dirs: list[Path] = []
 
     logger.info(f"[complete] project={project_id}, uploads={len(request.uploads)}, is_local={is_local}")
 
     for upload in request.uploads:
+        image = None
         try:
             logger.info(f"[complete] Processing: filename={upload.filename}, upload_id={upload.upload_id}, object_key={upload.object_key}")
 
-            # Validate upload_id format
-            try:
-                uuid_mod.UUID(upload.upload_id)
-            except ValueError:
-                logger.warning(f"[complete] Invalid upload_id format: {upload.upload_id}")
-                failed.append({"filename": upload.filename, "error": "Invalid upload_id"})
-                continue
+            validate_completed_part_numbers(part.part_number for part in upload.parts)
 
-            # Validate object_key belongs to this project (prevent cross-project writes)
-            expected_prefix = source_images_prefix(project_id)
-            if not upload.object_key.startswith(expected_prefix) or ".." in upload.object_key:
-                logger.warning(f"[complete] Invalid object_key: {upload.object_key}, expected prefix: {expected_prefix}")
-                failed.append({"filename": upload.filename, "error": "Invalid object_key for this project"})
-                continue
+            # A client may only complete the exact upload session allocated by init.
+            image_result = await db.execute(
+                select(Image)
+                .where(
+                    Image.project_id == project_id,
+                    Image.upload_id == upload.upload_id,
+                    Image.upload_status == "uploading",
+                )
+                .with_for_update()
+            )
+            bound_images = image_result.scalars().all()
+            if len(bound_images) != 1:
+                raise UploadSessionError("Upload session is not active for this project.")
+            image = bound_images[0]
+
+            expected_object_key = source_image_key(project_id, image.filename)
+            if upload.filename != image.filename or upload.object_key != expected_object_key:
+                raise UploadSessionError(
+                    "Upload filename or object key does not match the initialized session."
+                )
 
             if is_local:
-                # Local mode: merge chunks and move to storage
-                import shutil
+                # Local upload IDs are UUIDs and map to a server-created metadata file.
+                try:
+                    uuid_mod.UUID(upload.upload_id)
+                except ValueError as exc:
+                    raise UploadSessionError("Invalid local upload ID.") from exc
+
                 staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload.upload_id
+                session = load_local_upload_session(staging_dir)
+                if (
+                    session.upload_id != upload.upload_id
+                    or session.project_id != str(project_id)
+                    or session.image_id != str(image.id)
+                    or session.filename != image.filename
+                    or session.object_key != expected_object_key
+                    or session.file_size != image.file_size
+                ):
+                    raise UploadSessionError("Upload session metadata does not match the database.")
 
-                # Determine number of parts from the sorted staging files
-                part_files = sorted(staging_dir.glob("part_*"), key=lambda p: int(p.name.split("_")[1]))
-                logger.info(f"[complete] staging_dir={staging_dir}, exists={staging_dir.exists()}, part_files={len(part_files)}")
-                if not part_files:
-                    failed.append({"filename": upload.filename, "error": "No uploaded parts found"})
-                    continue
+                completed_part_numbers = validate_completed_part_numbers(
+                    part.part_number for part in upload.parts
+                )
+                if completed_part_numbers != list(range(1, session.part_count + 1)):
+                    raise UploadSessionError("Not all expected upload parts were completed.")
 
-                # Merge chunks into final path in storage
-                final_path = Path(storage.get_local_path(upload.object_key))
+                expected_part_paths = [
+                    staging_dir / f"part_{part_number}"
+                    for part_number in range(1, session.part_count + 1)
+                ]
+                expected_names = {path.name for path in expected_part_paths}
+                unexpected_parts = [
+                    path.name
+                    for path in staging_dir.glob("part_*")
+                    if path.name not in expected_names
+                ]
+                if unexpected_parts:
+                    raise UploadSessionError("Unexpected files exist in the upload session.")
+
+                for part_number, part_path in enumerate(expected_part_paths, start=1):
+                    if not part_path.is_file():
+                        raise UploadSessionError(f"Upload part {part_number} is missing.")
+                    actual_part_size = part_path.stat().st_size
+                    required_part_size = expected_part_size(
+                        session.file_size,
+                        session.part_size,
+                        part_number,
+                    )
+                    if actual_part_size != required_part_size:
+                        raise UploadSessionError(
+                            f"Upload part {part_number} has an invalid size."
+                        )
+
+                # Merge into a sibling temporary file, then replace atomically.
+                final_path = Path(storage.get_local_path(expected_object_key))
                 final_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_path = final_path.with_name(
+                    f".{final_path.name}.{upload.upload_id}.tmp"
+                )
+                temporary_path.unlink(missing_ok=True)
+                try:
+                    with open(temporary_path, "wb") as out_f:
+                        for part_path in expected_part_paths:
+                            with open(part_path, "rb") as in_f:
+                                shutil.copyfileobj(in_f, out_f)
+                    actual_size = temporary_path.stat().st_size
+                    if actual_size != session.file_size:
+                        raise UploadSessionError("Merged upload size does not match initialization.")
+                    temporary_path.replace(final_path)
+                finally:
+                    temporary_path.unlink(missing_ok=True)
 
-                with open(final_path, "wb") as out_f:
-                    for part_file in part_files:
-                        with open(part_file, "rb") as in_f:
-                            shutil.copyfileobj(in_f, out_f)
-
-                logger.info(f"[complete] Merged {len(part_files)} parts -> {final_path} ({final_path.stat().st_size} bytes)")
-
-                # Clean up staging directory
-                shutil.rmtree(staging_dir, ignore_errors=True)
+                completed_staging_dirs.append(staging_dir)
             else:
                 # MinIO mode: complete S3 multipart upload
                 s3_service.complete_multipart_upload(
-                    object_key=upload.object_key,
+                    object_key=expected_object_key,
                     upload_id=upload.upload_id,
                     parts=[{"part_number": p.part_number, "etag": p.etag} for p in upload.parts]
                 )
-
-            # Update image record
-            result = await db.execute(
-                select(Image).where(
-                    Image.project_id == project_id,
-                    Image.filename == upload.filename,
-                    Image.upload_status == "uploading",
-                )
-            )
-            image = result.scalar_one_or_none()
-
-            # Fallback: if not found with upload_status filter, try without it
-            if not image:
-                logger.warning(
-                    f"[complete] Image not found with upload_status='uploading' for "
-                    f"filename={upload.filename}, trying without status filter..."
-                )
-                fallback_result = await db.execute(
-                    select(Image).where(
-                        Image.project_id == project_id,
-                        Image.filename == upload.filename,
-                    )
-                )
-                fallback_images = fallback_result.scalars().all()
-                if len(fallback_images) == 1:
-                    image = fallback_images[0]
-                    logger.warning(
-                        f"[complete] Fallback found image id={image.id}, "
-                        f"current status={image.upload_status} (expected 'uploading')"
-                    )
-                elif len(fallback_images) > 1:
-                    logger.warning(
-                        f"[complete] Multiple images found for filename={upload.filename}: "
-                        f"{[(str(img.id), img.upload_status) for img in fallback_images]}"
-                    )
-                    # Use the first one that isn't already completed
-                    image = next(
-                        (img for img in fallback_images if img.upload_status != "completed"),
-                        fallback_images[0]
-                    )
-                else:
-                    logger.warning(
-                        f"[complete] No image record at all for filename={upload.filename}, "
-                        f"project_id={project_id}"
+                actual_size = storage.get_object_size(expected_object_key)
+                if actual_size != image.file_size:
+                    storage.delete_object(expected_object_key)
+                    raise UploadSessionError(
+                        "Completed object size does not match initialization."
                     )
 
-            if image:
-                image.upload_id = upload.upload_id
-                image.original_path = upload.object_key
-                if is_local:
-                    try:
-                        image.file_size = final_path.stat().st_size
-                    except OSError:
-                        pass
-                image.upload_status = "completed"
-                image.validation_status = "unchecked"
-                image.validation_error = None
-                image.validated_at = None
-                image.has_error = False
+            image.original_path = expected_object_key
+            image.file_size = actual_size
+            image.upload_status = "completed"
+            image.validation_status = "unchecked"
+            image.validation_error = None
+            image.validated_at = None
+            image.has_error = False
 
-                logger.info(f"[complete] Image updated: id={image.id}, filename={upload.filename} -> completed")
+            logger.info(f"[complete] Image updated: id={image.id}, filename={upload.filename} -> completed")
 
-                completed.append(CompletedFileInfo(
-                    filename=upload.filename,
-                    image_id=image.id,
-                    status="completed"
-                ))
-                thumbnail_image_ids.append(str(image.id))
-            else:
-                failed.append({
-                    "filename": upload.filename,
-                    "error": "Image record not found"
-                })
+            completed.append(CompletedFileInfo(
+                filename=upload.filename,
+                image_id=image.id,
+                status="completed"
+            ))
+            thumbnail_image_ids.append(str(image.id))
 
         except Exception as e:
             logger.error(f"[complete] Exception for {upload.filename}: {e}", exc_info=True)
@@ -1223,6 +1309,10 @@ async def complete_multipart_upload(
             })
 
     await db.commit()
+
+    # Keep staging data until the database commit succeeds so a failed commit can retry.
+    for staging_dir in completed_staging_dirs:
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     for image_id in thumbnail_image_ids:
         try:
@@ -1244,12 +1334,27 @@ async def complete_multipart_upload(
             from app.models.project import ProcessingJob
             from sqlalchemy import func
 
+            # Serialize this hook with manual start/schedule/cancel requests.
+            project_lock_result = await db.execute(
+                select(Project)
+                .where(Project.id == project_id)
+                .with_for_update()
+            )
+            locked_project = project_lock_result.scalar_one_or_none()
+            if not locked_project:
+                return MultipartCompleteResponse(
+                    completed=completed,
+                    failed=failed,
+                    excluded=excluded,
+                )
+            scoped_project = locked_project
+
             # Check for a scheduled job
             sched_result = await db.execute(
                 select(ProcessingJob).where(
                     ProcessingJob.project_id == project_id,
                     ProcessingJob.status == "scheduled",
-                )
+                ).with_for_update()
             )
             scheduled_job = sched_result.scalar_one_or_none()
 
@@ -1302,6 +1407,8 @@ async def complete_multipart_upload(
 
                     # All images uploaded — update DB state first (atomic)
                     scheduled_job.status = "queued"
+                    scheduled_job.queued_at = datetime.utcnow()
+                    scheduled_job.celery_task_id = str(uuid_mod.uuid4())
                     scoped_project.status = "queued"
                     scoped_project.progress = 0
 
@@ -1322,18 +1429,18 @@ async def complete_multipart_upload(
                     # Now submit Celery task — DB is already consistent
                     try:
                         from app.workers.tasks import process_orthophoto
-                        task = process_orthophoto.apply_async(
+                        process_orthophoto.apply_async(
                             args=[str(scheduled_job.id), str(project_id), options_dict],
                             queue=queue_name,
+                            task_id=scheduled_job.celery_task_id,
                         )
-                        # Update celery_task_id (non-critical)
-                        scheduled_job.celery_task_id = task.id
-                        await db.commit()
                         print(f"[Scheduled Processing] Auto-triggered for project {project_id}, job {scheduled_job.id}")
                     except Exception as celery_err:
                         # Celery submission failed — revert DB state
                         print(f"[Scheduled Processing] Celery submission failed: {celery_err}")
                         scheduled_job.status = "scheduled"
+                        scheduled_job.queued_at = None
+                        scheduled_job.celery_task_id = None
                         scoped_project.status = "scheduled"
                         await db.commit()
         except Exception as e:
@@ -1377,44 +1484,49 @@ async def abort_multipart_upload(
 
     for upload in request.uploads:
         try:
-            # Validate upload_id format
-            try:
-                uuid_mod.UUID(upload.upload_id)
-            except ValueError:
-                errors.append({"filename": upload.filename, "error": "Invalid upload_id"})
-                continue
-
-            # Validate object_key belongs to this project
-            expected_prefix = source_images_prefix(project_id)
-            if not upload.object_key.startswith(expected_prefix) or ".." in upload.object_key:
-                errors.append({"filename": upload.filename, "error": "Invalid object_key for this project"})
-                continue
+            result = await db.execute(
+                select(Image)
+                .where(
+                    Image.project_id == project_id,
+                    Image.upload_id == upload.upload_id,
+                    Image.upload_status == "uploading",
+                )
+                .with_for_update()
+            )
+            bound_images = result.scalars().all()
+            if len(bound_images) != 1:
+                raise UploadSessionError("Upload session is not active for this project.")
+            image = bound_images[0]
+            expected_object_key = source_image_key(project_id, image.filename)
+            if upload.filename != image.filename or upload.object_key != expected_object_key:
+                raise UploadSessionError(
+                    "Upload filename or object key does not match the initialized session."
+                )
 
             if is_local:
-                # Local mode: clean up staging directory
-                import shutil
+                try:
+                    uuid_mod.UUID(upload.upload_id)
+                except ValueError as exc:
+                    raise UploadSessionError("Invalid local upload ID.") from exc
                 staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload.upload_id
+                session = load_local_upload_session(staging_dir)
+                if (
+                    session.project_id != str(project_id)
+                    or session.image_id != str(image.id)
+                    or session.object_key != expected_object_key
+                ):
+                    raise UploadSessionError("Upload session metadata does not match the database.")
                 if staging_dir.exists():
                     shutil.rmtree(staging_dir, ignore_errors=True)
             else:
                 # MinIO mode: abort S3 multipart upload
                 s3_service.abort_multipart_upload(
-                    object_key=upload.object_key,
+                    object_key=expected_object_key,
                     upload_id=upload.upload_id
                 )
 
-            # Update image record
-            result = await db.execute(
-                select(Image).where(
-                    Image.project_id == project_id,
-                    Image.filename == upload.filename,
-                )
-            )
-            image = result.scalar_one_or_none()
-
-            if image:
-                image.upload_status = "failed"
-                image.has_error = True
+            image.upload_status = "failed"
+            image.has_error = True
 
             aborted.append(upload.filename)
 
@@ -1475,12 +1587,6 @@ async def upload_local_chunk(
             detail="Invalid upload_id format",
         )
 
-    if part < 1 or part > 10000:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid part number",
-        )
-
     staging_dir = Path(settings.LOCAL_STORAGE_PATH) / ".uploads" / upload_id
     if not staging_dir.exists():
         raise HTTPException(
@@ -1488,16 +1594,83 @@ async def upload_local_chunk(
             detail="Upload session not found",
         )
 
+    try:
+        session = load_local_upload_session(staging_dir)
+    except UploadSessionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    if session.project_id != str(project_id) or session.upload_id != upload_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Upload session does not belong to this project",
+        )
+
+    image_result = await db.execute(
+        select(Image).where(
+            Image.id == UUID(session.image_id),
+            Image.project_id == project_id,
+            Image.upload_id == upload_id,
+            Image.upload_status == "uploading",
+        )
+    )
+    if image_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Active upload record not found",
+        )
+
+    try:
+        required_size = expected_part_size(session.file_size, session.part_size, part)
+    except UploadSessionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid Content-Length",
+            ) from exc
+        if declared_size != required_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Chunk size must be exactly {required_size} bytes",
+            )
+
     part_path = staging_dir / f"part_{part}"
+    temporary_path = staging_dir / f".part_{part}.tmp"
+    temporary_path.unlink(missing_ok=True)
 
-    # Stream request body directly to disk (memory-efficient)
-    with open(part_path, "wb") as f:
-        async for chunk in request.stream():
-            f.write(chunk)
+    # Stream to a temporary file with a hard byte limit, then publish atomically.
+    digest = hashlib.md5()
+    written = 0
+    try:
+        with open(temporary_path, "wb") as f:
+            async for chunk in request.stream():
+                written += len(chunk)
+                if written > required_size:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Chunk exceeds the initialized size",
+                    )
+                f.write(chunk)
+                digest.update(chunk)
 
-    # Return a fake ETag for compatibility with the frontend flow
-    import hashlib
-    file_size = part_path.stat().st_size
-    etag = hashlib.md5(f"{upload_id}:{part}:{file_size}".encode()).hexdigest()
+        if written != required_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Chunk size must be exactly {required_size} bytes",
+            )
+        temporary_path.replace(part_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
-    return {"etag": etag, "part_number": part}
+    return {"etag": digest.hexdigest(), "part_number": part}

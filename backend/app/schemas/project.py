@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List, Literal, Any
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --- Project Schemas ---
@@ -29,6 +29,8 @@ class ProjectUpdate(BaseModel):
 
 class ProjectResponse(ProjectBase):
     """Project response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     status: str
     progress: int
@@ -62,10 +64,6 @@ class ProjectResponse(ProjectBase):
     current_user_permission: Optional[str] = None  # view | edit | admin
     can_edit: bool = False
     can_delete: bool = False
-
-    class Config:
-        from_attributes = True
-
 
 class ProjectListResponse(BaseModel):
     """Paginated project list response."""
@@ -104,6 +102,8 @@ class ImageBase(BaseModel):
 
 class ImageResponse(ImageBase):
     """Image response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     project_id: UUID
     original_path: Optional[str] = None
@@ -126,10 +126,6 @@ class ImageResponse(ImageBase):
     exterior_orientation: Optional["EOData"] = None
     source_exterior_orientation: Optional["EOData"] = None
 
-    class Config:
-        from_attributes = True
-
-
 class ImageUploadResponse(BaseModel):
     """Response after initiating image upload."""
     image_id: UUID
@@ -140,6 +136,8 @@ class ImageUploadResponse(BaseModel):
 # --- EO Schemas ---
 class EOData(BaseModel):
     """Single EO data point."""
+    model_config = ConfigDict(from_attributes=True)
+
     image_id: Optional[UUID] = None  # Changed from str to UUID to match model
     x: float
     y: float
@@ -149,22 +147,25 @@ class EOData(BaseModel):
     kappa: float = 0.0
     crs: Optional[str] = None
     
-    class Config:
-        from_attributes = True
-
-
 class EOConfig(BaseModel):
     """EO file parsing configuration."""
+    model_config = ConfigDict(populate_by_name=True)
+
     delimiter: str = ","
     has_header: bool = Field(default=False, alias="hasHeader")
     crs: str = "EPSG:4326"
     excluded_image_names: List[str] = Field(default_factory=list, alias="excludedImageNames")
     columns: dict = Field(
-        default={"image_name": 0, "x": 1, "y": 2, "z": 3, "omega": 4, "phi": 5, "kappa": 6}
+        default_factory=lambda: {
+            "image_name": 0,
+            "x": 1,
+            "y": 2,
+            "z": 3,
+            "omega": 4,
+            "phi": 5,
+            "kappa": 6,
+        }
     )
-
-    class Config:
-        populate_by_name = True
 
 
 class EOUploadResponse(BaseModel):
@@ -202,6 +203,8 @@ class CameraModelCreate(CameraModelBase):
 
 class CameraModelResponse(CameraModelBase):
     """Camera model response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     is_custom: bool
     # Sensor size in pixels (image dimensions)
@@ -210,10 +213,6 @@ class CameraModelResponse(CameraModelBase):
     # PPA (Principal Point of Autocollimation) offset
     ppa_x: Optional[float] = None  # mm
     ppa_y: Optional[float] = None  # mm
-
-    class Config:
-        from_attributes = True
-
 
 # --- Processing Job Schemas ---
 class ProcessingOptions(BaseModel):
@@ -252,6 +251,8 @@ class ProcessingCrsCorrectionResponse(BaseModel):
 
 class ProcessingJobResponse(BaseModel):
     """Processing job response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     project_id: UUID
     engine: str
@@ -261,6 +262,8 @@ class ProcessingJobResponse(BaseModel):
     status: str
     progress: int
     message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    queued_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
@@ -284,10 +287,6 @@ class ProcessingJobResponse(BaseModel):
     completed_steps: List[dict[str, Any]] = Field(default_factory=list)
     failed_step: Optional[dict[str, Any]] = None
     next_step: Optional[dict[str, Any]] = None
-
-    class Config:
-        from_attributes = True
-
 
 class ProcessingEnginePolicy(BaseModel):
     """Processing engine support/policy item."""
@@ -316,7 +315,7 @@ class ProcessingStatusUpdate(BaseModel):
 # --- QC Schemas ---
 class QCResultBase(BaseModel):
     """Base QC result schema."""
-    issues: List[str] = []
+    issues: List[str] = Field(default_factory=list)
     status: str = "pending"
     comment: Optional[str] = None
 
@@ -328,15 +327,13 @@ class QCResultUpdate(QCResultBase):
 
 class QCResultResponse(QCResultBase):
     """QC result response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     image_id: UUID
     checked_by: Optional[UUID] = None
     checked_at: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
-
-
 # --- Statistics Schemas ---
 class MonthlyStats(BaseModel):
     """Monthly statistics item."""

@@ -41,6 +41,8 @@ async def create_camera_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new camera model."""
+    is_admin = is_admin_role(current_user.role)
+    is_custom = data.is_custom if is_admin else True
     camera_model = CameraModel(
         name=data.name,
         focal_length=data.focal_length,
@@ -51,8 +53,8 @@ async def create_camera_model(
         sensor_height_px=data.sensor_height_px,
         ppa_x=data.ppa_x,
         ppa_y=data.ppa_y,
-        is_custom=data.is_custom,
-        organization_id=current_user.organization_id if data.is_custom else None
+        is_custom=is_custom,
+        organization_id=current_user.organization_id if is_custom else None,
     )
     db.add(camera_model)
     await db.commit()
@@ -77,8 +79,13 @@ async def update_camera_model(
             detail="Camera model not found",
         )
 
+    is_admin = is_admin_role(current_user.role)
     is_public_model = camera_model.organization_id is None
-    if not is_admin_role(current_user.role) and not is_public_model and camera_model.organization_id != current_user.organization_id:
+    if not is_admin and (
+        is_public_model
+        or not camera_model.is_custom
+        or camera_model.organization_id != current_user.organization_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this camera model",
@@ -93,11 +100,12 @@ async def update_camera_model(
     camera_model.sensor_height_px = data.sensor_height_px
     camera_model.ppa_x = data.ppa_x
     camera_model.ppa_y = data.ppa_y
-    if is_admin_role(current_user.role):
+    if is_admin:
         camera_model.is_custom = data.is_custom
         camera_model.organization_id = current_user.organization_id if data.is_custom else None
     else:
         camera_model.is_custom = True
+        camera_model.organization_id = current_user.organization_id
 
     await db.commit()
     await db.refresh(camera_model)

@@ -403,24 +403,41 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     from app.utils.db import sync_db_session
 
     with sync_db_session() as db:
-        # Get job and project
-        job = db.query(ProcessingJob).filter(ProcessingJob.id == job_id).first()
-        project = db.query(Project).filter(Project.id == project_id).first()
+        # Lock in the same project -> job order used by the API. Only one
+        # delivery is allowed to claim a queued job.
+        project = (
+            db.query(Project)
+            .filter(Project.id == project_id)
+            .with_for_update()
+            .first()
+        )
+        job = (
+            db.query(ProcessingJob)
+            .filter(
+                ProcessingJob.id == job_id,
+                ProcessingJob.project_id == project_id,
+            )
+            .with_for_update()
+            .first()
+        )
 
         if not job or not project:
             return {"status": "error", "message": "Job or project not found"}
 
-        # 멱등성 체크: 이미 완료된 job이면 재실행하지 않음
-        # (Redis visibility_timeout 만료로 인한 재전달 방어)
-        if job.status == "completed":
-            print(f"[process_orthophoto] Job {job_id} already completed, skipping re-execution.")
-            return {"status": "skipped", "message": "Job already completed"}
-        if job.status in ("cancelled", "failed", "error"):
+        if job.status != "queued":
             print(
-                f"[process_orthophoto] Job {job_id} is already {job.status}, "
-                "skipping queued task."
+                f"[process_orthophoto] Job {job_id} is {job.status}, "
+                "so this delivery cannot claim it."
             )
-            return {"status": "skipped", "message": f"Job already {job.status}"}
+            return {"status": "skipped", "message": f"Job is {job.status}"}
+
+        request_task_id = str(getattr(self.request, "id", "") or "")
+        if job.celery_task_id and request_task_id and job.celery_task_id != request_task_id:
+            print(
+                f"[process_orthophoto] Task ID mismatch for job {job_id}: "
+                f"expected={job.celery_task_id} received={request_task_id}"
+            )
+            return {"status": "skipped", "message": "Task ID does not own this job"}
 
         try:
             queue_name = "unknown"
@@ -436,7 +453,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             db.commit()
 
             queue_wait_seconds = None
-            queued_at = getattr(job, 'queued_at', None) or getattr(job, 'created_at', None)
+            queued_at = job.queued_at or job.created_at
             if queued_at:
                 queue_wait_seconds = max(
                     0.0,
@@ -517,6 +534,8 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             ):
                 try:
                     payload = {
+                        "job_id": str(job.id),
+                        "celery_task_id": job.celery_task_id,
                         "status": status_value,
                         "progress": progress,
                         "message": message,
@@ -693,7 +712,14 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             try:
                 import shutil
 
-                db.refresh(job)
+                # Atomically close CRS reservation changes before touching the
+                # output raster. API reserve/cancel calls lock the same row.
+                job = (
+                    db.query(ProcessingJob)
+                    .filter(ProcessingJob.id == job_id)
+                    .with_for_update()
+                    .one()
+                )
                 correction_crs = (
                     job.crs_correction_source_crs
                     if job.crs_correction_status == "pending" and job.crs_correction_source_crs
@@ -1308,15 +1334,20 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         return {"status": "error", "message": f"파일을 찾을 수 없습니다: {source_path}"}
 
     with sync_db_session() as db:
-        project = db.query(Project).filter(Project.id == project_id).first()
+        project = (
+            db.query(Project)
+            .filter(Project.id == project_id)
+            .with_for_update()
+            .first()
+        )
         if not project:
             return {"status": "error", "message": f"프로젝트를 찾을 수 없습니다: {project_id}"}
 
         # Check for running processing jobs
         running_job = db.query(ProcessingJob).filter(
             ProcessingJob.project_id == project_id,
-            ProcessingJob.status.in_(["queued", "processing"])
-        ).first()
+            ProcessingJob.status.in_(["scheduled", "queued", "processing"])
+        ).with_for_update().first()
 
         if running_job:
             if not force:

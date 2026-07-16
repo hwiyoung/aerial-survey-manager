@@ -2,6 +2,7 @@
 from datetime import timedelta
 from typing import Optional
 import io
+from urllib.parse import urlparse, urlunparse
 
 from minio import Minio
 from minio.error import S3Error
@@ -85,12 +86,13 @@ class MinIOStorageBackend(StorageBackend):
         expires: int = 3600,
         response_headers: Optional[dict] = None,
     ) -> str:
-        # Public artifacts are served through nginx /storage/.
-        # Use nginx /storage/ proxy to avoid exposing MinIO port directly
-        if object_name.startswith(("projects/", "orthomosaic/")):
+        # Final orthomosaics remain public artifacts. Project objects use
+        # short-lived signed URLs so original images are never anonymous.
+        if object_name.startswith("orthomosaic/"):
             return f"/storage/{object_name}"
 
-        # For private objects, generate presigned URL via nginx proxy
+        # Generate against the internal endpoint (the Host MinIO verifies), then
+        # route the browser URL through nginx which restores that upstream Host.
         protocol = "https" if settings.MINIO_SECURE else "http"
         public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
 
@@ -101,13 +103,18 @@ class MinIOStorageBackend(StorageBackend):
             response_headers=response_headers,
         )
 
-        # Replace internal endpoint with public endpoint for browser access
-        if public_endpoint and public_endpoint != settings.MINIO_ENDPOINT:
-            internal_endpoint = settings.MINIO_ENDPOINT
-            url = url.replace(f"http://{internal_endpoint}", f"{protocol}://{public_endpoint}")
-            url = url.replace(f"https://{internal_endpoint}", f"{protocol}://{public_endpoint}")
-
-        return url
+        parsed = urlparse(url)
+        endpoint = public_endpoint.split("://", 1)[-1].rstrip("/")
+        return urlunparse(
+            (
+                protocol,
+                endpoint,
+                f"/storage{parsed.path}",
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
 
     def get_presigned_upload_url(
         self,

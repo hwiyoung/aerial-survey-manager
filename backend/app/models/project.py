@@ -1,7 +1,19 @@
 """Project and related models."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, BigInteger
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from geoalchemy2 import Geometry
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -68,6 +80,9 @@ class Image(Base):
     """Aerial/Drone image model."""
 
     __tablename__ = "images"
+    __table_args__ = (
+        UniqueConstraint("project_id", "filename", name="uq_images_project_filename"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -166,6 +181,15 @@ class ProcessingJob(Base):
     """Processing job for orthophoto generation."""
     
     __tablename__ = "processing_jobs"
+    __table_args__ = (
+        Index(
+            "uq_processing_jobs_one_active_per_project",
+            "project_id",
+            unique=True,
+            postgresql_where=text("status IN ('scheduled', 'queued', 'processing')"),
+            sqlite_where=text("status IN ('scheduled', 'queued', 'processing')"),
+        ),
+    )
     
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -179,6 +203,12 @@ class ProcessingJob(Base):
     output_format: Mapped[str] = mapped_column(String(20), default="GeoTiff")
     status: Mapped[str] = mapped_column(String(50), default="queued")
     progress: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

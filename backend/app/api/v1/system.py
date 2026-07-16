@@ -84,6 +84,34 @@ def _mark_gpu_stale(data: dict[str, Any], message: str) -> dict[str, Any]:
     return stale_data
 
 
+def _gpu_worker_probe_readiness(celery_app, queue_name: str, redis_url: str) -> tuple[bool, str]:
+    """Check that a GPU probe can run immediately without growing the work queue."""
+    inspector = celery_app.control.inspect(timeout=1.0)
+    queues_by_worker = inspector.active_queues() or {}
+    matching_workers = {
+        worker_name
+        for worker_name, queues in queues_by_worker.items()
+        if any(queue.get("name") == queue_name for queue in (queues or []))
+    }
+    if not matching_workers:
+        return False, "worker-engine is not available"
+
+    active_by_worker = inspector.active() or {}
+    reserved_by_worker = inspector.reserved() or {}
+    if any(active_by_worker.get(worker_name) for worker_name in matching_workers):
+        return False, "worker-engine is busy"
+    if any(reserved_by_worker.get(worker_name) for worker_name in matching_workers):
+        return False, "worker-engine has reserved work"
+
+    from redis import Redis
+
+    queue_depth = int(Redis.from_url(redis_url).llen(queue_name))
+    if queue_depth > 0:
+        return False, f"worker-engine queue has {queue_depth} pending message(s)"
+
+    return True, "worker-engine is ready"
+
+
 def _runtime_gpu_status() -> dict[str, Any]:
     """Return GPU status, preferring API-local nvidia-smi over a busy worker queue."""
     now = time.monotonic()
@@ -96,12 +124,46 @@ def _runtime_gpu_status() -> dict[str, Any]:
         _gpu_cache.update({"ts": now, "ttl": 2.0, "data": local_data})
         return local_data
 
+    settings = get_settings()
+    if not settings.ENABLE_METASHAPE_ENGINE:
+        data = {
+            "status": "unknown",
+            "available": False,
+            "source": "configuration",
+            "checked_at": utc_now_iso(),
+            "devices": [],
+            "message": "GPU processing engine is disabled",
+        }
+        _gpu_cache.update({"ts": now, "ttl": 30.0, "data": data})
+        return data
+
     result = None
     try:
-        from app.workers.tasks import inspect_worker_gpu
+        from app.workers.tasks import celery_app, inspect_worker_gpu
+
+        queue_name = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
+        ready, readiness_message = _gpu_worker_probe_readiness(
+            celery_app,
+            queue_name,
+            settings.REDIS_URL,
+        )
+        if not ready:
+            if _gpu_cache["data"] and _gpu_cache["data"].get("devices"):
+                data = _mark_gpu_stale(_gpu_cache["data"], readiness_message)
+            else:
+                data = {
+                    "status": "unknown",
+                    "available": False,
+                    "source": "worker-engine",
+                    "checked_at": utc_now_iso(),
+                    "devices": [],
+                    "message": readiness_message,
+                }
+            _gpu_cache.update({"ts": now, "ttl": 10.0, "data": data})
+            return data
 
         result = inspect_worker_gpu.apply_async(
-            queue=os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine"),
+            queue=queue_name,
             expires=5,
         )
         data = result.get(timeout=3, disable_sync_subtasks=False)

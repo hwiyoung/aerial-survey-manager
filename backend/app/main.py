@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.api.v1 import router as api_v1_router
 from app.database import async_session
 from app.models.project import ProcessingJob, Project
+from app.services.processing_lifecycle import startup_recovery_in_grace_period
 from app.utils.storage_paths import processing_status_path
 
 settings = get_settings()
@@ -28,26 +29,36 @@ def _active_processing_job_ids() -> set[str] | None:
         return None
 
     try:
-        active_by_worker = celery_app.control.inspect(timeout=5).active() or {}
+        inspector = celery_app.control.inspect(timeout=5)
+        responding_workers = inspector.ping() or {}
+        if not responding_workers:
+            return None
+        task_snapshots = [
+            inspector.active() or {},
+            inspector.reserved() or {},
+            inspector.scheduled() or {},
+        ]
     except Exception as exc:
-        print(f"[startup] Celery active task 조회 실패: {exc}")
+        print(f"[startup] Celery task 조회 실패: {exc}")
         return None
 
     active_ids: set[str] = set()
-    for tasks in active_by_worker.values():
-        for task in tasks or []:
-            if task.get("name") != "app.workers.tasks.process_orthophoto":
-                continue
-            args = task.get("args") or []
-            if isinstance(args, str):
-                try:
-                    import ast
+    for tasks_by_worker in task_snapshots:
+        for tasks in tasks_by_worker.values():
+            for raw_task in tasks or []:
+                task = raw_task.get("request", raw_task)
+                if task.get("name") != "app.workers.tasks.process_orthophoto":
+                    continue
+                args = task.get("args") or []
+                if isinstance(args, str):
+                    try:
+                        import ast
 
-                    args = ast.literal_eval(args)
-                except Exception:
-                    args = []
-            if isinstance(args, (list, tuple)) and args:
-                active_ids.add(str(args[0]))
+                        args = ast.literal_eval(args)
+                    except Exception:
+                        args = []
+                if isinstance(args, (list, tuple)) and args:
+                    active_ids.add(str(args[0]))
     return active_ids
 
 
@@ -70,6 +81,7 @@ def _write_cancelled_status_file(job: ProcessingJob) -> None:
         with open(status_file, "w", encoding="utf-8") as f:
             json.dump(
                 {
+                    "job_id": str(job.id),
                     "status": "cancelled",
                     "progress": int(job.progress or 0),
                     "message": CANCELLED_PROCESSING_MESSAGE,
@@ -86,10 +98,19 @@ def _write_cancelled_status_file(job: ProcessingJob) -> None:
 def _read_processing_status_file(job: ProcessingJob) -> dict:
     try:
         status_file = processing_status_path(job.project_id)
-        if status_file.exists():
-            with open(status_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
+        if not status_file.exists() or not job.started_at:
+            return {}
+        status_mtime = datetime.fromtimestamp(status_file.stat().st_mtime)
+        if status_mtime < job.started_at:
+            return {}
+        with open(status_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        payload_job_id = data.get("job_id")
+        if payload_job_id and str(payload_job_id) != str(job.id):
+            return {}
+        return data
     except Exception as exc:
         print(f"[startup] 처리 상태 파일 읽기 실패 job_id={job.id}: {exc}")
     return {}
@@ -121,16 +142,32 @@ async def _recover_stuck_jobs():
 
         if active_jobs:
             print(
-                "[startup] 실제 실행 중인 처리 작업은 복구 대상에서 제외: "
+                "[startup] Celery가 실행/예약/대기 중인 처리 작업은 복구 대상에서 제외: "
                 f"{[str(job.id) for job in active_jobs]}"
             )
 
         if not stuck_jobs:
             return
 
+        celery_states = {
+            job.id: _celery_task_state(job.celery_task_id)
+            for job in stuck_jobs
+        }
+        backend_active_jobs = [
+            job
+            for job in stuck_jobs
+            if celery_states.get(job.id) in {"STARTED", "RETRY", "RECEIVED"}
+        ]
+        if backend_active_jobs:
+            print(
+                "[startup] Celery backend가 실행 중으로 보고한 작업은 복구 대상에서 제외: "
+                f"{[str(job.id) for job in backend_active_jobs]}"
+            )
+            stuck_jobs = [job for job in stuck_jobs if job not in backend_active_jobs]
+
         revoked_jobs = [
             job for job in stuck_jobs
-            if _celery_task_state(job.celery_task_id) == "REVOKED"
+            if celery_states.get(job.id) == "REVOKED"
         ]
         if revoked_jobs:
             revoked_job_ids = [job.id for job in revoked_jobs]
@@ -210,6 +247,26 @@ async def _recover_stuck_jobs():
             await db.commit()
 
         stuck_jobs = [job for job in stuck_jobs if job not in completed_jobs]
+        if not stuck_jobs:
+            return
+
+        now = datetime.utcnow()
+        grace_jobs = [
+            job
+            for job in stuck_jobs
+            if startup_recovery_in_grace_period(
+                created_at=job.created_at,
+                started_at=job.started_at,
+                now=now,
+            )
+        ]
+        if grace_jobs:
+            print(
+                "[startup] 최근 시작된 처리 작업은 15분 복구 유예시간 동안 유지: "
+                f"{[str(job.id) for job in grace_jobs]}"
+            )
+            stuck_jobs = [job for job in stuck_jobs if job not in grace_jobs]
+
         if not stuck_jobs:
             return
 

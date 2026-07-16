@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --- Auth Schemas ---
@@ -57,16 +57,14 @@ class UserUpdate(BaseModel):
 
 class UserResponse(UserBase):
     """User response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     organization_id: Optional[UUID] = None
     is_active: bool
     created_at: datetime
     last_login: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
-
-
 class UserWithOrg(UserResponse):
     """User response with organization details."""
     organization_name: Optional[str] = None
@@ -118,15 +116,13 @@ class OrganizationCreate(OrganizationBase):
 
 class OrganizationResponse(OrganizationBase):
     """Organization response schema."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     quota_storage_gb: int
     quota_projects: int
     created_at: datetime
     
-    class Config:
-        from_attributes = True
-
-
 class OrganizationListResponse(BaseModel):
     """List response wrapper for organizations."""
     items: List[OrganizationResponse]
