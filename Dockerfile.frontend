@@ -6,19 +6,17 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies
-RUN npm install
+# Install exactly the reviewed dependency lock.
+RUN npm ci
 
 # Copy project files
 COPY . .
 
 # Build args for environment variables
 ARG VITE_API_URL
-ARG VITE_TUS_URL
 ARG VITE_MAP_OFFLINE=false
 ARG VITE_TILE_URL
 ENV VITE_API_URL=$VITE_API_URL
-ENV VITE_TUS_URL=$VITE_TUS_URL
 ENV VITE_MAP_OFFLINE=$VITE_MAP_OFFLINE
 ENV VITE_TILE_URL=$VITE_TILE_URL
 

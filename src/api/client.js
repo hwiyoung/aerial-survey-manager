@@ -5,18 +5,6 @@
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
-// Use configured TUS URL or dynamically build from current origin
-// This ensures the request goes to the correct port (e.g., :18110 in nginx proxy)
-const getTusUrl = () => {
-    const configured = import.meta.env.VITE_TUS_URL;
-    if (configured && configured.startsWith('http')) {
-        return configured;
-    }
-    // Use relative path from current origin (preserves port like :18110)
-    return `${window.location.origin}${configured || '/files/'}`;
-};
-const TUS_URL = getTusUrl();
-
 class ApiClient {
     constructor() {
         this.token = localStorage.getItem('access_token');

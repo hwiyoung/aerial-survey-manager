@@ -7,11 +7,19 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      // Make proj4-fully-loaded resolve to proj4 for better compatibility
-      "proj4-fully-loaded": "proj4"
     },
   },
   optimizeDeps: {
-    include: ['proj4', 'georaster', 'georaster-layer-for-leaflet']
-  }
+    include: ['proj4']
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'map-vendor': ['leaflet', 'react-leaflet', 'proj4'],
+          'chart-vendor': ['recharts'],
+        },
+      },
+    },
+  },
 })
