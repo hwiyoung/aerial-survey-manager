@@ -2,9 +2,10 @@
 import json
 import math
 import os
+import re
 from collections import Counter
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import (
     APIRouter,
     Depends,
@@ -27,6 +28,8 @@ from app.schemas.project import (
     ProcessingEnginesResponse,
     ProcessingEnginePolicy,
     ProcessingOptions,
+    ProcessingCrsCorrectionRequest,
+    ProcessingCrsCorrectionResponse,
     ProcessingJobResponse,
     ProcessingMetricsResponse,
     ProcessingMetricJobSummary,
@@ -44,6 +47,7 @@ from app.utils.storage_paths import (
     processing_status_path,
     processing_work_dir,
 )
+from app.utils.geo import get_region_for_point_db
 from app.services.processing_runtime import (
     clear_active_processing_task_cache,
     get_active_processing_tasks,
@@ -53,11 +57,13 @@ from app.services.processing_runtime import (
     read_processing_status_file as _read_processing_status_file,
     read_step_status_file as _read_step_status_file,
 )
+from pyproj import Transformer
 
 router = APIRouter(prefix="/processing", tags=["Processing"])
 DEFAULT_PROCESSING_ENGINE = "metashape"
 PROCESSING_QUEUE = os.getenv("PROCESSING_ENGINE_QUEUE", "gpu-engine")
 TERMINAL_PROCESSING_STATUSES = {"error", "failed", "cancelled"}
+FINISHED_PROCESSING_STATUSES = TERMINAL_PROCESSING_STATUSES | {"completed"}
 CANCELLED_PROCESSING_MESSAGE = "처리가 취소되었습니다."
 RESTART_CHOICE_STATUSES = {"error", "failed", "cancelled"}
 CHECKPOINT_STEP_LABELS = {
@@ -69,6 +75,19 @@ CHECKPOINT_STEP_LABELS = {
     "export_orthomosaic.py": "정사영상 내보내기",
     "convert_cog.py": "COG 변환",
 }
+CRS_CORRECTION_OPTIONS = [
+    {"value": "EPSG:5186", "label": "TM 중부 (EPSG:5186)"},
+    {"value": "EPSG:5185", "label": "TM 서부 (EPSG:5185)"},
+    {"value": "EPSG:5187", "label": "TM 동부 (EPSG:5187)"},
+    {"value": "EPSG:5188", "label": "TM 동해 (EPSG:5188)"},
+    {"value": "EPSG:5179", "label": "UTM-K (EPSG:5179)"},
+    {"value": "EPSG:4326", "label": "WGS84 (EPSG:4326)"},
+]
+CRS_CORRECTION_ALLOWED = {option["value"] for option in CRS_CORRECTION_OPTIONS}
+CRS_CORRECTION_ALLOWED_LABEL = ", ".join(option["value"] for option in CRS_CORRECTION_OPTIONS)
+CRS_CORRECTION_ACTIVE_STATUSES = {"queued", "processing", "scheduled"}
+CRS_CORRECTION_LOCKED_STATUSES = {"closed", "applying", "applied"}
+RUNTIME_STATUS_STALE_GRACE_SECONDS = 5
 PROJECT_STATE_STEP_RANK = {
     "align_photos.py": 1,
     "build_depth_maps.py": 2,
@@ -137,6 +156,11 @@ def _mark_job_cancelled(
     job.progress = cancel_progress
     job.completed_at = job.completed_at or datetime.utcnow()
     job.error_message = None
+    if job.crs_correction_status == "pending":
+        job.crs_correction_source_crs = None
+        job.crs_correction_status = "cancelled"
+        job.crs_correction_applied_at = None
+        job.crs_correction_error = None
     project.status = "cancelled"
     project.progress = cancel_progress
     _write_processing_terminal_status_file(
@@ -390,6 +414,393 @@ def _caller_label(user: User) -> str:
     )
 
 
+def _extract_crs_code(value: object) -> str | None:
+    raw = str(value or "").strip().upper().replace("EPSG::", "EPSG:")
+    if not raw:
+        return None
+    if raw.isdigit():
+        return f"EPSG:{raw}"
+    direct = re.search(r"EPSG[:\s]*(\d{4,5})", raw)
+    if direct:
+        return f"EPSG:{direct.group(1)}"
+    loose = re.search(r"\b(\d{4,5})\b", raw)
+    if loose:
+        return f"EPSG:{loose.group(1)}"
+    return raw if raw.startswith("EPSG:") else None
+
+
+def _normalize_crs_correction_value(value: object) -> str:
+    raw = _extract_crs_code(value)
+    if raw not in CRS_CORRECTION_ALLOWED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "type": "unsupported_crs_correction",
+                "message": f"좌표계 변경은 {CRS_CORRECTION_ALLOWED_LABEL} 중에서 선택해야 합니다.",
+                "allowed_crs": [option["value"] for option in CRS_CORRECTION_OPTIONS],
+            },
+        )
+    return raw
+
+
+def _read_project_reference_crs(project_id: UUID) -> str | None:
+    metadata_path = processing_metadata_path(project_id)
+    try:
+        with open(metadata_path, "r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(30):
+                line = f.readline()
+                if not line:
+                    break
+                if line.lstrip().startswith("#"):
+                    crs_code = _extract_crs_code(line)
+                    if crs_code:
+                        return crs_code
+    except OSError:
+        return None
+    return None
+
+
+async def _select_project_eo_source_crs(db: AsyncSession, project_id: UUID) -> str | None:
+    result = await db.execute(
+        select(ExteriorOrientation.crs)
+        .join(Image, ExteriorOrientation.image_id == Image.id)
+        .where(Image.project_id == project_id)
+        .distinct()
+    )
+    values = {
+        code
+        for value in result.scalars().all()
+        if (code := _extract_crs_code(value))
+    }
+    if len(values) == 1:
+        return next(iter(values))
+    return None
+
+
+async def _current_processing_source_crs(
+    db: AsyncSession,
+    project_id: UUID,
+    job: ProcessingJob,
+) -> str | None:
+    return (
+        _read_project_reference_crs(project_id)
+        or await _select_project_eo_source_crs(db, project_id)
+        or _extract_crs_code(job.crs_correction_source_crs)
+    )
+
+
+def _parse_eo_reference_rows(project_id: UUID) -> tuple[str | None, list[dict[str, object]]]:
+    metadata_path = processing_metadata_path(project_id)
+    rows: list[dict[str, object]] = []
+    reference_crs: str | None = None
+    try:
+        with open(metadata_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith("#"):
+                    if reference_crs is None:
+                        reference_crs = _extract_crs_code(stripped)
+                    continue
+
+                parts = stripped.split()
+                if len(parts) < 7:
+                    continue
+                name = " ".join(parts[:-6])
+                try:
+                    x_val, y_val, z_val, omega, phi, kappa = [float(value) for value in parts[-6:]]
+                except ValueError:
+                    continue
+                rows.append({
+                    "image_name": name,
+                    "x": x_val,
+                    "y": y_val,
+                    "z": z_val,
+                    "omega": omega,
+                    "phi": phi,
+                    "kappa": kappa,
+                })
+    except OSError:
+        return None, []
+    return reference_crs, rows
+
+
+def _eo_image_lookup_key(image_name: object) -> str:
+    basename = os.path.basename(str(image_name or "").strip())
+    stem = os.path.splitext(basename)[0]
+    return stem.lower()
+
+
+def _find_image_for_eo_row(row_name: object, image_by_name: dict[str, Image], image_by_stem: dict[str, Image]) -> Image | None:
+    basename = os.path.basename(str(row_name or "").strip())
+    return (
+        image_by_name.get(basename)
+        or image_by_name.get(basename.lower())
+        or image_by_stem.get(_eo_image_lookup_key(basename))
+    )
+
+
+async def _recalculate_project_eo_display_coordinates(
+    db: AsyncSession,
+    project: Project,
+    source_crs: str,
+) -> dict[str, object]:
+    """Rebuild map-display EO coordinates from original metadata rows."""
+    source_crs = _extract_crs_code(source_crs) or source_crs
+    if not source_crs:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_reference_crs_missing",
+                "message": "EO 원본 좌표계를 확인할 수 없어 EO 표시 좌표를 보정할 수 없습니다.",
+            },
+        )
+
+    _reference_crs, reference_rows = _parse_eo_reference_rows(project.id)
+    if not reference_rows:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_reference_missing",
+                "message": "EO 원본 좌표 파일(metadata.txt)을 찾을 수 없어 EO 표시 좌표를 보정할 수 없습니다.",
+            },
+        )
+
+    transformer = None
+    if source_crs != "EPSG:4326":
+        try:
+            transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "type": "eo_crs_transform_failed",
+                    "message": f"{source_crs} 기준 EO 좌표 변환기를 만들 수 없습니다.",
+                    "error": str(exc),
+                },
+            ) from exc
+
+    image_result = await db.execute(select(Image).where(Image.project_id == project.id))
+    images = image_result.scalars().all()
+    image_by_name: dict[str, Image] = {}
+    image_by_stem: dict[str, Image] = {}
+    for image in images:
+        basename = os.path.basename(str(image.filename or ""))
+        image_by_name.setdefault(basename, image)
+        image_by_name.setdefault(basename.lower(), image)
+        image_by_stem.setdefault(_eo_image_lookup_key(basename), image)
+
+    eo_result = await db.execute(
+        select(ExteriorOrientation)
+        .join(Image, ExteriorOrientation.image_id == Image.id)
+        .where(Image.project_id == project.id)
+    )
+    eo_by_image_id = {eo.image_id: eo for eo in eo_result.scalars().all()}
+
+    updated_count = 0
+    lons: list[float] = []
+    lats: list[float] = []
+    seen_image_ids = set()
+    for row in reference_rows:
+        image = _find_image_for_eo_row(row["image_name"], image_by_name, image_by_stem)
+        if image is None or image.id in seen_image_ids:
+            continue
+        seen_image_ids.add(image.id)
+
+        x_val = float(row["x"])
+        y_val = float(row["y"])
+        if transformer:
+            try:
+                lon, lat = transformer.transform(x_val, y_val)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "type": "eo_crs_transform_failed",
+                        "message": f"{source_crs} 기준 EO 좌표 변환 중 오류가 발생했습니다.",
+                        "image_name": row["image_name"],
+                        "error": str(exc),
+                    },
+                ) from exc
+        else:
+            lon, lat = x_val, y_val
+
+        if not (math.isfinite(float(lon)) and math.isfinite(float(lat))):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "type": "eo_crs_transform_invalid",
+                    "message": f"{source_crs} 기준 EO 좌표 변환 결과가 유효하지 않습니다.",
+                    "image_name": row["image_name"],
+                },
+            )
+
+        eo = eo_by_image_id.get(image.id)
+        if eo is None:
+            eo = ExteriorOrientation(image_id=image.id)
+            db.add(eo)
+            eo_by_image_id[image.id] = eo
+        eo.x = float(lon)
+        eo.y = float(lat)
+        eo.z = float(row["z"])
+        eo.omega = float(row["omega"])
+        eo.phi = float(row["phi"])
+        eo.kappa = float(row["kappa"])
+        eo.crs = "EPSG:4326"
+        image.location = f"SRID=4326;POINT({float(lon)} {float(lat)})"
+        lons.append(float(lon))
+        lats.append(float(lat))
+        updated_count += 1
+
+    if updated_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_reference_unmatched",
+                "message": "EO 원본 좌표와 프로젝트 이미지를 매칭할 수 없어 EO 표시 좌표를 보정할 수 없습니다.",
+            },
+        )
+
+    min_lon, max_lon = min(lons), max(lons)
+    min_lat, max_lat = min(lats), max(lats)
+    if min_lon == max_lon:
+        min_lon -= 0.0001
+        max_lon += 0.0001
+    if min_lat == max_lat:
+        min_lat -= 0.0001
+        max_lat += 0.0001
+    project.bounds = (
+        f"SRID=4326;POLYGON(("
+        f"{min_lon} {min_lat}, {max_lon} {min_lat}, "
+        f"{max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}"
+        f"))"
+    )
+
+    center_lon = (min_lon + max_lon) / 2
+    center_lat = (min_lat + max_lat) / 2
+    region = await get_region_for_point_db(db, center_lon, center_lat)
+    if region:
+        project.region = region
+
+    return {
+        "source_crs": source_crs,
+        "updated_count": updated_count,
+        "bounds": {
+            "min_lon": min_lon,
+            "min_lat": min_lat,
+            "max_lon": max_lon,
+            "max_lat": max_lat,
+        },
+    }
+
+
+def _crs_correction_response(
+    job: ProcessingJob,
+    *,
+    current_source_crs: str | None = None,
+    eo_display_source_crs: str | None = None,
+    eo_display_updated_count: int | None = None,
+    message: str | None = None,
+) -> ProcessingCrsCorrectionResponse:
+    return ProcessingCrsCorrectionResponse(
+        job_id=job.id,
+        project_id=job.project_id,
+        source_crs=job.crs_correction_source_crs,
+        current_source_crs=current_source_crs,
+        eo_display_source_crs=eo_display_source_crs,
+        eo_display_updated_count=eo_display_updated_count,
+        status=job.crs_correction_status,
+        requested_at=job.crs_correction_requested_at,
+        applied_at=job.crs_correction_applied_at,
+        error=job.crs_correction_error,
+        message=message,
+        crs_correction_options=CRS_CORRECTION_OPTIONS,
+    )
+
+
+def _parse_status_updated_at(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _runtime_file_is_current_for_job(path: Path, job: ProcessingJob) -> bool:
+    if not job.started_at:
+        return False
+    try:
+        modified_at = datetime.utcfromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return False
+    cutoff = job.started_at - timedelta(seconds=RUNTIME_STATUS_STALE_GRACE_SECONDS)
+    return modified_at >= cutoff
+
+
+def _read_current_processing_status_file(project_id: UUID, job: ProcessingJob) -> dict:
+    payload = _read_processing_status_file(project_id)
+    if not payload:
+        return {}
+    if job.status not in CRS_CORRECTION_ACTIVE_STATUSES:
+        return payload
+    if not job.started_at:
+        return {}
+
+    cutoff = job.started_at - timedelta(seconds=RUNTIME_STATUS_STALE_GRACE_SECONDS)
+    updated_at = _parse_status_updated_at(payload.get("updated_at"))
+    if updated_at is not None:
+        return payload if updated_at >= cutoff else {}
+
+    status_file = processing_status_path(project_id)
+    return payload if _runtime_file_is_current_for_job(status_file, job) else {}
+
+
+def _read_current_step_status_file(project_id: UUID, job: ProcessingJob) -> dict:
+    if job.status in CRS_CORRECTION_ACTIVE_STATUSES:
+        if not job.started_at:
+            return {}
+        output_dir = processing_work_dir(project_id)
+        runtime_paths = [
+            output_dir / "status.json",
+            output_dir / "processing_manifest.json",
+        ]
+        if not any(_runtime_file_is_current_for_job(path, job) for path in runtime_paths):
+            return {}
+    return _read_step_status_file(str(project_id))
+
+
+def _crs_correction_progress_closed(project: Project, job: ProcessingJob) -> bool:
+    if job.result_path or job.status == "completed":
+        return True
+    return False
+
+
+def _mark_unapplied_crs_correction(job: ProcessingJob) -> bool:
+    if job.status != "completed":
+        return False
+    if job.crs_correction_status != "pending" or not job.result_path:
+        return False
+    job.crs_correction_status = "failed"
+    job.crs_correction_error = (
+        "좌표계 변경 예약이 최종 산출물에 적용되지 않았습니다. "
+        "worker-engine 재시작 후 다시 처리해야 합니다."
+    )
+    return True
+
+
+async def _select_crs_correction_job(
+    db: AsyncSession,
+    project_id: UUID,
+) -> ProcessingJob | None:
+    active_task = _active_task_for_project(project_id, force_refresh=True)
+    job = await _select_status_job(db, project_id, active_task)
+    if job and job.status in CRS_CORRECTION_ACTIVE_STATUSES:
+        return job
+    return None
+
+
 async def _sync_completed_job_result_path(
     db: AsyncSession,
     project: Project,
@@ -453,13 +864,13 @@ async def _build_processing_status_response(
     active_task: dict | None = None,
 ) -> ProcessingJobResponse:
     project_id = job.project_id
-    status_payload = _read_processing_status_file(project_id)
-    step_status = _read_step_status_file(str(project_id))
+    status_payload = _read_current_processing_status_file(project_id, job)
+    step_status = _read_current_step_status_file(project_id, job)
     runtime_progress = progress_from_step_status(step_status, job.progress or project.progress or 0)
     step_message = infer_message_from_step_status(step_status)
     active_task = active_task or _active_task_for_project(project_id)
 
-    if job.status in TERMINAL_PROCESSING_STATUSES or project.status in TERMINAL_PROCESSING_STATUSES:
+    if job.status in FINISHED_PROCESSING_STATUSES or project.status in FINISHED_PROCESSING_STATUSES:
         active_task = None
 
     if active_task:
@@ -489,14 +900,19 @@ async def _build_processing_status_response(
             await db.commit()
             await db.refresh(project)
             await db.refresh(job)
-    elif job.status in ("queued", "processing") and status_payload.get("status") in TERMINAL_PROCESSING_STATUSES:
+    elif job.status in ("queued", "processing") and status_payload.get("status") in FINISHED_PROCESSING_STATUSES:
         terminal_status = str(status_payload.get("status"))
         terminal_message = status_payload.get("message") or job.error_message
         job.status = terminal_status
         project.status = terminal_status
         job.progress = runtime_progress
         project.progress = runtime_progress
-        if terminal_message:
+        if terminal_status == "completed":
+            job.progress = 100
+            project.progress = 100
+            job.error_message = None
+            _mark_unapplied_crs_correction(job)
+        elif terminal_message:
             job.error_message = terminal_message
         if job.completed_at is None:
             job.completed_at = datetime.utcnow()
@@ -516,8 +932,17 @@ async def _build_processing_status_response(
         await db.refresh(job)
 
     await _sync_completed_job_result_path(db, project, job, active_task)
+    if _mark_unapplied_crs_correction(job):
+        await db.commit()
+        await db.refresh(job)
 
     response = ProcessingJobResponse.model_validate(job)
+    response.current_source_crs = await _current_processing_source_crs(db, project_id, job)
+    if job.crs_correction_status in {"pending", "applying", "applied"} and job.crs_correction_source_crs:
+        response.eo_display_source_crs = job.crs_correction_source_crs
+    else:
+        response.eo_display_source_crs = response.current_source_crs
+    response.crs_correction_options = CRS_CORRECTION_OPTIONS
     if active_task:
         response.status = "processing"
         response.progress = runtime_progress
@@ -527,9 +952,11 @@ async def _build_processing_status_response(
 
     payload_status = status_payload.get("status")
     fallback_message = status_payload.get("message")
-    if job.status in TERMINAL_PROCESSING_STATUSES and payload_status != job.status:
+    if job.status in FINISHED_PROCESSING_STATUSES and payload_status != job.status:
         fallback_message = None
-    if job.status in TERMINAL_PROCESSING_STATUSES and not active_task:
+    if job.status == "completed" and not active_task:
+        response.message = fallback_message or response.message
+    elif job.status in TERMINAL_PROCESSING_STATUSES and not active_task:
         response.message = fallback_message or job.error_message
         if job.status == "cancelled" and not response.message:
             response.message = CANCELLED_PROCESSING_MESSAGE
@@ -1188,6 +1615,155 @@ async def get_processing_status(
         )
     
     return await _build_processing_status_response(db, scoped_project, job, active_task)
+
+
+@router.post("/projects/{project_id}/crs-correction", response_model=ProcessingCrsCorrectionResponse)
+async def reserve_crs_correction(
+    project_id: UUID,
+    payload: ProcessingCrsCorrectionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reserve a source CRS tag correction before final COG/warp."""
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    job = await _select_crs_correction_job(db, project_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "crs_correction_unavailable",
+                "message": "처리가 진행 중이거나 대기 중일 때만 좌표계 변경을 예약할 수 있습니다.",
+            },
+        )
+
+    if job.crs_correction_status in CRS_CORRECTION_LOCKED_STATUSES or _crs_correction_progress_closed(scoped_project, job):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "crs_correction_locked",
+                "message": "최종 결과 저장 단계에 들어간 뒤에는 좌표계 변경을 적용하거나 바꿀 수 없습니다.",
+                "status": job.crs_correction_status,
+                "progress": max(job.progress or 0, scoped_project.progress or 0),
+            },
+        )
+
+    source_crs = _normalize_crs_correction_value(payload.source_crs)
+    eo_update = await _recalculate_project_eo_display_coordinates(db, scoped_project, source_crs)
+    job.crs_correction_source_crs = source_crs
+    job.crs_correction_status = "pending"
+    job.crs_correction_requested_at = datetime.utcnow()
+    job.crs_correction_applied_at = None
+    job.crs_correction_error = None
+    await db.commit()
+    await db.refresh(job)
+
+    await manager.broadcast(
+        str(project_id),
+        {
+            "status": "processing",
+            "progress": job.progress or scoped_project.progress or 0,
+            "crs_correction_source_crs": source_crs,
+            "crs_correction_status": "pending",
+            "eo_display_source_crs": eo_update["source_crs"],
+            "eo_display_updated_count": eo_update["updated_count"],
+        },
+    )
+    current_source_crs = await _current_processing_source_crs(db, project_id, job)
+    return _crs_correction_response(
+        job,
+        current_source_crs=current_source_crs,
+        eo_display_source_crs=str(eo_update["source_crs"]),
+        eo_display_updated_count=int(eo_update["updated_count"]),
+        message=f"좌표계 변경이 예약되었습니다: {source_crs}",
+    )
+
+
+@router.delete("/projects/{project_id}/crs-correction", response_model=ProcessingCrsCorrectionResponse)
+async def cancel_crs_correction(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a pending source CRS tag correction before final COG/warp."""
+    permission_checker = PermissionChecker("edit")
+    if not await permission_checker.check(str(project_id), current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    scoped_project = await _get_scoped_project(project_id, current_user, db)
+    if not scoped_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    job = await _select_crs_correction_job(db, project_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "crs_correction_unavailable",
+                "message": "처리가 진행 중이거나 대기 중일 때만 좌표계 변경 예약을 취소할 수 있습니다.",
+            },
+        )
+
+    if job.crs_correction_status in CRS_CORRECTION_LOCKED_STATUSES or _crs_correction_progress_closed(scoped_project, job):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "crs_correction_locked",
+                "message": "최종 결과 저장 단계에 들어간 뒤에는 좌표계 변경 예약을 취소할 수 없습니다.",
+                "status": job.crs_correction_status,
+                "progress": max(job.progress or 0, scoped_project.progress or 0),
+            },
+        )
+
+    reset_source_crs = _read_project_reference_crs(project_id)
+    if not reset_source_crs:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "type": "eo_reference_crs_missing",
+                "message": "EO 원본 좌표계를 확인할 수 없어 좌표계 변경 예약을 취소할 수 없습니다.",
+            },
+        )
+    eo_update = await _recalculate_project_eo_display_coordinates(db, scoped_project, reset_source_crs)
+
+    job.crs_correction_source_crs = None
+    job.crs_correction_status = "cancelled"
+    job.crs_correction_applied_at = None
+    job.crs_correction_error = None
+    await db.commit()
+    await db.refresh(job)
+
+    await manager.broadcast(
+        str(project_id),
+        {
+            "status": "processing",
+            "progress": job.progress or scoped_project.progress or 0,
+            "crs_correction_source_crs": None,
+            "crs_correction_status": "cancelled",
+            "eo_display_source_crs": eo_update["source_crs"],
+            "eo_display_updated_count": eo_update["updated_count"],
+        },
+    )
+    current_source_crs = await _current_processing_source_crs(db, project_id, job)
+    return _crs_correction_response(
+        job,
+        current_source_crs=current_source_crs,
+        eo_display_source_crs=str(eo_update["source_crs"]),
+        eo_display_updated_count=int(eo_update["updated_count"]),
+        message="좌표계 변경 예약이 취소되었습니다.",
+    )
 
 
 @router.post("/projects/{project_id}/cancel")

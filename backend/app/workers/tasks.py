@@ -213,6 +213,18 @@ def _warp_to_cog(input_path: str, output_path: str, target_crs: str) -> None:
     subprocess.run(gdal_cmd, check=True, capture_output=True)
 
 
+def _assign_raster_crs(input_path: str, source_crs: str) -> None:
+    """Assign a CRS tag without changing raster pixels or coordinates."""
+    import subprocess
+
+    gdal_cmd = [
+        "gdal_edit.py",
+        "-a_srs", source_crs,
+        input_path,
+    ]
+    subprocess.run(gdal_cmd, check=True, capture_output=True)
+
+
 def _is_cog_in_target_crs(path: Path | str, target_crs: str) -> bool:
     """Return True when a raster is already a COG in the requested CRS."""
     try:
@@ -681,11 +693,55 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             try:
                 import shutil
 
-                # 엔진이 이미 COG를 생성한 경우 변환 스킵
-                if cog_path.exists():
-                    print(f"COG already created by engine, skipping conversion: {cog_path}")
+                db.refresh(job)
+                correction_crs = (
+                    job.crs_correction_source_crs
+                    if job.crs_correction_status == "pending" and job.crs_correction_source_crs
+                    else None
+                )
+
+                if correction_crs:
+                    try:
+                        job.crs_correction_status = "applying"
+                        job.crs_correction_error = None
+                        db.commit()
+                        update_progress(91, f"좌표계 변경 적용 중... ({correction_crs})")
+
+                        if result_path.exists():
+                            if cog_path.exists():
+                                cog_path.unlink()
+                                print(f"Deleted stale COG before CRS correction: {cog_path}")
+                            _assign_raster_crs(str(result_path), correction_crs)
+                            _convert_to_cog(str(result_path), str(cog_path))
+                        elif cog_path.exists():
+                            print(
+                                "⚠ result.tif is missing; assigning CRS directly to existing COG. "
+                                f"path={cog_path}"
+                            )
+                            _assign_raster_crs(str(cog_path), correction_crs)
+                        else:
+                            raise RuntimeError("좌표계 변경을 적용할 정사영상 파일을 찾을 수 없습니다.")
+
+                        job.crs_correction_status = "applied"
+                        job.crs_correction_applied_at = datetime.utcnow()
+                        job.crs_correction_error = None
+                        db.commit()
+                        print(f"✓ CRS correction applied before final COG/warp: {correction_crs}")
+                    except Exception as correction_error:
+                        job.crs_correction_status = "failed"
+                        job.crs_correction_error = str(correction_error)
+                        db.commit()
+                        raise RuntimeError(f"좌표계 변경 적용 실패: {correction_error}") from correction_error
                 else:
-                    _convert_to_cog(str(result_path), str(cog_path))
+                    if job.crs_correction_status != "closed":
+                        job.crs_correction_status = "closed"
+                        job.crs_correction_error = None
+                        db.commit()
+                    # 엔진이 이미 COG를 생성한 경우 변환 스킵
+                    if cog_path.exists():
+                        print(f"COG already created by engine, skipping conversion: {cog_path}")
+                    else:
+                        _convert_to_cog(str(result_path), str(cog_path))
 
                 # result.tif 조기 삭제 (COG 변환 완료 후 불필요)
                 if result_path.exists() and result_path.name == "result.tif":

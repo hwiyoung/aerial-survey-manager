@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET: str = "aerial-survey"
     MINIO_SECURE: bool = False
-    # Browser-accessible endpoint for presigned URLs (e.g., localhost:9002 for host machine)
-    MINIO_PUBLIC_ENDPOINT: Optional[str] = "localhost:9002"
+    # Browser-accessible endpoint for presigned URLs (same origin as nginx in dev/prod)
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = "localhost:18110"
     
     # Processing Engines
     ENABLE_METASHAPE_ENGINE: bool = True
@@ -60,7 +60,12 @@ class Settings(BaseSettings):
     LOCAL_DATA_PATH: str = "/data"
     
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8081"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:18110",
+        "http://127.0.0.1:18110",
+    ]
     
     class Config:
         env_file = ".env"

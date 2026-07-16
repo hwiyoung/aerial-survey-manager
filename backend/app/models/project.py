@@ -190,6 +190,13 @@ class ProcessingJob(Base):
     result_gsd: Mapped[float | None] = mapped_column(Float, nullable=True)  # 실제 결과 GSD (cm/pixel)
     process_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Preview, Normal, High
 
+    # Optional CRS tag correction applied before final COG/warp.
+    crs_correction_source_crs: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    crs_correction_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    crs_correction_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    crs_correction_applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    crs_correction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Celery task tracking
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     

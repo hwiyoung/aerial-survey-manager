@@ -82,7 +82,7 @@ if [ -z "${backend_default_port}" ]; then
   if [ -n "${backend_candidates}" ]; then
     backend_default_port="$backend_candidates"
   else
-    backend_default_port="8001"
+    backend_default_port="18101"
   fi
 fi
 
@@ -133,7 +133,7 @@ fi
 found_api=false
 IFS=',' read -r -a api_ports <<< "${backend_default_port}"
 if [ ${#api_ports[@]} -eq 0 ]; then
-  api_ports=(8001 8081)
+  api_ports=(18101 18110)
 fi
 
 for port in "${api_ports[@]}"; do

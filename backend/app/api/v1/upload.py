@@ -73,6 +73,61 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 settings = get_settings()
 
 
+def _normalize_image_lookup_key(image_name: object) -> str:
+    basename = os.path.basename(str(image_name or "").strip())
+    return os.path.splitext(basename)[0].lower()
+
+
+def _extract_metadata_crs(line: str) -> str | None:
+    text = str(line or "").upper()
+    if "EPSG" not in text:
+        return None
+    marker = text.split("EPSG", 1)[1]
+    digits = "".join(ch for ch in marker if ch.isdigit())
+    return f"EPSG:{digits}" if digits else None
+
+
+def _read_source_eo_map(project_id: UUID) -> dict[str, dict]:
+    """Read original EO coordinates from the processing metadata file."""
+    metadata_path = processing_metadata_path(project_id)
+    source_eo_by_key: dict[str, dict] = {}
+    source_crs: str | None = None
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    source_crs = _extract_metadata_crs(line) or source_crs
+                    continue
+
+                parts = line.split()
+                if len(parts) < 7:
+                    continue
+
+                image_name = " ".join(parts[:-6])
+                try:
+                    x_val, y_val, z_val, omega, phi, kappa = [float(value) for value in parts[-6:]]
+                except ValueError:
+                    continue
+
+                source_eo_by_key[_normalize_image_lookup_key(image_name)] = {
+                    "x": x_val,
+                    "y": y_val,
+                    "z": z_val,
+                    "omega": omega,
+                    "phi": phi,
+                    "kappa": kappa,
+                    "crs": source_crs,
+                }
+    except OSError:
+        return {}
+
+    return source_eo_by_key
+
+
 async def _get_scoped_project(
     project_id: UUID,
     current_user: User,
@@ -317,6 +372,7 @@ async def list_project_images(
 
     storage = get_storage()
     response = []
+    source_eo_by_key = _read_source_eo_map(project_id)
 
     # Track images missing thumbnails for background regeneration
     missing_thumbnails = []
@@ -348,6 +404,7 @@ async def list_project_images(
             # Camera model
             "camera_model": img.camera_model,
             "exterior_orientation": img.exterior_orientation,
+            "source_exterior_orientation": source_eo_by_key.get(_normalize_image_lookup_key(img.filename)),
         }
         response.append(ImageResponse.model_validate(img_dict))
 
@@ -638,6 +695,7 @@ async def get_image(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
     storage = get_storage()
+    source_eo_by_key = _read_source_eo_map(image.project_id)
     img_dict = {
         "id": image.id,
         "project_id": image.project_id,
@@ -658,6 +716,7 @@ async def get_image(
         "image_height": image.image_height,
         "camera_model": image.camera_model,
         "exterior_orientation": image.exterior_orientation,
+        "source_exterior_orientation": source_eo_by_key.get(_normalize_image_lookup_key(image.filename)),
     }
     return ImageResponse.model_validate(img_dict)
 

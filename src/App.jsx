@@ -26,6 +26,7 @@ import Sidebar from './components/Dashboard/Sidebar';
 import ExportDialog from './components/Project/ExportDialog';
 import UploadProgressPanel from './components/Upload/UploadProgressPanel';
 import ProcessingSidebar from './components/Processing/ProcessingSidebar';
+import CrsCorrectionModal from './components/Processing/CrsCorrectionModal';
 import UploadWizard from './components/Upload/UploadWizard';
 import InspectorPanel from './components/Project/InspectorPanel';
 import ProjectMap from './components/Project/ProjectMap';
@@ -35,6 +36,7 @@ import AdminPanel from './components/Admin/AdminPanel';
 import 'leaflet/dist/leaflet.css';
 import ResumableDownloader from './services/download';
 import DashboardView from './components/Dashboard/DashboardView';
+import { formatCrsLabel, normalizeCrsCode } from './constants/crs';
 
 
 // --- 1. CONSTANTS ---
@@ -45,6 +47,7 @@ const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘�
 const STATUS_MAP = {
   'pending': '대기',
   'queued': '대기',
+  'scheduled': '대기',
   'processing': '진행중',
   'completed': '완료',
   'error': '오류',
@@ -61,6 +64,8 @@ const PROJECT_STATUS_OPTIONS = [
 const PROJECT_STATUS_LABEL_BY_VALUE = Object.fromEntries(
   PROJECT_STATUS_OPTIONS.map(({ value, label }) => [value, label])
 );
+const CRS_CORRECTION_ACTIVE_JOB_STATUSES = new Set(['queued', 'processing', 'scheduled']);
+const CRS_CORRECTION_LOCKED_STATUSES = new Set(['closed', 'applying', 'applied']);
 
 // Generate placeholder images for visualization
 const generatePlaceholderImages = (projectId, count) => {
@@ -78,6 +83,7 @@ const generatePlaceholderImages = (projectId, count) => {
 
 const mapApiImageToProjectPoint = (img) => {
   const eo = img.exterior_orientation;
+  const sourceEo = img.source_exterior_orientation || null;
   return {
     id: img.id,
     name: img.filename,
@@ -93,6 +99,17 @@ const mapApiImageToProjectPoint = (img) => {
     validation_error: img.validation_error || null,
     has_error: !!img.has_error,
     thumbnail_url: img.thumbnail_url || null,
+    image_width: img.image_width || null,
+    image_height: img.image_height || null,
+    sourceEo: sourceEo ? {
+      x: sourceEo.x,
+      y: sourceEo.y,
+      z: sourceEo.z,
+      omega: sourceEo.omega,
+      phi: sourceEo.phi,
+      kappa: sourceEo.kappa,
+      crs: sourceEo.crs,
+    } : null,
     file_size: img.file_size || null,
     thumbnailColor: `hsl(${Math.random() * 360}, 70%, 80%)`
   };
@@ -226,6 +243,7 @@ function Dashboard() {
 
       return {
         ...p,
+        rawStatus: p.status,
         status: STATUS_MAP[p.status] || p.status,
         imageCount: p.image_count || 0,
         processingImageCount: p.processing_image_count ?? p.upload_completed_count ?? p.image_count ?? 0,
@@ -387,6 +405,30 @@ function Dashboard() {
 
   const [loadingImages, setLoadingImages] = useState(false);
   const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
+
+  const refreshProjectEoPoints = useCallback(async (projectId) => {
+    if (!projectId) return [];
+
+    const images = await fetchImages(projectId);
+    const points = images.map(mapApiImageToProjectPoint);
+    const imagesWithEo = points.filter(p => p.hasEo);
+
+    if (projectId === selectedProjectId || projectId === processingProject?.id) {
+      setProjectImages(imagesWithEo);
+      setImageRefreshKey(prev => prev + 1);
+    }
+
+    setProcessingProject(prev => {
+      if (!prev || prev.id !== projectId) return prev;
+      return {
+        ...prev,
+        images: imagesWithEo,
+      };
+    });
+
+    await refreshProjects();
+    return imagesWithEo;
+  }, [fetchImages, processingProject?.id, refreshProjects, selectedProjectId]);
 
   const [checkedProjectIds, setCheckedProjectIds] = useState(new Set());
   const [selectedImageId, setSelectedImageId] = useState(null);
@@ -640,6 +682,23 @@ function Dashboard() {
 
   // Export Modal State
   const [exportModalState, setExportModalState] = useState({ isOpen: false, projectIds: [] });
+  const [crsCorrectionModalState, setCrsCorrectionModalState] = useState({
+    isOpen: false,
+    project: null,
+    currentSourceCrs: null,
+    selectedCrs: 'EPSG:5186',
+    correction: {
+      sourceCrs: null,
+      status: null,
+      requestedAt: null,
+      appliedAt: null,
+      eoDisplaySourceCrs: null,
+      eoDisplayUpdatedCount: null,
+      error: null,
+    },
+    isSaving: false,
+    error: '',
+  });
 
 
 
@@ -1551,6 +1610,148 @@ function Dashboard() {
     setExportModalState({ isOpen: true, projectIds: projectIds });
   };
 
+  const formatApiError = (error, fallback) => (
+    error?.data?.message ||
+    error?.data?.detail?.message ||
+    error?.message ||
+    fallback
+  );
+
+  const closeDashboardCrsCorrectionModal = () => {
+    if (crsCorrectionModalState.isSaving) return;
+    setCrsCorrectionModalState(prev => ({
+      ...prev,
+      isOpen: false,
+      error: '',
+    }));
+  };
+
+  const openDashboardCrsCorrectionDialog = async (projectId) => {
+    if (!canEditProjectById(projectId)) {
+      alert('프로젝트 수정 권한이 없습니다.');
+      return;
+    }
+
+    const project = projects.find(item => item.id === projectId);
+    try {
+      const data = await api.getProcessingStatus(projectId);
+      const jobStatus = String(data?.status || '').toLowerCase();
+      const correctionStatus = data?.crs_correction_status || null;
+      const isLocked = (
+        CRS_CORRECTION_LOCKED_STATUSES.has(correctionStatus) ||
+        Boolean(data?.result_path) ||
+        jobStatus === 'completed'
+      );
+
+      if (!CRS_CORRECTION_ACTIVE_JOB_STATUSES.has(jobStatus) || isLocked) {
+        alert(isLocked
+          ? '최종 결과 저장 단계에 들어간 뒤에는 좌표계를 바꿀 수 없습니다.'
+          : '처리가 진행 중이거나 대기 중일 때만 좌표계 변경을 예약할 수 있습니다.'
+        );
+        return;
+      }
+
+      const currentSourceCrs = normalizeCrsCode(data.current_source_crs);
+      const pendingSourceCrs = normalizeCrsCode(data.crs_correction_source_crs);
+      setCrsCorrectionModalState({
+        isOpen: true,
+        project: project || { id: projectId, title: data.project_title || '' },
+        currentSourceCrs,
+        selectedCrs: pendingSourceCrs || currentSourceCrs || 'EPSG:5186',
+        correction: {
+          sourceCrs: pendingSourceCrs,
+          status: data.crs_correction_status || null,
+          requestedAt: data.crs_correction_requested_at || null,
+          appliedAt: data.crs_correction_applied_at || null,
+          eoDisplaySourceCrs: data.eo_display_source_crs || null,
+          eoDisplayUpdatedCount: data.eo_display_updated_count || null,
+          error: data.crs_correction_error || null,
+        },
+        isSaving: false,
+        error: '',
+      });
+    } catch (error) {
+      alert(formatApiError(error, '좌표계 변경 상태를 확인하지 못했습니다.'));
+    }
+  };
+
+  const reserveDashboardCrsCorrection = async () => {
+    const projectId = crsCorrectionModalState.project?.id;
+    const selectedCrs = crsCorrectionModalState.selectedCrs;
+    if (!projectId || !selectedCrs) return;
+
+    const confirmed = window.confirm(
+      'EO 파일에 기록된 원본 좌표가 실제로 사용하는 좌표계를 선택하세요.\n\n' +
+      '최종 결과 저장 전까지 다시 바꾸거나 취소할 수 있습니다.\n\n' +
+      `기존 처리 좌표계: ${formatCrsLabel(crsCorrectionModalState.currentSourceCrs)}\n` +
+      `선택한 좌표계: ${formatCrsLabel(selectedCrs)}\n\n` +
+      '좌표계 변경을 예약하시겠습니까?'
+    );
+    if (!confirmed) return;
+
+    setCrsCorrectionModalState(prev => ({ ...prev, isSaving: true, error: '' }));
+    try {
+      const result = await api.reserveCrsCorrection(projectId, selectedCrs);
+      setCrsCorrectionModalState(prev => ({
+        ...prev,
+        isOpen: false,
+        currentSourceCrs: normalizeCrsCode(result.current_source_crs) || prev.currentSourceCrs,
+        correction: {
+          sourceCrs: normalizeCrsCode(result.source_crs) || selectedCrs,
+          status: result.status || 'pending',
+          requestedAt: result.requested_at || new Date().toISOString(),
+          appliedAt: result.applied_at || null,
+          eoDisplaySourceCrs: normalizeCrsCode(result.eo_display_source_crs) || normalizeCrsCode(result.source_crs) || selectedCrs,
+          eoDisplayUpdatedCount: result.eo_display_updated_count || null,
+          error: result.error || null,
+        },
+        isSaving: false,
+        error: '',
+      }));
+      await refreshProjectEoPoints(projectId);
+    } catch (error) {
+      setCrsCorrectionModalState(prev => ({
+        ...prev,
+        isSaving: false,
+        error: formatApiError(error, '좌표계 변경 예약에 실패했습니다.'),
+      }));
+    }
+  };
+
+  const cancelDashboardCrsCorrection = async () => {
+    const projectId = crsCorrectionModalState.project?.id;
+    if (!projectId) return;
+    if (!window.confirm('좌표계 변경 예약을 취소하시겠습니까?')) return;
+
+    setCrsCorrectionModalState(prev => ({ ...prev, isSaving: true, error: '' }));
+    try {
+      const result = await api.cancelCrsCorrection(projectId);
+      setCrsCorrectionModalState(prev => ({
+        ...prev,
+        isOpen: false,
+        currentSourceCrs: normalizeCrsCode(result.current_source_crs) || prev.currentSourceCrs,
+        correction: {
+          sourceCrs: normalizeCrsCode(result.source_crs),
+          status: result.status || 'cancelled',
+          requestedAt: result.requested_at || prev.correction.requestedAt || null,
+          appliedAt: result.applied_at || null,
+          eoDisplaySourceCrs: normalizeCrsCode(result.eo_display_source_crs) || normalizeCrsCode(result.current_source_crs),
+          eoDisplayUpdatedCount: result.eo_display_updated_count || null,
+          error: result.error || null,
+        },
+        isSaving: false,
+        error: '',
+      }));
+      await refreshProjectEoPoints(projectId);
+    } catch (error) {
+      setCrsCorrectionModalState(prev => ({
+        ...prev,
+        isSaving: false,
+        error: formatApiError(error, '좌표계 변경 예약 취소에 실패했습니다.'),
+      }));
+    }
+  };
+
 
 
   return (
@@ -1610,6 +1811,7 @@ function Dashboard() {
             activeUploads={currentProjectUploads}
             uploadEvents={currentProjectUploadEvents}
             onProcessingEventsChange={handleProcessingEventsChange}
+            onEoPointsChanged={refreshProjectEoPoints}
             onCancel={() => {
               // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
               setViewMode('dashboard');
@@ -1790,6 +1992,7 @@ function Dashboard() {
             onOpenExport={canExportProject ? (projectId) => {
               openExportDialog([projectId]);
             } : null}
+            onOpenCrsCorrection={canEditAnyProject ? openDashboardCrsCorrectionDialog : null}
             searchTerm={searchTerm}
             onSearchTermChange={setSearchTerm}
             regionFilter={regionFilter}
@@ -1901,6 +2104,21 @@ function Dashboard() {
         targetProjectIds={exportModalState.projectIds}
         allProjects={projects}
         onProjectsChanged={refreshProjects}
+      />
+
+      <CrsCorrectionModal
+        isOpen={crsCorrectionModalState.isOpen}
+        projectTitle={crsCorrectionModalState.project?.title || ''}
+        currentSourceCrs={crsCorrectionModalState.currentSourceCrs}
+        crsCorrection={crsCorrectionModalState.correction}
+        eoDisplaySourceCrs={crsCorrectionModalState.correction.eoDisplaySourceCrs}
+        selectedCrs={crsCorrectionModalState.selectedCrs}
+        onSelectedCrsChange={(value) => setCrsCorrectionModalState(prev => ({ ...prev, selectedCrs: value }))}
+        onClose={closeDashboardCrsCorrectionModal}
+        onReserve={reserveDashboardCrsCorrection}
+        onCancel={cancelDashboardCrsCorrection}
+        isSaving={crsCorrectionModalState.isSaving}
+        error={crsCorrectionModalState.error}
       />
 
       {/* Group Create/Edit Modal */}

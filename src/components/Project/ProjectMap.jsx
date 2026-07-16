@@ -64,6 +64,48 @@ const getProcessingExcludedImageKeys = (events = []) => {
     return keys;
 };
 
+const getImageDimensions = (img, measuredDimensions) => {
+    const width = Number(measuredDimensions?.width || img?.image_width || img?.width || img?.camera_model?.sensor_width_px);
+    const height = Number(measuredDimensions?.height || img?.image_height || img?.height || img?.camera_model?.sensor_height_px);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return null;
+    }
+    return { width, height };
+};
+
+const getThumbnailFrameStyle = (img, measuredDimensions) => {
+    const dimensions = getImageDimensions(img, measuredDimensions);
+    if (!dimensions) {
+        return { width: '100%', height: '12rem' };
+    }
+
+    const maxWidth = 420;
+    const maxHeight = 430;
+    const aspectRatio = dimensions.width / dimensions.height;
+    let width = Math.min(maxWidth, maxHeight * aspectRatio);
+    let height = width / aspectRatio;
+
+    if (height > maxHeight) {
+        height = maxHeight;
+        width = height * aspectRatio;
+    }
+
+    return {
+        width: `${Math.round(width)}px`,
+        height: `${Math.round(height)}px`,
+        maxWidth: '100%',
+    };
+};
+
+const formatEoValue = (value, digits = 4) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(digits) : '-';
+};
+
+const eoValueCellClass = "text-center bg-slate-50 rounded-lg border border-slate-100 p-2";
+const eoValueLabelClass = "text-slate-400 block text-[10px] font-semibold uppercase";
+const eoValueTextClass = "font-mono font-semibold text-slate-800";
+
 export default function ProjectMap({ project, isProcessingMode, selectedImageId, processingEvents = [], onSelectImage }) {
     const [isLoading, setIsLoading] = useState(false);
     const mapRef = React.useRef(null);
@@ -71,6 +113,7 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
     const [localThumbnails, setLocalThumbnails] = useState({});
     // 생성 중인 imageId Set
     const [loadingIds, setLoadingIds] = useState(new Set());
+    const [thumbnailDimensions, setThumbnailDimensions] = useState({});
 
     const triggerThumbnail = useCallback(async (imageId) => {
         setLoadingIds(prev => new Set([...prev, imageId]));
@@ -97,6 +140,25 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
     const isThumbnailLoading = useCallback((img) => {
         return loadingIds.has(img.id);
     }, [loadingIds]);
+
+    const handleThumbnailLoad = useCallback((imageId, event) => {
+        const { naturalWidth, naturalHeight } = event.currentTarget;
+        if (!naturalWidth || !naturalHeight) return;
+
+        setThumbnailDimensions(prev => {
+            const current = prev[imageId];
+            if (current?.width === naturalWidth && current?.height === naturalHeight) {
+                return prev;
+            }
+            return {
+                ...prev,
+                [imageId]: {
+                    width: naturalWidth,
+                    height: naturalHeight,
+                },
+            };
+        });
+    }, []);
 
     // EO 포인트 표시 토글 (persisted in localStorage)
     const [showEoPoints, setShowEoPoints] = useState(() => {
@@ -215,12 +277,23 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
 
                 {(images.length > 0 || project?.bounds) && <FitBounds images={images} projectBounds={project?.bounds} projectId={project?.id} maxZoom={tileConfig.maxZoom} />}
 
-                {showEoPoints && images.map(img => {
-                    const isSelected = img.id === selectedImageId;
-                    const isExcluded = Boolean(img.eoExcluded);
-                    const markerColor = isSelected ? '#7c3aed' : (isExcluded ? '#475569' : (isProcessingMode ? '#ea580c' : '#dc2626'));
-                    const markerFill = isSelected ? '#a78bfa' : (isExcluded ? '#94a3b8' : (isProcessingMode ? '#fb923c' : '#ef4444'));
-                    return (
+	                {showEoPoints && images.map(img => {
+	                    const isSelected = img.id === selectedImageId;
+	                    const isExcluded = Boolean(img.eoExcluded);
+	                    const markerColor = isSelected ? '#7c3aed' : (isExcluded ? '#475569' : (isProcessingMode ? '#ea580c' : '#dc2626'));
+	                    const markerFill = isSelected ? '#a78bfa' : (isExcluded ? '#94a3b8' : (isProcessingMode ? '#fb923c' : '#ef4444'));
+	                    const thumbnailFrameStyle = getThumbnailFrameStyle(img, thumbnailDimensions[img.id]);
+	                    const popupEo = img.sourceEo || {
+	                        x: img.wx,
+	                        y: img.wy,
+	                        z: img.z,
+	                        omega: img.omega,
+	                        phi: img.phi,
+	                        kappa: img.kappa,
+	                        crs: 'EPSG:4326',
+	                    };
+	                    const coordinateDigits = popupEo.crs === 'EPSG:4326' ? 6 : 4;
+	                    return (
                     <CircleMarker
                         key={img.id}
                         center={[img.wy, img.wx]}
@@ -257,15 +330,19 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                                 </div>
                             </div>
                         </Tooltip>
-                        <Popup minWidth={260} maxWidth={320} closeOnClick={false}>
-                            <div className="p-1">
-                                <div className="w-full h-28 bg-slate-100 rounded-lg mb-2 flex items-center justify-center overflow-hidden border border-slate-200 relative">
+	                        <Popup minWidth={380} maxWidth={470} closeOnClick={false} className="eo-image-popup">
+	                            <div className="p-0">
+                                <div
+                                    className="mx-auto bg-slate-100 rounded-xl flex items-center justify-center overflow-hidden border border-slate-200 relative shadow-sm"
+                                    style={thumbnailFrameStyle}
+                                >
                                     {getThumbnailUrl(img) ? (
                                         <>
                                             <img
                                                 src={getThumbnailUrl(img)}
                                                 alt={img.name}
-                                                className="w-full h-full object-cover"
+                                                className="w-full h-full object-contain"
+                                                onLoad={(e) => handleThumbnailLoad(img.id, e)}
                                                 onError={(e) => {
                                                     e.target.style.display = 'none';
                                                     if (e.target.nextSibling) {
@@ -290,40 +367,40 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                                         </div>
                                     )}
                                 </div>
-                                <strong className="block text-sm text-slate-800 mb-2 truncate" title={img.name}>{img.name}</strong>
+                                <strong className="block text-center text-[15px] leading-snug text-slate-900 mt-3 mb-3 px-2 break-words" title={img.name}>{img.name}</strong>
                                 {isExcluded && (
-                                    <div className="mb-2 rounded-md border border-slate-200 bg-slate-100 px-2 py-1.5 text-[11px] text-slate-700 flex items-start gap-1.5">
+                                    <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] text-slate-700 flex items-start gap-1.5">
                                         <AlertTriangle size={13} className="shrink-0 mt-0.5" />
                                         <span>{img.eoExcludedReason || '처리에 사용되지 않는 이미지입니다.'}</span>
                                     </div>
                                 )}
-                                <div className="grid grid-cols-3 gap-1.5 text-xs border-t border-slate-200 pt-2 mb-2">
-                                    <div className="text-center bg-slate-50 rounded p-1.5">
-                                        <span className="text-slate-400 block text-[10px]">Lat</span>
-                                        <span className="font-mono font-medium text-slate-700">{img.wy?.toFixed(6) || '-'}</span>
-                                    </div>
-                                    <div className="text-center bg-slate-50 rounded p-1.5">
-                                        <span className="text-slate-400 block text-[10px]">Lon</span>
-                                        <span className="font-mono font-medium text-slate-700">{img.wx?.toFixed(6) || '-'}</span>
-                                    </div>
-                                    <div className="text-center bg-slate-50 rounded p-1.5">
-                                        <span className="text-slate-400 block text-[10px]">Alt</span>
-                                        <span className="font-mono font-medium text-slate-700">{img.z != null ? `${parseFloat(img.z).toFixed(1)}m` : '-'}</span>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-3 gap-1.5 text-xs border-t border-slate-200 pt-2">
-                                    <div className="text-center bg-slate-50 rounded p-1.5">
-                                        <span className="text-slate-400 block text-[10px]">Omega (ω)</span>
-                                        <span className="font-mono font-medium text-slate-700">{img.omega != null ? parseFloat(img.omega).toFixed(4) : '0.0000'}</span>
-                                    </div>
-                                    <div className="text-center bg-slate-50 rounded p-1.5">
-                                        <span className="text-slate-400 block text-[10px]">Phi (φ)</span>
-                                        <span className="font-mono font-medium text-slate-700">{img.phi != null ? parseFloat(img.phi).toFixed(4) : '0.0000'}</span>
-                                    </div>
-                                    <div className="text-center bg-slate-50 rounded p-1.5">
-                                        <span className="text-slate-400 block text-[10px]">Kappa (κ)</span>
-                                        <span className="font-mono font-medium text-slate-700">{img.kappa != null ? parseFloat(img.kappa).toFixed(4) : '0.0000'}</span>
-                                    </div>
+	                                <div className="grid grid-cols-3 gap-2 text-xs rounded-xl border border-slate-200 bg-white p-2 shadow-sm mb-2">
+	                                    <div className={eoValueCellClass}>
+	                                        <span className={eoValueLabelClass}>X</span>
+	                                        <span className={eoValueTextClass}>{formatEoValue(popupEo.x, coordinateDigits)}</span>
+	                                    </div>
+	                                    <div className={eoValueCellClass}>
+	                                        <span className={eoValueLabelClass}>Y</span>
+	                                        <span className={eoValueTextClass}>{formatEoValue(popupEo.y, coordinateDigits)}</span>
+	                                    </div>
+	                                    <div className={eoValueCellClass}>
+	                                        <span className={eoValueLabelClass}>Z</span>
+	                                        <span className={eoValueTextClass}>{popupEo.z != null ? `${formatEoValue(popupEo.z, 1)}m` : '-'}</span>
+	                                    </div>
+	                                </div>
+                                <div className="grid grid-cols-3 gap-2 text-xs rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+                                    <div className={eoValueCellClass}>
+                                        <span className={eoValueLabelClass}>Omega (ω)</span>
+	                                        <span className={eoValueTextClass}>{formatEoValue(popupEo.omega, 4)}</span>
+	                                    </div>
+	                                    <div className={eoValueCellClass}>
+	                                        <span className={eoValueLabelClass}>Phi (φ)</span>
+	                                        <span className={eoValueTextClass}>{formatEoValue(popupEo.phi, 4)}</span>
+	                                    </div>
+	                                    <div className={eoValueCellClass}>
+	                                        <span className={eoValueLabelClass}>Kappa (κ)</span>
+	                                        <span className={eoValueTextClass}>{formatEoValue(popupEo.kappa, 4)}</span>
+	                                    </div>
                                 </div>
                             </div>
                         </Popup>
