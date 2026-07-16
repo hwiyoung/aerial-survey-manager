@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import aiofiles
+import httpx
 from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
@@ -25,6 +26,7 @@ from app.auth.jwt import (
     verify_token,
 )
 from app.services.storage import get_storage
+from app.services.asset_tokens import create_asset_token, verify_asset_token
 from app.services.download_tokens import create_download_token, consume_download_token
 from app.utils.checksum import calculate_file_checksum_async as calculate_file_checksum
 from app.utils.gdal import extract_gsd_and_crs as get_source_gsd_and_crs
@@ -32,6 +34,22 @@ from app.utils.gdal import extract_gsd_and_crs as get_source_gsd_and_crs
 router = APIRouter(prefix="/download", tags=["Download"])
 logger = logging.getLogger(__name__)
 COG_LOOKUP_WARN_MS = float(os.getenv("COG_LOOKUP_WARN_MS", "1000"))
+_titiler_http_client: httpx.AsyncClient | None = None
+
+
+def _get_titiler_http_client() -> httpx.AsyncClient:
+    """Reuse connections across the many small tile requests made by a map."""
+    global _titiler_http_client
+    if _titiler_http_client is None or _titiler_http_client.is_closed:
+        _titiler_http_client = httpx.AsyncClient(timeout=30.0)
+    return _titiler_http_client
+
+
+async def close_titiler_http_client() -> None:
+    global _titiler_http_client
+    if _titiler_http_client is not None and not _titiler_http_client.is_closed:
+        await _titiler_http_client.aclose()
+    _titiler_http_client = None
 
 
 def _latest_completed_job_query(project_id: UUID):
@@ -442,20 +460,10 @@ async def get_cog_url(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Get a presigned URL for COG streaming.
-    
-    This URL can be used by geotiff.js to stream the orthophoto
-    directly from storage with Range Request support.
-    
-    Returns:
-        url: Presigned URL for the COG file
-        bounds: Geographic bounds [west, south, east, north]
-        file_size: Size of the file in bytes
-    """
+    """Return a short-lived, project-scoped TiTiler URL."""
     start_time = time.perf_counter()
 
-    def _build_response(url: str, file_size: int, local: bool, cache_key: str) -> dict:
+    def _build_response(file_size: int, local: bool, cache_key: str) -> dict:
         latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
         if latency_ms > COG_LOOKUP_WARN_MS:
             logger.warning(
@@ -464,11 +472,19 @@ async def get_cog_url(
                 latency_ms,
                 COG_LOOKUP_WARN_MS,
             )
+        token = create_asset_token(
+            project_id=project_id,
+            object_name=ortho_path,
+            purpose="tile",
+        )
         return {
-            "url": url,
+            "tile_url": (
+                f"/api/v1/download/projects/{project_id}/tiles/"
+                f"{{z}}/{{x}}/{{y}}.png?token={token}"
+            ),
             "local": local,
             "file_size": file_size,
-            "bounds": _extract_bounds_from_wkt(bounds_wkt),
+            "bounds": resolved_bounds,
             "project_id": str(project_id),
             "lookup_ms": latency_ms,
             "cache_key": cache_key,
@@ -495,8 +511,28 @@ async def get_cog_url(
         )
     project = row[0]
     bounds_wkt = row[1]
+    resolved_bounds = _extract_bounds_from_wkt(bounds_wkt)
 
     storage = get_storage()
+
+    async def _load_bounds_from_titiler(source_url: str) -> list[float] | None:
+        try:
+            from app.config import get_settings
+
+            internal_url = (
+                f"{get_settings().TITILER_INTERNAL_URL.rstrip('/')}/cog/bounds"
+            )
+            upstream = await _get_titiler_http_client().get(
+                internal_url,
+                params={"url": source_url},
+            )
+            if upstream.status_code == status.HTTP_200_OK:
+                bounds = upstream.json().get("bounds")
+                if isinstance(bounds, list) and len(bounds) == 4:
+                    return bounds
+        except (httpx.HTTPError, ValueError, TypeError):
+            logger.warning("titiler_bounds_failed project_id=%s", project_id)
+        return None
 
     # Try Project.ortho_path first, then fall back to ProcessingJob
     ortho_path = project.ortho_path
@@ -511,23 +547,32 @@ async def get_cog_url(
             detail="No completed orthophoto found for this project",
         )
 
-    # Local storage mode: return file:// URL for TiTiler direct access
-    local_path = storage.get_local_path(ortho_path)
+    # Resolve the source only inside the API container. Browser responses never
+    # include file:// paths, S3 bucket keys, or an arbitrary TiTiler source URL.
+    try:
+        local_path = storage.get_local_path(ortho_path)
+    except ValueError:
+        local_path = None
     if local_path and os.path.exists(local_path):
         file_size = os.path.getsize(local_path)
         cache_key = _build_cache_key(ortho_path, file_size, int(os.path.getmtime(local_path)))
-        cog_response = _build_response(f"file://{local_path}", file_size, True, cache_key)
-        response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+        if resolved_bounds is None:
+            resolved_bounds = await _load_bounds_from_titiler(f"file://{local_path}")
+        cog_response = _build_response(file_size, True, cache_key)
+        response.headers["Cache-Control"] = "private, no-store"
         response.headers["X-COG-Cache-Key"] = cache_key
         return cog_response
 
     # MinIO mode: check if object exists in storage
-    if storage.object_exists(ortho_path):
+    if not os.path.isabs(ortho_path) and storage.object_exists(ortho_path):
         file_size = storage.get_object_size(ortho_path)
-        s3_url = f"s3://{storage.bucket}/{ortho_path}"
         cache_key = _build_cache_key(ortho_path, file_size)
-        cog_response = _build_response(s3_url, file_size, False, cache_key)
-        response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+        if resolved_bounds is None:
+            resolved_bounds = await _load_bounds_from_titiler(
+                f"s3://{storage.bucket}/{ortho_path}"
+            )
+        cog_response = _build_response(file_size, False, cache_key)
+        response.headers["Cache-Control"] = "private, no-store"
         response.headers["X-COG-Cache-Key"] = cache_key
         return cog_response
 
@@ -535,14 +580,108 @@ async def get_cog_url(
     if os.path.exists(ortho_path):
         file_size = os.path.getsize(ortho_path)
         cache_key = _build_cache_key(ortho_path, file_size, int(os.path.getmtime(ortho_path)))
-        cog_response = _build_response(f"file://{ortho_path}", file_size, True, cache_key)
-        response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+        if resolved_bounds is None:
+            resolved_bounds = await _load_bounds_from_titiler(f"file://{ortho_path}")
+        cog_response = _build_response(file_size, True, cache_key)
+        response.headers["Cache-Control"] = "private, no-store"
         response.headers["X-COG-Cache-Key"] = cache_key
         return cog_response
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Result file not found in storage",
+    )
+
+
+@router.get("/projects/{project_id}/tiles/{z}/{x}/{y}.png")
+async def get_project_cog_tile(
+    project_id: UUID,
+    z: int,
+    x: int,
+    y: int,
+    token: str,
+):
+    """Proxy a tile for the exact orthophoto encoded in a signed capability."""
+    try:
+        payload = verify_asset_token(token, purpose="tile")
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tile not found",
+        )
+
+    if payload.get("project_id") != str(project_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tile not found",
+        )
+
+    ortho_path = str(payload["object_name"])
+    storage = get_storage()
+    try:
+        local_path = storage.get_local_path(ortho_path)
+    except ValueError:
+        local_path = None
+
+    if local_path and os.path.exists(local_path):
+        source_url = f"file://{local_path}"
+    elif not os.path.isabs(ortho_path) and storage.object_exists(ortho_path):
+        source_url = f"s3://{storage.bucket}/{ortho_path}"
+    elif os.path.isabs(ortho_path) and os.path.exists(ortho_path):
+        source_url = f"file://{ortho_path}"
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tile not found",
+        )
+
+    from app.config import get_settings
+
+    settings = get_settings()
+    upstream_url = (
+        f"{settings.TITILER_INTERNAL_URL.rstrip('/')}/cog/tiles/"
+        f"WebMercatorQuad/{z}/{x}/{y}.png"
+    )
+    try:
+        upstream = await _get_titiler_http_client().get(
+            upstream_url,
+            params={"url": source_url},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "titiler_request_failed project_id=%s z=%s x=%s y=%s error=%s",
+            project_id,
+            z,
+            x,
+            y,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Tile service unavailable",
+        )
+
+    if upstream.status_code != status.HTTP_200_OK:
+        raise HTTPException(
+            status_code=(
+                upstream.status_code
+                if 400 <= upstream.status_code < 500
+                else status.HTTP_502_BAD_GATEWAY
+            ),
+            detail="Tile rendering failed",
+        )
+
+    return Response(
+        content=upstream.content,
+        media_type=upstream.headers.get("content-type", "image/png"),
+        headers={
+            "Cache-Control": "private, max-age=300",
+            **(
+                {"ETag": upstream.headers["etag"]}
+                if upstream.headers.get("etag")
+                else {}
+            ),
+        },
     )
 
 

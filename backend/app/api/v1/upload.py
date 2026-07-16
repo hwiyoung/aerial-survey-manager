@@ -24,6 +24,7 @@ from app.auth.jwt import (
 )
 from app.config import get_settings
 from app.services.storage import get_storage
+from app.services.asset_tokens import build_project_asset_url
 from app.services.quota import ensure_organization_quota
 from app.services.processing_lifecycle import processing_options_for_job
 from app.services.camera_models import resolve_accessible_camera_model
@@ -192,7 +193,6 @@ async def list_project_images(
     )
     images = result.scalars().unique().all()
 
-    storage = get_storage()
     response = []
     source_eo_by_key = _read_source_eo_map(project_id)
 
@@ -210,7 +210,10 @@ async def list_project_images(
             "filename": img.filename,
             "original_path": img.original_path,
             "thumbnail_path": img.thumbnail_path,
-            "thumbnail_url": storage.get_presigned_url(img.thumbnail_path) if img.thumbnail_path else None,
+            "thumbnail_url": build_project_asset_url(
+                img.project_id,
+                img.thumbnail_path,
+            ),
             "captured_at": img.captured_at,
             "resolution": img.resolution,
             "file_size": img.file_size,
@@ -514,7 +517,6 @@ async def get_image(
     if not scoped_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    storage = get_storage()
     source_eo_by_key = _read_source_eo_map(image.project_id)
     img_dict = {
         "id": image.id,
@@ -522,7 +524,10 @@ async def get_image(
         "filename": image.filename,
         "original_path": image.original_path,
         "thumbnail_path": image.thumbnail_path,
-        "thumbnail_url": storage.get_presigned_url(image.thumbnail_path) if image.thumbnail_path else None,
+        "thumbnail_url": build_project_asset_url(
+            image.project_id,
+            image.thumbnail_path,
+        ),
         "captured_at": image.captured_at,
         "resolution": image.resolution,
         "file_size": image.file_size,
@@ -609,7 +614,7 @@ async def regenerate_image_thumbnail(
     )
     await db.commit()
 
-    thumbnail_url = storage.get_presigned_url(thumb_object_name)
+    thumbnail_url = build_project_asset_url(image.project_id, thumb_object_name)
     return {"status": "completed", "thumbnail_url": thumbnail_url}
 
 

@@ -189,10 +189,10 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                     {project.orthoResult ? (
                         <div className="space-y-4">
                             {/* 정사영상 썸네일 */}
-                            {(project.ortho_thumbnail_path || project.ortho_path) && (
+                            {project.ortho_thumbnail_url && (
                                 <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                                     <img
-                                        src={`/storage/${project.ortho_thumbnail_path || project.ortho_path}`}
+                                        src={project.ortho_thumbnail_url}
                                         alt="정사영상 미리보기"
                                         className="w-full h-80 object-contain bg-slate-100"
                                         onError={(e) => { e.target.style.display = 'none'; }}

@@ -8,6 +8,7 @@ from sqlalchemy import update, select
 
 from app.config import get_settings
 from app.api.v1 import router as api_v1_router
+from app.api.v1.download import close_titiler_http_client
 from app.database import async_session
 from app.models.project import ProcessingJob, Project
 from app.services.processing_lifecycle import startup_recovery_in_grace_period
@@ -306,6 +307,7 @@ async def lifespan(app: FastAPI):
     await _recover_stuck_jobs()
     yield
     # Shutdown
+    await close_titiler_http_client()
     print(f"Shutting down {settings.APP_NAME}...")
 
 

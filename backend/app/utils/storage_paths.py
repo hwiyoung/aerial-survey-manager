@@ -42,18 +42,9 @@ def is_source_image_key(object_name: str) -> bool:
     )
 
 
-def is_public_project_artifact_key(object_name: str) -> bool:
-    """Return True for the small project artifacts intentionally served publicly."""
-    parts = str(object_name or "").split("/")
-    if len(parts) < 4 or parts[0] != "projects" or not parts[1]:
-        return False
-    return parts[2] == "exports" or parts[2:4] == ["source", "thumbnails"]
-
-
 def is_private_project_key(object_name: str) -> bool:
-    return str(object_name or "").startswith("projects/") and not is_public_project_artifact_key(
-        object_name
-    )
+    """All project data is private outside the authenticated organization."""
+    return str(object_name or "").startswith(("projects/", "orthomosaic/"))
 
 
 def source_thumbnail_prefix(project_id: str | UUID) -> str:

@@ -9,9 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 from app.services.storage_base import StorageBackend
-from app.utils.storage_paths import is_private_project_key
-
-
 class LocalStorageBackend(StorageBackend):
     """Storage backend using local filesystem."""
 
@@ -72,13 +69,8 @@ class LocalStorageBackend(StorageBackend):
         expires: int = 3600,
         response_headers: Optional[dict] = None,
     ) -> str:
-        # Original/processing project data requires the authenticated endpoint.
-        if is_private_project_key(object_name):
-            return f"/api/v1/storage/files/{object_name}"
-        # Thumbnails and generated artifacts are served by nginx /storage/ alias.
-        if object_name.startswith(("projects/", "orthomosaic/")):
-            return f"/storage/{object_name}"
-        # Private paths served via authenticated API endpoint
+        # Local objects are never exposed by nginx. Callers that need an
+        # unauthenticated browser URL must use a short-lived asset capability.
         return f"/api/v1/storage/files/{object_name}"
 
     def get_presigned_upload_url(

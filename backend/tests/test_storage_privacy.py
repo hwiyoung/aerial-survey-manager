@@ -4,16 +4,16 @@ from unittest.mock import Mock, patch
 
 from app.services.storage_local import LocalStorageBackend
 from app.services.storage_minio import MinIOStorageBackend
+from app.services.s3_multipart import S3MultipartService
 from app.services import storage_minio
 from app.utils.storage_paths import (
     is_private_project_key,
-    is_public_project_artifact_key,
     is_source_image_key,
 )
 
 
 class StoragePrivacyTests(unittest.TestCase):
-    def test_only_original_source_images_are_private(self):
+    def test_all_project_artifacts_are_private(self):
         original = (
             "projects/11111111-1111-1111-1111-111111111111/"
             "source/images/image.tif"
@@ -25,8 +25,12 @@ class StoragePrivacyTests(unittest.TestCase):
         self.assertTrue(is_source_image_key(original))
         self.assertFalse(is_source_image_key(thumbnail))
         self.assertTrue(is_private_project_key(original))
-        self.assertTrue(is_public_project_artifact_key(thumbnail))
-        self.assertFalse(is_private_project_key(thumbnail))
+        self.assertTrue(is_private_project_key(thumbnail))
+        self.assertTrue(
+            is_private_project_key(
+                "orthomosaic/11111111-1111-1111-1111-111111111111/result.tif"
+            )
+        )
 
     def test_local_original_url_uses_authenticated_endpoint(self):
         original = (
@@ -45,10 +49,10 @@ class StoragePrivacyTests(unittest.TestCase):
             )
             self.assertEqual(
                 storage.get_presigned_url(thumbnail),
-                f"/storage/{thumbnail}",
+                f"/api/v1/storage/files/{thumbnail}",
             )
 
-    def test_minio_project_url_is_signed_and_routed_through_nginx(self):
+    def test_minio_project_url_is_signed_and_same_origin(self):
         original = (
             "projects/11111111-1111-1111-1111-111111111111/"
             "source/images/image.tif"
@@ -70,8 +74,19 @@ class StoragePrivacyTests(unittest.TestCase):
 
         self.assertEqual(
             url,
-            "http://192.168.10.203:18100/storage/aerial-survey/"
+            "/storage/aerial-survey/"
             f"{original}?X-Amz-Signature=signed",
+        )
+
+    def test_multipart_upload_url_is_same_origin(self):
+        service = S3MultipartService.__new__(S3MultipartService)
+        url = service._transform_url_for_nginx_proxy(
+            "http://minio:9000/aerial-survey/projects/example"
+            "?X-Amz-Signature=signed"
+        )
+        self.assertEqual(
+            url,
+            "/storage/aerial-survey/projects/example?X-Amz-Signature=signed",
         )
 
 

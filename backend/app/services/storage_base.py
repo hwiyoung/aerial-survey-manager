@@ -61,8 +61,7 @@ class StorageBackend(ABC):
     ) -> str:
         """Generate a URL for downloading.
 
-        For public paths (projects/), returns a relative URL via nginx proxy.
-        For private paths, generates a presigned or authenticated URL.
+        Generates a presigned or authenticated URL.
         """
         ...
 

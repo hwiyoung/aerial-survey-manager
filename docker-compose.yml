@@ -455,6 +455,7 @@ services:
         mc mb --ignore-existing myminio/aerial-survey
         mc anonymous set download myminio/aerial-survey/public
         mc anonymous set none myminio/aerial-survey/projects || true
+        mc anonymous set none myminio/aerial-survey/orthomosaic || true
         echo "MinIO bucket initialized successfully"
     environment:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}

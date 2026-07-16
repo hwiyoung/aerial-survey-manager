@@ -25,19 +25,22 @@ class MinIOStorageBackend(StorageBackend):
             secure=settings.MINIO_SECURE,
         )
 
-        # Separate client for presigned URL generation using PUBLIC endpoint
-        # AWS S3 V4 signature includes the Host header, so we must generate
-        # presigned URLs with the correct public endpoint from the start
-        public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
-        self.presigned_client = Minio(
-            public_endpoint,
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_SECURE,
-        )
-
         self.bucket = settings.MINIO_BUCKET
         self._ensure_bucket()
+
+    @staticmethod
+    def _to_same_origin_proxy_url(url: str) -> str:
+        parsed = urlparse(url)
+        return urlunparse(
+            (
+                "",
+                "",
+                f"/storage{parsed.path}",
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
 
     def _ensure_bucket(self):
         """Ensure the bucket exists."""
@@ -86,16 +89,8 @@ class MinIOStorageBackend(StorageBackend):
         expires: int = 3600,
         response_headers: Optional[dict] = None,
     ) -> str:
-        # Final orthomosaics remain public artifacts. Project objects use
-        # short-lived signed URLs so original images are never anonymous.
-        if object_name.startswith("orthomosaic/"):
-            return f"/storage/{object_name}"
-
         # Generate against the internal endpoint (the Host MinIO verifies), then
         # route the browser URL through nginx which restores that upstream Host.
-        protocol = "https" if settings.MINIO_SECURE else "http"
-        public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
-
         url = self.client.presigned_get_object(
             self.bucket,
             object_name,
@@ -103,29 +98,19 @@ class MinIOStorageBackend(StorageBackend):
             response_headers=response_headers,
         )
 
-        parsed = urlparse(url)
-        endpoint = public_endpoint.split("://", 1)[-1].rstrip("/")
-        return urlunparse(
-            (
-                protocol,
-                endpoint,
-                f"/storage{parsed.path}",
-                parsed.params,
-                parsed.query,
-                parsed.fragment,
-            )
-        )
+        return self._to_same_origin_proxy_url(url)
 
     def get_presigned_upload_url(
         self,
         object_name: str,
         expires: int = 3600,
     ) -> Optional[str]:
-        return self.client.presigned_put_object(
+        url = self.client.presigned_put_object(
             self.bucket,
             object_name,
             expires=timedelta(seconds=expires),
         )
+        return self._to_same_origin_proxy_url(url)
 
     def delete_object(self, object_name: str) -> None:
         self.client.remove_object(self.bucket, object_name)

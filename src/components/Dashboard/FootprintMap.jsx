@@ -20,12 +20,6 @@ const STATUS_COLORS = {
 const COG_INFO_CACHE_TTL_MS = 10 * 60 * 1000; // 10m
 const COG_INFO_CACHE = new Map();
 
-const TILER_TILE_ENDPOINT = '/titiler/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
-
-function buildTiTilerTileUrl(sourceUrl) {
-    return `${TILER_TILE_ENDPOINT}?url=${encodeURIComponent(sourceUrl)}`;
-}
-
 function normalizeProjectBounds(projectBounds) {
     if (!Array.isArray(projectBounds) || projectBounds.length !== 2) {
         return null;
@@ -122,7 +116,7 @@ export function TiTilerOrthoLayer({
 
         const applyCachedInfo = (cached) => {
             const boundsFromCache = overrideBounds || normalizeCogBounds(cached.bounds);
-            setTileUrl(cached.tileUrl || buildTiTilerTileUrl(cached.url));
+            setTileUrl(cached.tileUrl);
             setBounds(boundsFromCache);
             onLoadComplete?.();
         };
@@ -145,38 +139,17 @@ export function TiTilerOrthoLayer({
                     return;
                 }
 
-                const tileSourceUrl = cogInfo?.url;
-                if (!tileSourceUrl) {
-                    throw new Error('COG URL 응답이 비어 있습니다.');
+                const tiTilerUrl = cogInfo?.tile_url;
+                if (!tiTilerUrl) {
+                    throw new Error('정사영상 타일 URL 응답이 비어 있습니다.');
                 }
 
-                const tiTilerUrl = buildTiTilerTileUrl(tileSourceUrl);
-                let nextBounds = overrideBounds || normalizeCogBounds(cogInfo.bounds);
-
-                // Get bounds info from TiTiler only when project bounds are not known
-                if (!overrideBounds && !nextBounds) {
-                    try {
-                        const boundsResponse = await fetch(`/titiler/cog/bounds?url=${encodeURIComponent(tileSourceUrl)}`);
-                        if (boundsResponse.ok && currentProjectIdRef.current === projectId) {
-                            const boundsData = await boundsResponse.json();
-                            if (boundsData?.bounds) {
-                                const backendBounds = normalizeCogBounds(boundsData.bounds);
-                                if (backendBounds) {
-                                    console.log('[TiTiler] Bounds from service:', boundsData);
-                                    nextBounds = backendBounds;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        console.warn('[TiTiler] Could not get bounds:', e);
-                    }
-                }
+                const nextBounds = overrideBounds || normalizeCogBounds(cogInfo.bounds);
 
                 COG_INFO_CACHE.set(projectId, {
                     projectId,
                     cacheKey: cogInfo.cache_key,
                     tileUrl: tiTilerUrl,
-                    url: tileSourceUrl,
                     local: cogInfo.local,
                     fileSize: cogInfo.file_size,
                     bounds: cogInfo.bounds,
@@ -1046,9 +1019,9 @@ export function FootprintMap({
                             showBasemap={showBasemap}
                         />
                     )}
-                    {selectedCogProject && !selectedCogProject.project.ortho_path && selectedCogProject.project.ortho_thumbnail_path && (
+                    {selectedCogProject && !selectedCogProject.project.ortho_path && selectedCogProject.project.ortho_thumbnail_url && (
                         <ImageOverlay
-                            url={`/storage/${selectedCogProject.project.ortho_thumbnail_path}`}
+                            url={selectedCogProject.project.ortho_thumbnail_url}
                             bounds={stableCogBounds}
                             opacity={1}
                         />

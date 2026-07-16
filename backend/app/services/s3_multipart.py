@@ -41,10 +41,6 @@ class S3MultipartService:
 
         self.bucket = settings.MINIO_BUCKET
 
-        # Nginx proxy endpoint for browser uploads (avoids CORS)
-        # Uses /storage/ path prefix which nginx proxies to MinIO
-        self.nginx_proxy_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
-
     def _transform_url_for_nginx_proxy(self, url: str) -> str:
         """
         Transform presigned URL to use nginx /storage/ proxy.
@@ -53,12 +49,10 @@ class S3MultipartService:
         the same origin (nginx) for both API and storage requests.
         """
         parsed = urlparse(url)
-        # Replace host with nginx endpoint and add /storage prefix to path
-        new_netloc = self.nginx_proxy_endpoint
         new_path = f"/storage{parsed.path}"
         return urlunparse((
-            'http',  # scheme
-            new_netloc,  # netloc (host:port)
+            '',
+            '',
             new_path,  # path with /storage prefix
             parsed.params,
             parsed.query,  # query string with S3 signature
@@ -220,11 +214,12 @@ class S3MultipartService:
         if content_type:
             params['ContentType'] = content_type
 
-        return self.presigned_client.generate_presigned_url(
+        url = self.presigned_client.generate_presigned_url(
             'put_object',
             Params=params,
             ExpiresIn=expires
         )
+        return self._transform_url_for_nginx_proxy(url)
 
 
 # Global service instance

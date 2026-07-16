@@ -265,9 +265,9 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         showBasemap={showBasemap}
                     />
                 )}
-                {(project?.status === '완료' || project?.status === 'completed') && !project?.ortho_path && project?.ortho_thumbnail_path && project?.bounds && (
+                {(project?.status === '완료' || project?.status === 'completed') && !project?.ortho_path && project?.ortho_thumbnail_url && project?.bounds && (
                     <ImageOverlay
-                        url={`/storage/${project.ortho_thumbnail_path}`}
+                        url={project.ortho_thumbnail_url}
                         bounds={project.bounds.length >= 2 ? [
                             [Math.min(...project.bounds.map(p => p[0])), Math.min(...project.bounds.map(p => p[1]))],
                             [Math.max(...project.bounds.map(p => p[0])), Math.max(...project.bounds.map(p => p[1]))]

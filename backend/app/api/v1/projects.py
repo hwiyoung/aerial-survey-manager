@@ -42,6 +42,8 @@ from app.auth.jwt import (
 from app.config import get_settings
 from app.services.eo_parser import EOParserService
 from app.services.quota import ensure_organization_quota
+from app.services.storage import get_storage
+from app.services.asset_tokens import build_project_asset_url
 from app.utils.geo import get_region_for_point_db
 from app.utils.audit import log_audit_event
 from app.utils.storage_paths import (
@@ -154,7 +156,6 @@ async def _collect_project_image_paths(
 def _cleanup_project_storage(project_id: UUID, original_paths: list[str], ortho_path: str | None = None) -> None:
     """Delete project files from object storage."""
     try:
-        from app.services.storage import get_storage
         storage = get_storage()
 
         for path in original_paths:
@@ -214,6 +215,10 @@ def _build_project_response(project, bounds_wkt=None, image_count=0, **extra) ->
         "area": project.area,
         "ortho_path": project.ortho_path,
         "ortho_thumbnail_path": project.ortho_thumbnail_path,
+        "ortho_thumbnail_url": build_project_asset_url(
+            project.id,
+            project.ortho_thumbnail_path,
+        ),
         "bounds": serialize_geometry(bounds_wkt if bounds_wkt is not None else project.bounds),
     }
     d.update(extra)
