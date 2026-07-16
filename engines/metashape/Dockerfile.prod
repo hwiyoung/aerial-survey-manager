@@ -60,19 +60,19 @@ WORKDIR /app
 # 백엔드 애플리케이션 코드 복사
 COPY backend/app /app/app
 
-# Metashape 스크립트 복사
-COPY engines/metashape/dags /app/engines/metashape/dags
+# Celery worker가 직접 실행하는 Metashape 처리 파이프라인 복사
+COPY engines/metashape/pipeline /app/engines/metashape/pipeline
 
 # Python 바이트코드 컴파일 (-b: .py와 같은 위치에 .pyc 생성)
 # 1. 백엔드 앱 코드 컴파일
 RUN python3 -m compileall -b /app/app/
-# 2. Metashape DAGs 스크립트 컴파일 (subprocess로 실행되는 스크립트 포함)
-RUN python3 -m compileall -b /app/engines/metashape/dags/
+# 2. subprocess로 실행되는 Metashape 파이프라인 컴파일
+RUN python3 -m compileall -b /app/engines/metashape/pipeline/
 
 # 소스 코드(.py) 제거, 바이트코드(.pyc)만 유지
 # 모든 Python 소스를 제거하여 코드 보호
 RUN find /app/app/ -name "*.py" -type f -delete
-RUN find /app/engines/metashape/dags/ -name "*.py" -type f -delete
+RUN find /app/engines/metashape/pipeline/ -name "*.py" -type f -delete
 
 # ============================================================
 # Production stage - 최소 이미지
@@ -125,4 +125,4 @@ ENTRYPOINT ["/app/engines/metashape/entrypoint.sh"]
 
 
 # 기본 명령어
-CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "metashape", "--loglevel=info"]
+CMD ["celery", "-A", "app.workers.tasks", "worker", "-Q", "gpu-engine", "--loglevel=info"]

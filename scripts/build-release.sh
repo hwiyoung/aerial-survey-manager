@@ -197,7 +197,6 @@ cp init.sql "$RELEASE_DIR/"
 
 # scripts 디렉토리 복사
 cp -r scripts "$RELEASE_DIR/"
-rm -f "$RELEASE_DIR/scripts/shutdown-metashape.sh"
 
 # docs 복사
 mkdir -p "$RELEASE_DIR/docs"

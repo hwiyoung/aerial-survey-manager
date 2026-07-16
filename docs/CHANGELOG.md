@@ -8,6 +8,7 @@
 | SECURITY | 프로젝트 산출물 보호 | 썸네일·정사영상·TiTiler 직접 접근 차단, 단기 서명 URL과 동일 출처 MinIO URL 적용 |
 | RELIABILITY | Celery 복구 | GPU 작업 redelivery 복구, 썸네일/삭제 작업 late ack, 삭제 잔여 파일 검증 및 재시도 |
 | DEPLOY | 배포 구조 단순화 | 미사용 celery-beat 제거, 설치 폴더 기준 상대경로 및 조직 공동 운영 계정 안내 통일 |
+| CLEANUP | Airflow 레거시 제거 | 미사용 Airflow Compose·DAG·의존성·문서를 제거하고 Metashape 실행 스크립트를 Celery 전용 `pipeline`으로 분리 |
 
 ---
 

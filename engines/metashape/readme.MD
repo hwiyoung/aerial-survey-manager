@@ -21,9 +21,9 @@ ENGINE_LICENSE_KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
 
 ```bash
 # 개발 환경 (.py)
-docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/activate.py
+docker exec aerial-worker-engine python3 /app/engines/metashape/pipeline/activate.py
 # 배포 환경 (.pyc)
-docker exec aerial-worker-engine python3 /app/engines/metashape/dags/metashape/activate.pyc
+docker exec aerial-worker-engine python3 /app/engines/metashape/pipeline/activate.pyc
 ```
 
 ### 3. Verification
@@ -33,8 +33,7 @@ docker exec aerial-worker-engine python3 -c "import Metashape; print(Metashape.L
 ```
 
 ## 📁 Structure
-- `dags/`: Airflow 호환용 DAG 파일 (Celery Worker에서도 공유됨)
-- `dags/metashape/`: 실제 처리 로직 및 공통 유틸리티
+- `pipeline/`: Celery worker가 순서대로 직접 실행하는 처리 단계와 공통 유틸리티
 - `Dockerfile`: 개발용 이미지 (CUDA 12.0 기반)
 - `Dockerfile.prod`: 배포용 이미지 (.pyc 컴파일, 소스 코드 제거)
 

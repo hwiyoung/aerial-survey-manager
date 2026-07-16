@@ -972,7 +972,7 @@ class MetashapeEngine(ProcessingEngine):
             await progress_callback(0, "엔진 초기화 중...")
 
         # 1. 사이클 시작: 라이선스 활성화
-        script_base = Path("/app/engines/metashape/dags/metashape")
+        script_base = Path("/app/engines/metashape/pipeline")
         activate_script = self._get_script_path(script_base, "activate.py")
         deactivate_script = self._get_script_path(script_base, "deactivate.py")
         

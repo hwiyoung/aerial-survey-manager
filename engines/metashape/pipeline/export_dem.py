@@ -2,6 +2,7 @@ import numpy as np
 from common_args import parse_arguments, print_debug_info
 from osgeo import gdal
 import os
+from pathlib import Path
 from common_utils import activate_metashape_license, progress_callback
 
 def export_dem(output_path):
@@ -36,7 +37,8 @@ def export_dem(output_path):
     max_elevation = data.max()
     
     # Turbo 컬러맵 데이터 파일 읽기
-    with open("./metashape/turbo_colormap.txt", "r") as f:
+    color_map_path = Path(__file__).with_name("turbo_colormap.txt")
+    with color_map_path.open("r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split()
             normalized_value = float(parts[0])

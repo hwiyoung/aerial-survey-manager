@@ -226,9 +226,9 @@ dockerfile_checks = {
     ],
     "engines/metashape/Dockerfile.prod": [
         "COPY backend/app /app/app",
-        "COPY engines/metashape/dags /app/engines/metashape/dags",
+        "COPY engines/metashape/pipeline /app/engines/metashape/pipeline",
         "RUN python3 -m compileall -b /app/app/",
-        "RUN python3 -m compileall -b /app/engines/metashape/dags/",
+        "RUN python3 -m compileall -b /app/engines/metashape/pipeline/",
     ],
     "Dockerfile.frontend": [
         "COPY . .",
@@ -251,7 +251,7 @@ source_paths = [
     "backend/app/models/project.py",
     "src/components/Processing/ProcessingSidebar.jsx",
     "src/components/Upload/UploadWizard.jsx",
-    "engines/metashape/dags/metashape/align_photos.py",
+    "engines/metashape/pipeline/align_photos.py",
     "scripts/systemd-start.sh",
     "scripts/check-gpu-stack.sh",
     "scripts/sync-ortho-result-paths.sh",

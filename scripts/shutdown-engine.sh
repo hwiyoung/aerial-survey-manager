@@ -38,9 +38,9 @@ fi
 echo "[2/4] 처리 엔진 라이선스 비활성화 중..."
 if [ -n "$WORKER_STATUS" ]; then
     docker compose -f "$COMPOSE_FILE" exec -T "$WORKER_SERVICE" sh -lc '
-        deactivate_script="$(find /app/engines -path "*/dags/*/deactivate.pyc" -print -quit 2>/dev/null || true)"
+        deactivate_script="$(find /app/engines -path "*/pipeline/deactivate.pyc" -print -quit 2>/dev/null || true)"
         if [ -z "$deactivate_script" ]; then
-            deactivate_script="$(find /app/engines -path "*/dags/*/deactivate.py" -print -quit 2>/dev/null || true)"
+            deactivate_script="$(find /app/engines -path "*/pipeline/deactivate.py" -print -quit 2>/dev/null || true)"
         fi
         if [ -n "$deactivate_script" ]; then
             python3 "$deactivate_script"

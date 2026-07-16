@@ -10,7 +10,7 @@
 
 ## 통합 및 배포 가이드
 
-1. **코드 배치**: 외부 엔진의 소스 코드를 `/engines/external-engine` 디렉토리에 복사하거나, GPU 처리 스크립트를 `/engines/metashape/dags`에 구성하십시오.
+1. **코드 배치**: 외부 엔진의 소스 코드를 `/engines/external-engine` 디렉토리에 복사하거나, GPU 처리 스크립트를 `/engines/metashape/pipeline`에 구성하십시오.
 2. **Docker 통합**: `docker-compose.yml`에서 해당 디렉토리를 빌드 컨텍스트로 사용하거나 볼륨으로 마운트하여 하나의 환경으로 배포할 수 있습니다.
 3. **통신**: 플랫폼 백엔드와 외부 엔진은 Celery 큐(Redis) 또는 Docker 내부 네트워크를 통해 통신합니다. (예: 내부 처리 큐, `http://external-engine:5000`)
 
