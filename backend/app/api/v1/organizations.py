@@ -3,12 +3,12 @@ from uuid import UUID
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.group import ProjectGroup
-from app.models.project import CameraModel, Project
+from app.models.project import CameraModel, Image, Project
 from app.models.user import Organization, User
 from app.schemas.user import (
     OrganizationCreate,
@@ -43,6 +43,31 @@ def _validate_quota(value: Optional[int], field_name: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{field_name} must be 0 or greater",
         )
+
+
+async def _delete_organization_camera_models(
+    organization_id: UUID,
+    db: AsyncSession,
+) -> int:
+    """Remove organization camera models after clearing nullable image references."""
+    camera_model_result = await db.execute(
+        select(CameraModel.id)
+        .where(CameraModel.organization_id == organization_id)
+        .with_for_update()
+    )
+    camera_model_ids = list(camera_model_result.scalars().all())
+    if not camera_model_ids:
+        return 0
+
+    await db.execute(
+        update(Image)
+        .where(Image.camera_model_id.in_(camera_model_ids))
+        .values(camera_model_id=None)
+    )
+    await db.execute(
+        delete(CameraModel).where(CameraModel.id.in_(camera_model_ids))
+    )
+    return len(camera_model_ids)
 
 
 @router.get("", response_model=OrganizationListResponse)
@@ -155,9 +180,17 @@ async def delete_organization(
     """Delete an organization.
 
     기본 동작은 참조 데이터(사용자/프로젝트/그룹/카메라 모델)가 없을 때만 삭제됩니다.
-    force=true인 경우 참조를 먼저 해제한 뒤 조직을 삭제합니다.
+    force=true인 경우 참조를 먼저 해제하고, 조직 소유 사용자 정의 카메라 모델은
+    이미지 연결을 해제한 뒤 삭제합니다.
     """
     organization = await _get_organization_or_404(organization_id, db)
+    if force:
+        locked_organization_result = await db.execute(
+            select(Organization)
+            .where(Organization.id == organization_id)
+            .with_for_update()
+        )
+        organization = locked_organization_result.scalar_one()
 
     user_count = (
         await db.execute(
@@ -201,15 +234,15 @@ async def delete_organization(
             status_code=status.HTTP_409_CONFLICT,
             detail="Organization has dependencies. Remove users, projects, groups, and camera models before deletion.",
         )
+    removed_camera_model_count = 0
     if has_dependencies and force:
         # Force mode: detach all organization-scoped resources first.
         await db.execute(update(User).where(User.organization_id == organization_id).values(organization_id=None))
         await db.execute(update(Project).where(Project.organization_id == organization_id).values(organization_id=None))
         await db.execute(update(ProjectGroup).where(ProjectGroup.organization_id == organization_id).values(organization_id=None))
-        await db.execute(
-            update(CameraModel)
-            .where(CameraModel.organization_id == organization_id)
-            .values(organization_id=None)
+        removed_camera_model_count = await _delete_organization_camera_models(
+            organization_id,
+            db,
         )
 
     organization_name = organization.name
@@ -225,6 +258,7 @@ async def delete_organization(
             "force": force,
             "dependency_counts_before_delete": dependency_snapshot,
             "forced_detach": force and has_dependencies,
+            "removed_camera_model_count": removed_camera_model_count,
         },
     )
 
