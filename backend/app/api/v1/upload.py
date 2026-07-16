@@ -990,7 +990,12 @@ async def complete_multipart_upload(
 
     for upload in request.uploads:
         image = None
+        savepoint = None
+        completed_staging_dir = None
         try:
+            # Isolate each file so one database/constraint failure does not poison
+            # the transaction for every other file in the same completion request.
+            savepoint = await db.begin_nested()
             logger.info(f"[complete] Processing: filename={upload.filename}, upload_id={upload.upload_id}, object_key={upload.object_key}")
 
             validate_completed_part_numbers(part.part_number for part in upload.parts)
@@ -1087,7 +1092,7 @@ async def complete_multipart_upload(
                 finally:
                     temporary_path.unlink(missing_ok=True)
 
-                completed_staging_dirs.append(staging_dir)
+                completed_staging_dir = staging_dir
             else:
                 # MinIO mode: complete S3 multipart upload
                 s3_service.complete_multipart_upload(
@@ -1110,6 +1115,13 @@ async def complete_multipart_upload(
             image.validated_at = None
             image.has_error = False
 
+            # Force database errors to occur inside this file's savepoint.
+            await db.flush()
+            await savepoint.commit()
+
+            if completed_staging_dir is not None:
+                completed_staging_dirs.append(completed_staging_dir)
+
             logger.info(f"[complete] Image updated: id={image.id}, filename={upload.filename} -> completed")
 
             completed.append(CompletedFileInfo(
@@ -1120,6 +1132,15 @@ async def complete_multipart_upload(
             thumbnail_image_ids.append(str(image.id))
 
         except Exception as e:
+            if savepoint is not None and savepoint.is_active:
+                try:
+                    await savepoint.rollback()
+                except Exception:
+                    logger.exception(
+                        "[complete] Failed to roll back upload savepoint for %s",
+                        upload.filename,
+                    )
+                    raise
             logger.error(f"[complete] Exception for {upload.filename}: {e}", exc_info=True)
             failed.append({
                 "filename": upload.filename,

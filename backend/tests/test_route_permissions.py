@@ -1,3 +1,4 @@
+import inspect
 import unittest
 
 from fastapi.routing import APIRoute
@@ -37,6 +38,14 @@ class RoutePermissionContractTests(unittest.TestCase):
             "/upload/projects/{project_id}/local-import",
             "POST",
         )
+
+    def test_multipart_completion_isolates_each_file_with_a_savepoint(self):
+        completion_source = inspect.getsource(upload.complete_multipart_upload)
+
+        self.assertIn("savepoint = await db.begin_nested()", completion_source)
+        self.assertIn("await db.flush()", completion_source)
+        self.assertIn("await savepoint.commit()", completion_source)
+        self.assertIn("await savepoint.rollback()", completion_source)
 
 
 if __name__ == "__main__":
