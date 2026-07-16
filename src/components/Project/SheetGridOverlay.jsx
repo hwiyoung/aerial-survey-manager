@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import L from 'leaflet';
 import { Rectangle, Tooltip, useMap } from 'react-leaflet';
 import api from '../../api/client';
@@ -21,7 +21,6 @@ const MIN_ZOOM_FOR_SCALE = {
 export default function SheetGridOverlay({ visible, scale, projectBounds, selectedSheets, onToggleSheet, onSheetsLoaded, pane }) {
     const map = useMap();
     const [sheets, setSheets] = useState([]);
-    const [loading, setLoading] = useState(false);
     const [truncated, setTruncated] = useState(false);
     const [needsZoom, setNeedsZoom] = useState(false);
     const debounceRef = useRef(null);
@@ -38,7 +37,6 @@ export default function SheetGridOverlay({ visible, scale, projectBounds, select
         if (lastBoundsKeyRef.current === boundsKey) return;
         lastBoundsKeyRef.current = boundsKey;
 
-        setLoading(true);
         setTruncated(false);
         api.getSheets(scale, bounds)
             .then(data => {
@@ -49,8 +47,7 @@ export default function SheetGridOverlay({ visible, scale, projectBounds, select
             .catch(err => {
                 console.error('Failed to load sheets:', err);
                 setSheets([]);
-            })
-            .finally(() => setLoading(false));
+            });
     }, [scale, onSheetsLoaded]);
 
     // 프로젝트 bounds가 있으면 그걸로 도엽 조회 (줌 제한 없음)

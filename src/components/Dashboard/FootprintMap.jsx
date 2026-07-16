@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
+import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON, ImageOverlay } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -78,8 +78,6 @@ export function TiTilerOrthoLayer({
     const map = useMap();
     const layerRef = useRef(null);
     const currentProjectIdRef = useRef(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
 
     // 베이스맵 토글 시 정사영상을 항상 최상단으로
     useEffect(() => {
@@ -125,8 +123,6 @@ export function TiTilerOrthoLayer({
         const applyCachedInfo = (cached) => {
             const boundsFromCache = overrideBounds || normalizeCogBounds(cached.bounds);
             setTileUrl(cached.tileUrl || buildTiTilerTileUrl(cached.url));
-            setError(null);
-            setLoading(false);
             setBounds(boundsFromCache);
             onLoadComplete?.();
         };
@@ -138,8 +134,6 @@ export function TiTilerOrthoLayer({
                 return;
             }
 
-            setLoading(true);
-            setError(null);
             setTileUrl(null);
             setBounds(overrideBounds);
 
@@ -191,14 +185,11 @@ export function TiTilerOrthoLayer({
 
                 setTileUrl(tiTilerUrl);
                 setBounds(nextBounds);
-                setLoading(false);
                 onLoadComplete?.();
 
             } catch (err) {
                 if (currentProjectIdRef.current === projectId) {
                     console.error('[TiTiler] Failed to initialize:', err);
-                    setError(err.message);
-                    setLoading(false);
                     onLoadError?.(err.message);
                 }
             }
@@ -334,7 +325,6 @@ function MapResizeHandler({ height }) {
  */
 export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegion = null, interactive = true, footprints = [], hoveredProjectId = null }) {
     const [geojsonData, setGeojsonData] = useState(null);
-    const [loading, setLoading] = useState(false);
     const layersRef = useRef([]); // 모든 레이어 참조 저장
 
     // hoveredProjectId가 설정되면 모든 권역 툴팁 닫기
@@ -376,14 +366,11 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
         if (!visible || geojsonData) return;
 
         const fetchBoundaries = async () => {
-            setLoading(true);
             try {
                 const response = await api.request('/regions/boundaries');
                 setGeojsonData(response);
             } catch (err) {
                 console.error('Failed to fetch regional boundaries:', err);
-            } finally {
-                setLoading(false);
             }
         };
 
@@ -503,7 +490,6 @@ export function RegionBoundaryLayer({ visible = true, onRegionClick, activeRegio
 function FootprintMapHeader({
     showRegions, onRegionToggle,
     showFootprints, onFootprintToggle,
-    selectedCogProject, cogLoadStatus, cogError,
     sheetState, onSheetToggle,
 }) {
     return (
@@ -877,7 +863,7 @@ export function FootprintMap({
 
     // Generate footprints from projects - using real data from backend
     const footprints = useMemo(() => {
-        return projects.map((project, index) => {
+        return projects.map((project) => {
             let status = 'pending';
             const projectStatus = (project.status || '').toLowerCase();
             if (projectStatus === 'completed' || project.status === '완료') status = 'completed';
@@ -931,8 +917,6 @@ export function FootprintMap({
     const isFlexHeight = height === '100%';
 
     // COG overlay - show for highlighted OR selected completed project
-    const [cogLoadStatus, setCogLoadStatus] = useState(null); // 'loading' | 'loaded' | 'error'
-    const [cogError, setCogError] = useState(null);
     const [cogDismissedProjectId, setCogDismissedProjectId] = useState(null); // user explicitly closed overlay
 
     // Region layer visibility
@@ -952,18 +936,11 @@ export function FootprintMap({
         });
     }, []);
 
-    // Footprint (bounding box) opacity control
-    const [footprintOpacity, setFootprintOpacity] = useState(0.5);
-
-    // COG (orthophoto) opacity control
-    const [cogOpacity, setCogOpacity] = useState(1.0);
-
     // Selected project for COG overlay (highlighted or selected, if completed)
     const activeProjectId = highlightProjectId || selectedProjectId;
     const selectedCogProject = (activeProjectId && activeProjectId !== cogDismissedProjectId)
         ? footprints.find(fp => fp.id === activeProjectId && fp.status === 'completed')
         : null;
-    const selectedCogProjectId = selectedCogProject?.id || null;
 
     // Stabilize bounds reference to prevent TiTilerOrthoLayer useEffect re-fires
     // on every periodic refresh (projects re-fetch → footprints recompute → new bounds array)
@@ -980,31 +957,10 @@ export function FootprintMap({
         }
     }, [showFootprints]);
 
-    // Reset COG status when selected project changes
-    useEffect(() => {
-        if (selectedCogProjectId) {
-            setCogLoadStatus('loading');
-            setCogError(null);
-        } else {
-            setCogLoadStatus(null);
-            setCogError(null);
-        }
-    }, [selectedCogProjectId]);
-
     // Reset COG dismissal when the active project changes
     useEffect(() => {
         setCogDismissedProjectId(null);
     }, [activeProjectId]);
-
-    // COG load handlers
-    const handleCogLoadComplete = useCallback(() => {
-        setCogLoadStatus('loaded');
-    }, []);
-
-    const handleCogLoadError = useCallback((error) => {
-        setCogLoadStatus('error');
-        setCogError(error);
-    }, []);
 
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${isFlexHeight ? 'flex flex-col h-full' : ''}`}>
@@ -1018,8 +974,6 @@ export function FootprintMap({
                         onSheetStateChange({ ...sheetState, visible: false });
                     }
                 }}
-                selectedCogProject={selectedCogProject}
-                cogLoadStatus={cogLoadStatus} cogError={cogError}
                 sheetState={sheetState}
                 onRegionToggle={() => {
                     const willShow = !showRegions;
@@ -1087,9 +1041,7 @@ export function FootprintMap({
                         <TiTilerOrthoLayer
                             projectId={selectedCogProject.id}
                             visible={true}
-                            opacity={cogOpacity}
-                            onLoadComplete={handleCogLoadComplete}
-                            onLoadError={handleCogLoadError}
+                            opacity={1}
                             projectBounds={stableCogBounds}
                             showBasemap={showBasemap}
                         />
@@ -1098,14 +1050,13 @@ export function FootprintMap({
                         <ImageOverlay
                             url={`/storage/${selectedCogProject.project.ortho_thumbnail_path}`}
                             bounds={stableCogBounds}
-                            opacity={cogOpacity}
+                            opacity={1}
                         />
                     )}
 
                     {showFootprints && footprints.map((fp) => {
                         const isHighlighted = fp.id === highlightProjectId;
                         const isSelected = fp.id === selectedProjectId;
-                        const isHovered = fp.id === hoveredProjectId;
                         const colors = isHighlighted ? STATUS_COLORS.highlight : STATUS_COLORS[fp.status];
 
                         const getStrokeColor = () => {

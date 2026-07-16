@@ -1,4 +1,3 @@
-import React from 'react';
 import { MapPinned, X } from 'lucide-react';
 import { EO_CRS_OPTIONS, formatCrsLabel } from '../../constants/crs';
 

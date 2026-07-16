@@ -1,7 +1,7 @@
 /**
  * Login Page Component
  */
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 

@@ -1,4 +1,3 @@
-import React from 'react';
 import { X } from 'lucide-react';
 import { ADMIN_ROLE_OPTIONS, getAdminRoleLabel } from '../../hooks/useAdminPanel';
 

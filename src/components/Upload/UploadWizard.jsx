@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { UploadCloud, FileText, CheckCircle2, ChevronRight, ChevronLeft, AlertCircle, X, Camera, FolderOpen, Info, Trash2, Image as ImageIcon, FilePlus, ArrowRight, ArrowLeft, Table as TableIcon, RefreshCw, AlertTriangle, Pencil } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { UploadCloud, FileText, CheckCircle2, X, Camera, FolderOpen, Info, Trash2, FilePlus, ArrowRight, Table as TableIcon, RefreshCw, AlertTriangle, Pencil } from 'lucide-react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, Rectangle, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import proj4 from 'proj4';
@@ -90,41 +90,6 @@ const extractRowCrs = (parts, columns) => {
         if (normalized) return normalized;
     }
     return null;
-};
-
-const collectEffectiveEoCrs = (contents, config) => {
-    const fallbackCrs = normalizeEoCrs(config?.crs) || config?.crs || 'EPSG:5186';
-    const values = new Set();
-
-    contents.forEach((item) => {
-        let skipNextDataLine = Boolean(config?.hasHeader);
-        let currentCrs = null;
-
-        String(item.content || '').split('\n').forEach((rawLine) => {
-            const line = rawLine.trim();
-            if (!line) return;
-
-            const lineCrs = normalizeEoCrs(line);
-            if (line.startsWith('#') || line.startsWith('//')) {
-                if (lineCrs) currentCrs = lineCrs;
-                return;
-            }
-
-            if (skipNextDataLine) {
-                skipNextDataLine = false;
-                return;
-            }
-
-            let parts = splitEoLine(line, config?.delimiter || 'space');
-            parts = parts.map((part) => part.trim()).filter(Boolean);
-            const maxColumn = Math.max(...Object.values(config?.columns || {}).filter((idx) => Number.isInteger(idx)), 0);
-            if (parts.length <= maxColumn) return;
-
-            values.add(extractRowCrs(parts, config?.columns) || currentCrs || fallbackCrs);
-        });
-    });
-
-    return Array.from(values).filter(Boolean).sort();
 };
 
 const normalizeEoImageKey = (imageName) => {
@@ -337,7 +302,7 @@ const getEoItemKey = (item) => item.path || item.filename;
 
 function EoMapFit({ points }) {
     const map = useMap();
-    const fittedSignatureRef = React.useRef(null);
+    const fittedSignatureRef = useRef(null);
     const fitSignature = points
         .filter((point) => point.valid)
         .map((point) => `${point.imageKey}:${point.lat.toFixed(6)}:${point.lng.toFixed(6)}`)

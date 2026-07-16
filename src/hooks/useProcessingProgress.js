@@ -57,7 +57,7 @@ export function useProcessingProgress(projectId) {
                         updateStatus('processing');
                     }
                 }
-            } catch (e) {
+            } catch {
                 // Ignore initial status fetch errors
             }
         };

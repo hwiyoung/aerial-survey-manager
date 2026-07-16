@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { X, Download, FileOutput, Trash2, AlertTriangle, HardDrive } from 'lucide-react';
 import api from '../../api/client';
 

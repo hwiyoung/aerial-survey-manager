@@ -1,7 +1,7 @@
 /**
  * Authentication Context and Provider
  */
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import api from '../api/client';
 
 const AuthContext = createContext(null);
@@ -34,7 +34,7 @@ export function AuthProvider({ children }) {
                 try {
                     const userData = await api.getCurrentUser();
                     setUser(userData);
-                } catch (err) {
+                } catch {
                     // Token expired or invalid
                     localStorage.removeItem('access_token');
                     localStorage.removeItem('refresh_token');
@@ -85,7 +85,7 @@ export function AuthProvider({ children }) {
     const logout = useCallback(async () => {
         try {
             await api.logout();
-        } catch (err) {
+        } catch {
             // Ignore errors
         }
         setUser(null);

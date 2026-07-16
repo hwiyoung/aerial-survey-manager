@@ -1,12 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import {
-  Map, Settings, Bell, User, Search,
-  Layers, FileImage, AlertTriangle, Loader2, X,
-  Download, Box, Maximize2,
-  Sparkles, CheckCircle2, MapPin, UploadCloud,
-  FolderOpen, FilePlus, FileText, Camera, ArrowRight, ArrowLeft, Save, Play, Table as TableIcon, RefreshCw, CheckSquare, Square, FileOutput, LogOut, Trash2, Bookmark,
-  Folder, FolderPlus, ChevronRight, ChevronDown, GripVertical, MoreHorizontal, Edit2, Plus
-} from 'lucide-react';
+import { Folder, Loader2, X } from 'lucide-react';
 
 // API & Auth imports
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -16,7 +9,6 @@ import api from './api/client';
 import S3MultipartUploader from './services/s3Upload';
 import { formatSpeed } from './utils/formatting';
 import { formatDuration, formatKstDate, formatKstDateTime } from './utils/dateTime';
-import { useProcessingProgress } from './hooks/useProcessingProgress';
 import { useAdminPanel } from './hooks/useAdminPanel';
 import { useGroupState } from './hooks/useGroupState';
 
@@ -34,15 +26,11 @@ import AdminPanel from './components/Admin/AdminPanel';
 
 // Leaflet
 import 'leaflet/dist/leaflet.css';
-import ResumableDownloader from './services/download';
 import DashboardView from './components/Dashboard/DashboardView';
 import { formatCrsLabel, normalizeCrsCode } from './constants/crs';
 
 
 // --- 1. CONSTANTS ---
-const REGIONS = ['수도권북부 권역', '수도권남부 권역', '강원 권역', '충청 권역', '전라동부 권역', '전라서부 권역', '경북 권역', '경남 권역'];
-const COMPANIES = ['(주)공간정보', '대한측량', '미래매핑', '하늘지리'];
-
 // Status mapping for display
 const STATUS_MAP = {
   'pending': '대기',
@@ -172,8 +160,6 @@ function Dashboard() {
   // Use API hook for projects
   const {
     projects: apiProjects,
-    loading: projectsLoading,
-    error: projectsError,
     refresh: refreshProjects,
     createProject,
     updateProject,
@@ -357,9 +343,6 @@ function Dashboard() {
   const [highlightProjectId, setHighlightProjectId] = useState(null);
   const [viewMode, setViewMode] = useState(initialViewMode);
   const [processingProject, setProcessingProject] = useState(null);
-  const activeProjectId = viewMode === 'processing'
-    ? (processingProject?.id || selectedProjectId)
-    : selectedProjectId;
 
   // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
   // 로고 클릭 시 전체 대시보드를 보여주기 위해 자동 선택 비활성화
@@ -391,8 +374,9 @@ function Dashboard() {
     return allUploads.some(u => ACTIVE_UPLOAD_STATUSES.has(u.status));
   }, [allUploads]);
 
-  const [loadingImages, setLoadingImages] = useState(false);
-  const [imageRefreshKey, setImageRefreshKey] = useState(0); // Trigger to force image reload
+  // Incrementing this state intentionally forces image components to re-render
+  // after asynchronous thumbnail generation, even though the value is not read.
+  const [, setImageRefreshKey] = useState(0);
 
   const refreshProjectEoPoints = useCallback(async (projectId) => {
     if (!projectId) return [];
@@ -475,7 +459,7 @@ function Dashboard() {
 
         setProcessingEngines([{ name: 'metashape', enabled: true, reason: '기본 엔진' }]);
         setDefaultProcessingEngine(nextDefault || 'metashape');
-      } catch (error) {
+      } catch {
         if (!active) return;
         setProcessingEngines([{ name: 'metashape', enabled: true, reason: '기본 엔진' }]);
         setDefaultProcessingEngine('metashape');
@@ -608,7 +592,7 @@ function Dashboard() {
   // 브라우저 뒤로가기/앞으로가기 처리
   // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (업로드 중단하지 않음)
   useEffect(() => {
-    const handlePopState = (event) => {
+    const handlePopState = () => {
       // 뒤로가기 시 대시보드로 복귀 (업로드는 계속 진행)
       setViewMode('dashboard');
       setProcessingProject(null);
@@ -1410,7 +1394,7 @@ function Dashboard() {
 
       // 불완전한 업로드가 있는 경우 사용자에게 확인 요청
       if (err.status === 409 && err.data?.type === 'incomplete_uploads') {
-        const { message, confirm_message, completed_count, incomplete_count } = err.data;
+        const { message, confirm_message, completed_count } = err.data;
         const shouldProceed = window.confirm(
           `${message}\n\n${confirm_message}\n\n` +
           `[확인]을 누르면 완료된 ${completed_count}개 이미지만으로 처리를 시작합니다.\n` +

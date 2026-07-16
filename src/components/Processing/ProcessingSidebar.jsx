@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Trash2, Play, Camera, RotateCcw, MapPinned } from 'lucide-react';
 import api from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
@@ -110,7 +110,7 @@ export default function ProcessingSidebar({
     const [restartChoiceDismissedJobId, setRestartChoiceDismissedJobId] = useState(null);
 
     // Real-time processing progress via WebSocket
-    const { progress: wsProgress, status: wsStatus, message: wsMessage, isConnected, reconnect } = useProcessingProgress(
+    const { progress: wsProgress, status: wsStatus, message: wsMessage, reconnect } = useProcessingProgress(
         project?.id || null  // Use project.id for WebSocket connection
     );
     const [processingEvents, setProcessingEvents] = useState([]);

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
     UploadCloud, FolderPlus, Search, CheckSquare, Square,
     ChevronRight, ChevronDown, MoreHorizontal, Edit2, Trash2,
@@ -422,7 +422,7 @@ export function ProjectItem({
         e.dataTransfer.effectAllowed = 'move';
     };
 
-    const handleClick = (e) => {
+    const handleClick = () => {
         if (clickTimeoutRef.current) {
             clearTimeout(clickTimeoutRef.current);
             clickTimeoutRef.current = null;
@@ -433,7 +433,7 @@ export function ProjectItem({
         }, CLICK_DELAY);
     };
 
-    const handleDoubleClick = (e) => {
+    const handleDoubleClick = () => {
         if (clickTimeoutRef.current) {
             clearTimeout(clickTimeoutRef.current);
             clickTimeoutRef.current = null;

@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { MapPin, FolderCheck, HardDrive, Camera, BarChart3, LayoutGrid, LayoutList, LayoutTemplate, ArrowLeft, GripHorizontal, Eye, Clock } from 'lucide-react';
 import { TrendLineChart, DistributionPieChart, ProgressDonutChart, MonthlyBarChart } from './Charts';
 import { FootprintMap } from './FootprintMap';
@@ -325,7 +325,6 @@ export default function DashboardView({
     const [monthlyData, setMonthlyData] = useState([]);
     const [regionalData, setRegionalData] = useState([]);
     const [storageStats, setStorageStats] = useState(null);
-    const [statsLoading, setStatsLoading] = useState(true);
     const statsRefreshKey = projects
         .map(project => `${project.id}:${project.status}:${project.source_deleted}`)
         .join(',');
@@ -365,7 +364,6 @@ export default function DashboardView({
     // Fetch statistics data from API (each request independent — one failure doesn't break others)
     useEffect(() => {
         const fetchStats = async () => {
-            setStatsLoading(true);
             const [monthlyRes, regionalRes, storageRes] = await Promise.allSettled([
                 api.getMonthlyStats(),
                 api.getRegionalStats(),
@@ -396,8 +394,6 @@ export default function DashboardView({
             if (storageRes.status === 'fulfilled' && storageRes.value?.storage_size !== undefined) {
                 setStorageStats(storageRes.value);
             }
-
-            setStatsLoading(false);
         };
 
         fetchStats();

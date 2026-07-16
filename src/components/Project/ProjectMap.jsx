@@ -185,6 +185,9 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
             return next;
         });
     }, []);
+    const handleOrthoLoadEnd = useCallback(() => {
+        setIsLoading(false);
+    }, []);
 
     useEffect(() => {
         if ((project?.status === '완료' || project?.status === 'completed') && project?.ortho_path) {
@@ -257,8 +260,8 @@ export default function ProjectMap({ project, isProcessingMode, selectedImageId,
                         projectId={project.id}
                         visible={true}
                         opacity={1.0}
-                        onLoadComplete={() => setIsLoading(false)}
-                        onLoadError={() => setIsLoading(false)}
+                        onLoadComplete={handleOrthoLoadEnd}
+                        onLoadError={handleOrthoLoadEnd}
                         showBasemap={showBasemap}
                     />
                 )}
