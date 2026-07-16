@@ -867,14 +867,8 @@ async def batch_projects(
     db: AsyncSession = Depends(get_db),
 ):
     """Batch operation for projects."""
-    if payload.action == "update_status" and not payload.status:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="status is required when action is update_status",
-        )
-
     unique_ids = list(dict.fromkeys(payload.project_ids))
-    permission_checker = PermissionChecker("admin" if payload.action == "delete" else "edit")
+    permission_checker = PermissionChecker("admin")
 
     succeeded = []
     failed = []
@@ -902,45 +896,28 @@ async def batch_projects(
 
         try:
             project_title = project.title
-            if payload.action == "delete":
-                original_paths = await _collect_project_image_paths(project_id, db)
-                ortho_path = project.ortho_path
+            original_paths = await _collect_project_image_paths(project_id, db)
+            ortho_path = project.ortho_path
 
-                async with db.begin_nested():
-                    await db.delete(project)
-                await db.commit()
+            async with db.begin_nested():
+                await db.delete(project)
+            await db.commit()
 
-                from app.workers.tasks import delete_project_data
-                try:
-                    delete_project_data.delay(str(project_id))
-                except Exception as e:
-                    print(f"Failed to queue delete task for {project_id}: {e}")
-                _cleanup_project_storage(project_id, original_paths, ortho_path)
-                log_audit_event(
-                    "project_batch_deleted",
-                    actor=current_user,
-                    details={
-                        "project_id": project_id_str,
-                        "project_title": project_title,
-                    },
-                )
-                succeeded.append(project_id)
-
-            elif payload.action == "update_status":
-                previous_status = project.status
-                project.status = payload.status
-                await db.commit()
-                log_audit_event(
-                    "project_batch_status_updated",
-                    actor=current_user,
-                    details={
-                        "project_id": project_id_str,
-                        "project_title": project_title,
-                        "previous_status": previous_status,
-                        "new_status": payload.status,
-                    },
-                )
-                succeeded.append(project_id)
+            from app.workers.tasks import delete_project_data
+            try:
+                delete_project_data.delay(str(project_id))
+            except Exception as e:
+                print(f"Failed to queue delete task for {project_id}: {e}")
+            _cleanup_project_storage(project_id, original_paths, ortho_path)
+            log_audit_event(
+                "project_batch_deleted",
+                actor=current_user,
+                details={
+                    "project_id": project_id_str,
+                    "project_title": project_title,
+                },
+            )
+            succeeded.append(project_id)
 
         except HTTPException:
             raise

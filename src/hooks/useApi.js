@@ -104,18 +104,6 @@ export function useProjects(options = {}) {
         }
     }, []);
 
-    const batchUpdateProjectStatus = useCallback(async (projectIds, status) => {
-        try {
-            const result = await api.batchUpdateProjectStatus(projectIds, status);
-            const successSet = new Set(result.succeeded || []);
-            setProjects(prev => prev.map(p => successSet.has(p.id) ? { ...p, status: result.action === 'update_status' ? status : p.status } : p));
-            return result;
-        } catch (err) {
-            setError(err.message);
-            throw err;
-        }
-    }, []);
-
     const patchProject = useCallback((projectId, patch) => {
         setProjects(prev => prev.map(p => p.id === projectId ? { ...p, ...patch } : p));
     }, []);
@@ -143,7 +131,6 @@ export function useProjects(options = {}) {
         updateProject,
         deleteProject,
         batchDeleteProjects,
-        batchUpdateProjectStatus,
         patchProject,
         fetchImages,
     };

@@ -282,14 +282,6 @@ class ApiClient {
         });
     }
 
-    async batchUpdateProjectStatus(projectIds, status) {
-        return this.batchProjects({
-            action: 'update_status',
-            project_ids: projectIds,
-            status,
-        });
-    }
-
     async deleteSourceImages(projectId) {
         return this.request(`/projects/${projectId}/source-images`, { method: 'DELETE' });
     }

@@ -23,7 +23,6 @@ class ProjectUpdate(BaseModel):
     title: Optional[str] = None
     region: Optional[str] = None
     company: Optional[str] = None
-    status: Optional[str] = None
     group_id: Optional[UUID] = None
 
 
@@ -75,9 +74,8 @@ class ProjectListResponse(BaseModel):
 
 class ProjectBatchAction(BaseModel):
     """Batch operation request payload."""
-    action: Literal["delete", "update_status"]
+    action: Literal["delete"]
     project_ids: List[UUID] = Field(default_factory=list, min_length=1)
-    status: Optional[str] = None
 
 
 class ProjectBatchFailure(BaseModel):
@@ -88,7 +86,7 @@ class ProjectBatchFailure(BaseModel):
 
 class ProjectBatchResponse(BaseModel):
     """Batch operation result."""
-    action: Literal["delete", "update_status"]
+    action: Literal["delete"]
     requested: int
     succeeded: List[UUID] = Field(default_factory=list)
     failed: List[ProjectBatchFailure] = Field(default_factory=list)

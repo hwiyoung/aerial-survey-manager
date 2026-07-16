@@ -53,17 +53,6 @@ const STATUS_MAP = {
   'error': '오류',
   'cancelled': '취소',
 };
-const PROJECT_STATUS_OPTIONS = [
-  { value: 'pending', label: '대기' },
-  { value: 'queued', label: '대기열' },
-  { value: 'processing', label: '진행중' },
-  { value: 'completed', label: '완료' },
-  { value: 'cancelled', label: '취소' },
-  { value: 'error', label: '오류' },
-];
-const PROJECT_STATUS_LABEL_BY_VALUE = Object.fromEntries(
-  PROJECT_STATUS_OPTIONS.map(({ value, label }) => [value, label])
-);
 const CRS_CORRECTION_ACTIVE_JOB_STATUSES = new Set(['queued', 'processing', 'scheduled']);
 const CRS_CORRECTION_LOCKED_STATUSES = new Set(['closed', 'applying', 'applied']);
 
@@ -190,7 +179,6 @@ function Dashboard() {
     updateProject,
     deleteProject,
     batchDeleteProjects,
-    batchUpdateProjectStatus,
     patchProject,
     fetchImages
   } = useProjects();
@@ -1564,78 +1552,6 @@ function Dashboard() {
     }
   };
 
-  const handleBulkUpdateProjectStatus = async (status) => {
-    if (!canEditAnyProject) {
-      alert('프로젝트 수정 권한이 없습니다.');
-      return;
-    }
-
-    const targetProjectIds = Array.from(checkedProjectIds);
-    if (targetProjectIds.length === 0) return;
-
-    const { allowed: authorizedProjectIds, denied: deniedProjectIds } = filterAuthorizedProjectIds(
-      targetProjectIds,
-      canEditProjectById
-    );
-    if (authorizedProjectIds.length === 0) {
-      alert('상태를 변경할 수 있는 프로젝트가 없습니다.');
-      return;
-    }
-
-    const statusLabel = PROJECT_STATUS_LABEL_BY_VALUE[status] || status;
-    const deniedNotice = deniedProjectIds.length > 0
-      ? `\n권한이 없는 ${deniedProjectIds.length}개 항목은 제외됩니다.`
-      : '';
-    if (!window.confirm(`선택한 ${authorizedProjectIds.length}개 프로젝트의 상태를 "${statusLabel}"(으)로 변경하시겠습니까?${deniedNotice}`)) return;
-
-    try {
-      const result = await batchUpdateProjectStatus(authorizedProjectIds, status);
-      const successIds = new Set(result.succeeded || []);
-
-      setCheckedProjectIds(prev => {
-        const next = new Set(prev);
-        successIds.forEach(projectId => next.delete(projectId));
-        return next;
-      });
-
-      if (result.succeeded.length > 0) {
-        await refreshProjects();
-      }
-
-      if (result.failed && result.failed.length > 0) {
-        const failDetails = result.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
-        alert(`상태 변경이 부분적으로 완료되었습니다.\n성공 ${result.succeeded.length}개, 실패 ${result.failed.length}개\n${failDetails}`);
-
-        const retryProjectIds = result.failed.map(item => item.project_id).filter(Boolean);
-        if (retryProjectIds.length > 0 && window.confirm(`상태 변경 실패 ${retryProjectIds.length}개 항목을 다시 시도하시겠습니까?`)) {
-          const retryResult = await batchUpdateProjectStatus(retryProjectIds, status);
-          const retrySuccessIds = new Set(retryResult.succeeded || []);
-
-          setCheckedProjectIds(prev => {
-            const next = new Set(prev);
-            retrySuccessIds.forEach(projectId => next.delete(projectId));
-            return next;
-          });
-
-          if (retryResult.succeeded.length > 0) {
-            await refreshProjects();
-          }
-
-          if (retryResult.failed && retryResult.failed.length > 0) {
-            const retryFailDetails = retryResult.failed.map(item => ` - ${item.project_id}: ${item.reason}`).join('\n');
-            alert(`재시도 결과: 성공 ${retryResult.succeeded.length}개, 실패 ${retryResult.failed.length}개\n${retryFailDetails}`);
-          } else {
-            alert(`재시도에서 ${retryResult.succeeded.length}개 항목 상태가 추가로 변경되었습니다.`);
-          }
-        }
-      } else {
-        alert(`선택한 ${result.succeeded.length}개 프로젝트의 상태가 "${statusLabel}"(으)로 변경되었습니다.`);
-      }
-    } catch (err) {
-      alert('상태 변경 실패: ' + err.message);
-    }
-  };
-
   const openExportDialog = (projectIds) => {
     setExportModalState({ isOpen: true, projectIds: projectIds });
   };
@@ -1983,8 +1899,6 @@ function Dashboard() {
                 alert('삭제 실패: ' + err.message);
               }
             }}
-            onBulkUpdateStatus={canEditAnyProject ? handleBulkUpdateProjectStatus : null}
-            bulkStatusOptions={PROJECT_STATUS_OPTIONS}
             onOpenProcessing={async (projectId) => {
               if (!canEditProjectById(projectId)) {
                 alert('프로젝트 처리 권한이 없습니다.');

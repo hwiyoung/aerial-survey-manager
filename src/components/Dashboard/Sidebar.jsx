@@ -939,8 +939,6 @@ export default function Sidebar({
             canStartProcessingItem = null,
             canStartProcessing = false,
             canExportProject = false,
-            onBulkUpdateStatus = null,
-            bulkStatusOptions = [],
 }) {
     const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
     const sizeMode = useMemo(() => {
@@ -971,26 +969,6 @@ export default function Sidebar({
         const projectId = e.dataTransfer.getData('projectId');
         if (projectId && onMoveProjectToGroup) onMoveProjectToGroup(projectId, null);
     };
-    const bulkStatus = useMemo(() => {
-        const fallback = [
-            { value: 'pending', label: '대기' },
-            { value: 'queued', label: '대기열' },
-            { value: 'processing', label: '진행중' },
-            { value: 'completed', label: '완료' },
-            { value: 'cancelled', label: '취소' },
-            { value: 'error', label: '오류' },
-        ];
-        return (bulkStatusOptions && bulkStatusOptions.length > 0) ? bulkStatusOptions : fallback;
-    }, [bulkStatusOptions]);
-    const [selectedBulkStatus, setSelectedBulkStatus] = useState('pending');
-
-    useEffect(() => {
-        const hasSelected = bulkStatus.some((status) => status.value === selectedBulkStatus);
-        if (!hasSelected && bulkStatus.length > 0) {
-            setSelectedBulkStatus(bulkStatus[0].value);
-        }
-    }, [bulkStatus, selectedBulkStatus]);
-
     return (
         <aside className={`bg-white border-r border-slate-200 flex flex-col h-full z-10 shadow-sm shrink-0 relative ${isResizing ? '' : 'transition-[width] duration-150 ease-out'}`} style={{ width: width, willChange: isResizing ? 'width' : 'auto' }}>
             <div className="p-4 pb-2 flex gap-2">
@@ -1092,30 +1070,9 @@ export default function Sidebar({
                     {filteredProjects.length === 0 && <div className="text-center text-slate-400 py-8 text-sm">프로젝트가 없습니다</div>}
                 </div>
             </div>
-            {checkedProjectIds.size > 0 && (canExportProject || canDeleteProject || canEditProject || onBulkUpdateStatus) && (
+            {checkedProjectIds.size > 0 && (canExportProject || canDeleteProject) && (
                 <div className="p-4 border-t border-slate-200 bg-slate-50 animate-in slide-in-from-bottom duration-200 space-y-2">
                     {canExportProject && onBulkExport && <button onClick={onBulkExport} className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-lg text-sm font-bold shadow-md transition-all"><Download size={16} className="text-white" /><span>선택한 {checkedProjectIds.size}건 정사영상 내보내기</span></button>}
-                    {onBulkUpdateStatus && canEditProject && (
-                        <div className="flex gap-2">
-                            <select
-                                className="flex-1 border border-slate-300 rounded-md px-2 text-sm h-10"
-                                value={selectedBulkStatus}
-                                onChange={(e) => setSelectedBulkStatus(e.target.value)}
-                            >
-                                {bulkStatus.map((status) => (
-                                    <option key={status.value} value={status.value}>
-                                        {status.label}
-                                    </option>
-                                ))}
-                            </select>
-                            <button
-                                onClick={() => onBulkUpdateStatus(selectedBulkStatus)}
-                                className="flex items-center justify-center gap-2 bg-slate-700 hover:bg-slate-800 text-white py-2.5 px-3 rounded-lg text-sm font-bold shadow-md transition-all"
-                            >
-                                선택한 {checkedProjectIds.size}건 상태변경
-                            </button>
-                        </div>
-                    )}
                     {canDeleteProject && onBulkDelete && <button onClick={onBulkDelete} className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-lg text-sm font-bold shadow-md transition-all"><Trash2 size={16} className="text-white" /><span>선택한 {checkedProjectIds.size}건 삭제</span></button>}
                 </div>
             )}

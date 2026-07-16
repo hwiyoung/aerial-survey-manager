@@ -427,7 +427,7 @@ getTileConfig() → {
 | `POST /` | 프로젝트 생성 |
 | `GET /{id}` | 상세 조회 |
 | `PUT /{id}` | 업데이트 |
-| `POST /batch` | 배치 작업 (delete, update_status) |
+| `POST /batch` | 프로젝트 일괄 삭제 |
 | `POST /{id}/eo-upload` | EO 데이터 업로드 (CSV/TXT 파싱, 좌표 변환) |
 | `DELETE /{id}/ortho/cog` | 정사영상 삭제 (썸네일 생성 후 COG 삭제) |
 | `DELETE /{id}/source-images` | 원본 이미지 삭제 |
