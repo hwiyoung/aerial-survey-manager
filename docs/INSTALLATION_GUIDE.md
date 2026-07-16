@@ -120,6 +120,10 @@ docker compose exec worker-engine nvidia-smi
 curl http://127.0.0.1:18100/health
 ```
 
+프로덕션 Docker 네트워크는 기본적으로 `10.253.0.0/24`를 사용해 개발
+스택의 `172.23.0.0/16`과 충돌하지 않습니다. 설치 환경에서 이미 사용 중인
+대역이면 `.env`의 `AERIAL_NETWORK_SUBNET`을 다른 사설 대역으로 변경합니다.
+
 카메라 IO 목록은 패키지의 상대경로 `./data/io.csv`에서 API 시작 시 DB로
 동기화됩니다. 설치 대상 PC에서 별도 절대경로를 지정할 필요가 없습니다.
 

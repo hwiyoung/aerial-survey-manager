@@ -484,7 +484,8 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.23.0.0/16
+        # 개발 스택(172.23.0.0/16)과 동시에 실행할 수 있도록 분리합니다.
+        - subnet: ${AERIAL_NETWORK_SUBNET:-10.253.0.0/24}
 
 volumes:
   pgdata:
