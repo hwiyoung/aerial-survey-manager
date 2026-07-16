@@ -272,40 +272,16 @@ async def update_group(
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_group(
     group_id: UUID,
-    mode: str = Query("keep", description="keep: keep projects, delete: delete projects"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_manager),
 ):
-    """Delete a group. Mode determines what happens to projects."""
+    """Delete a group while preserving its projects."""
     group = await _get_scoped_group(group_id, current_user, db)
 
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Group not found",
-        )
-
-    if mode == "keep":
-        await db.execute(
-            Project.__table__.update()
-            .where(
-                Project.group_id == group_id,
-                Project.organization_id == current_user.organization_id,
-            )
-            .values(group_id=None)
-        )
-    elif mode == "delete":
-        await db.execute(
-            Project.__table__.delete()
-            .where(
-                Project.group_id == group_id,
-                Project.organization_id == current_user.organization_id,
-            )
-        )
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid mode. Use 'keep' or 'delete'",
         )
 
     await db.delete(group)
@@ -317,7 +293,7 @@ async def delete_group(
         details={
             "group_id": str(group.id),
             "group_name": group.name,
-            "mode": mode,
+            "projects_preserved": True,
             "organization_id": str(group.organization_id) if group.organization_id else None,
             "owner_id": str(group.owner_id),
         },

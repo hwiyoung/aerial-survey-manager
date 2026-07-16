@@ -522,8 +522,8 @@ class ApiClient {
         });
     }
 
-    async deleteGroup(groupId, mode = 'keep') {
-        return this.request(`/groups/${groupId}?mode=${mode}`, { method: 'DELETE' });
+    async deleteGroup(groupId) {
+        return this.request(`/groups/${groupId}`, { method: 'DELETE' });
     }
 
     async moveProjectToGroup(projectId, groupId) {

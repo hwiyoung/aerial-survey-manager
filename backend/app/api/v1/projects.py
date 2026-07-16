@@ -16,6 +16,7 @@ from geoalchemy2.functions import ST_AsText
 from app.database import get_db
 from app.models.user import User, ProjectPermission
 from app.models.project import Project, Image, ExteriorOrientation, ProcessingJob
+from app.models.group import ProjectGroup
 from app.schemas.project import (
     ProjectCreate,
     ProjectUpdate,
@@ -114,6 +115,21 @@ async def _get_scoped_project(
 ):
     query = select(Project).where(Project.id == project_id)
     query = apply_project_access_scope(query, current_user)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def _get_assignable_group(
+    group_id: UUID,
+    current_user: User,
+    db: AsyncSession,
+) -> ProjectGroup | None:
+    query = select(ProjectGroup).where(ProjectGroup.id == group_id)
+    if not is_admin_role(current_user.role):
+        query = query.where(
+            ProjectGroup.owner_id == current_user.id,
+            ProjectGroup.organization_id == current_user.organization_id,
+        )
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
@@ -596,12 +612,19 @@ async def create_project(
         additional_projects=1,
     )
 
+    if data.group_id and not await _get_assignable_group(data.group_id, current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Group not found",
+        )
+
     project = Project(
         title=data.title,
         region=data.region or "미지정",
         company=data.company,
         owner_id=current_user.id,
         organization_id=current_user.organization_id,
+        group_id=data.group_id,
     )
     db.add(project)
     await db.flush()
@@ -725,6 +748,12 @@ async def update_project(
     
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
+    if update_data.get("group_id") is not None:
+        if not await _get_assignable_group(update_data["group_id"], current_user, db):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Group not found",
+            )
     previous_values = {
         field: getattr(project, field)
         for field in update_data
