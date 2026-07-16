@@ -220,10 +220,10 @@
 |------|------|---------------|
 | 1 | 이미지 폴더 선택 | ServerFileBrowser |
 | 2 | EO 데이터 설정 | ServerFileBrowser (mode="eo"), 컬럼 매핑 UI |
-| 3 | 카메라 모델 선택 | 드롭다운 + 커스텀 입력 |
+| 3 | 카메라 모델 선택 | 공용 표준 + 조직 공유 모델 |
 | 4 | 프로젝트명, 처리 모드, 자동 처리 | 텍스트 입력 + 체크박스 |
 
-**완료 시 전달 데이터:** `{ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess, processMode }`
+**완료 시 전달 데이터:** `{ projectData, files, eoFile, eoConfig, cameraModelId, sourceDir, filePaths, autoProcess, processMode }`
 
 ---
 
@@ -451,9 +451,14 @@ getTileConfig() → {
 | 엔드포인트 | 설명 |
 |-----------|------|
 | `POST /{project_id}/local-import` | 로컬 경로 등록 (파일 복사 없이 DB에 경로만 등록) |
+| `POST /{project_id}/multipart/init` | 멀티파트 업로드 세션 및 Image 레코드 생성 |
 | `GET /{project_id}/images` | 이미지 목록 |
 | `GET /images/{image_id}` | 이미지 상세 (썸네일 URL 포함) |
 | `POST /images/{image_id}/regenerate-thumbnail` | 온디맨드 썸네일 생성 |
+
+로컬 임포트와 멀티파트 초기화는 선택한 카메라를 `camera_model_id` UUID로
+전달합니다. API는 공용 표준 모델 또는 요청 사용자와 같은 조직의 공유 모델인지
+검증한 뒤 Image 레코드에 연결합니다.
 
 **local-import 동작:**
 1. 디렉토리 스캔 (비동기 스레드풀에서 실행 — 이벤트 루프 블로킹 방지)
@@ -595,10 +600,14 @@ getTileConfig() → {
 **실행 순서:**
 1. PostgreSQL 연결 대기 (30회 재시도)
 2. Alembic 마이그레이션 (단일 head 확인 후 적용, 실패 시 서비스 시작 중단)
-3. 카메라 모델 시드 (`seed_camera_models.py`)
+3. 공용 표준 카메라 모델 시드 (`seed_camera_models.py`)
 4. 권역 데이터 시드 (`regions_seed.sql` 우선 → GeoJSON 폴백)
 5. 사용자가 없는 신규 DB에서 환경변수 기반 최초 관리자 계정 생성
 6. Uvicorn 서버 시작 (0.0.0.0:8000)
+
+표준 모델 시드는 `organization_id IS NULL`, `is_custom = false`인 레코드만
+동기화합니다. 조직 공유 모델은 같은 이름의 표준 모델이 있어도 수정하거나
+삭제하지 않습니다.
 
 ---
 

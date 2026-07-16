@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
-from pydantic import BaseModel, Field
+from sqlalchemy import select, text
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, Image, CameraModel, ExteriorOrientation
+from app.models.project import Project, Image, ExteriorOrientation
 from app.schemas.project import ImageResponse
 from app.auth.jwt import (
     PermissionChecker,
@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.services.storage import get_storage
 from app.services.quota import ensure_organization_quota
 from app.services.processing_lifecycle import processing_options_for_job
+from app.services.camera_models import resolve_accessible_camera_model
 from app.services.upload_sessions import (
     MAX_MULTIPART_PARTS,
     MAX_MULTIPART_PART_SIZE,
@@ -127,6 +128,28 @@ async def _get_scoped_project(
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
+
+async def _resolve_camera_model_id(
+    camera_model_id: UUID | None,
+    current_user: User,
+    db: AsyncSession,
+) -> UUID | None:
+    if camera_model_id is None:
+        return None
+
+    camera_model = await resolve_accessible_camera_model(
+        db,
+        camera_model_id,
+        current_user,
+    )
+    if camera_model is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera model not found",
+        )
+    return camera_model.id
+
+
 # Lazy import for MinIO-only service
 def _get_s3_multipart_service():
     from app.services.s3_multipart import get_s3_multipart_service
@@ -156,7 +179,6 @@ async def list_project_images(
         )
 
     from sqlalchemy.orm import joinedload
-    from app.models.project import ExteriorOrientation, CameraModel
 
     result = await db.execute(
         select(Image)
@@ -229,9 +251,11 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
 
 class LocalImportRequest(BaseModel):
     """Request body for local path import."""
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: str
     file_paths: Optional[List[str]] = None  # Specific files to register (individual selection mode)
-    camera_model_name: Optional[str] = None  # Optional camera model to link to imported images
+    camera_model_id: Optional[UUID] = None  # Optional accessible camera model
 
 
 class LocalImportResponse(BaseModel):
@@ -350,15 +374,11 @@ async def local_import(
     )
     existing_filenames = {row[0] for row in existing_result.all()}
 
-    # Look up camera model if provided, matching the HTTP upload flow
-    camera_model_id = None
-    if request.camera_model_name:
-        cam_result = await db.execute(
-            select(CameraModel).where(CameraModel.name == request.camera_model_name)
-        )
-        camera_model = cam_result.scalar_one_or_none()
-        if camera_model:
-            camera_model_id = camera_model.id
+    camera_model_id = await _resolve_camera_model_id(
+        request.camera_model_id,
+        current_user,
+        db,
+    )
 
     registered = 0
     skipped = 0
@@ -605,6 +625,8 @@ class FileInfo(BaseModel):
 
 class MultipartInitRequest(BaseModel):
     """Request body for multipart upload initialization."""
+    model_config = ConfigDict(extra="forbid")
+
     files: List[FileInfo] = Field(
         min_length=1,
         max_length=MAX_UPLOAD_FILES_PER_REQUEST,
@@ -614,7 +636,7 @@ class MultipartInitRequest(BaseModel):
         ge=MIN_MULTIPART_PART_SIZE,
         le=MAX_MULTIPART_PART_SIZE,
     )
-    camera_model_name: Optional[str] = None  # Link images to camera model
+    camera_model_id: Optional[UUID] = None  # Link images to an accessible model
 
 
 class PartInfo(BaseModel):
@@ -786,15 +808,11 @@ async def init_multipart_upload(
     )
     existing_images = {img.filename: img for img in existing_image_rows.scalars().all()}
 
-    # Look up camera model if provided
-    camera_model_id = None
-    if request.camera_model_name:
-        cam_result = await db.execute(
-            select(CameraModel).where(CameraModel.name == request.camera_model_name)
-        )
-        camera_model = cam_result.scalar_one_or_none()
-        if camera_model:
-            camera_model_id = camera_model.id
+    camera_model_id = await _resolve_camera_model_id(
+        request.camera_model_id,
+        current_user,
+        db,
+    )
 
     is_local = settings.STORAGE_BACKEND == "local"
 

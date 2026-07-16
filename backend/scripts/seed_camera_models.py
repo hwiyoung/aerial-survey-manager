@@ -145,14 +145,18 @@ def _company_label(camera: Dict[str, Any]) -> str:
     return ", ".join(_company_values(camera))
 
 
+def _camera_name_key(name: str) -> str:
+    return name.strip().casefold()
+
+
 def _camera_display_name(base_name: str, company_label: str, used_names: set[str]) -> str:
     display_name = f"{base_name} - {company_label}" if company_label else base_name
 
-    if display_name not in used_names:
+    if _camera_name_key(display_name) not in used_names:
         return display_name
 
     suffix = 2
-    while f"{display_name} #{suffix}" in used_names:
+    while _camera_name_key(f"{display_name} #{suffix}") in used_names:
         suffix += 1
     return f"{display_name} #{suffix}"
 
@@ -184,7 +188,7 @@ def create_camera_entries(cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
         for company_label in company_labels:
             name = _camera_display_name(base_name, company_label, seen_names)
-            seen_names.add(name)
+            seen_names.add(_camera_name_key(name))
             entries.append({
                 'name': name,
                 'base_name': base_name,
@@ -241,12 +245,12 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
     print(f"Created {len(entries)} camera model entries.")
 
     # Create name -> entry mapping for updates
-    entry_by_name = {e['name']: e for e in entries}
+    entry_by_name = {_camera_name_key(e['name']): e for e in entries}
     valid_names = set(entry_by_name.keys())
     first_entry_by_legacy_name: dict[str, Dict[str, Any]] = {}
     for entry in entries:
         for legacy_name in entry.get('legacy_names', []):
-            first_entry_by_legacy_name.setdefault(legacy_name, entry)
+            first_entry_by_legacy_name.setdefault(_camera_name_key(legacy_name), entry)
 
     async with async_session() as session:
         if clear_existing:
@@ -256,21 +260,30 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
         elif sync_mode:
             # Delete cameras not in io.csv (only non-custom ones)
             result = await session.execute(
-                select(CameraModel).where(CameraModel.is_custom == False)
+                select(CameraModel).where(
+                    CameraModel.is_custom.is_(False),
+                    CameraModel.organization_id.is_(None),
+                )
             )
             existing_cameras = result.scalars().all()
 
             deleted = 0
             migrated = 0
-            reserved_names = {cam.name for cam in existing_cameras}
+            reserved_names = {_camera_name_key(cam.name) for cam in existing_cameras}
             for cam in existing_cameras:
-                if cam.name not in valid_names:
-                    first_entry = first_entry_by_legacy_name.get(cam.name)
-                    if first_entry and first_entry['name'] not in reserved_names:
+                camera_name_key = _camera_name_key(cam.name)
+                if camera_name_key not in valid_names:
+                    first_entry = first_entry_by_legacy_name.get(camera_name_key)
+                    target_name_key = (
+                        _camera_name_key(first_entry['name'])
+                        if first_entry
+                        else None
+                    )
+                    if first_entry and target_name_key not in reserved_names:
                         old_name = cam.name
                         _apply_camera_entry(cam, first_entry)
-                        reserved_names.discard(old_name)
-                        reserved_names.add(first_entry['name'])
+                        reserved_names.discard(camera_name_key)
+                        reserved_names.add(target_name_key)
                         migrated += 1
                         print(f"  Migrated: {old_name} -> {first_entry['name']}")
                         continue
@@ -293,23 +306,29 @@ async def seed_camera_models(file_path: str, clear_existing: bool = False, sync_
                 print(f"Deleted {deleted} camera models not in io.csv.")
 
         # Get existing cameras for update/insert
-        result = await session.execute(select(CameraModel))
-        existing_cameras = {cam.name: cam for cam in result.scalars().all()}
+        result = await session.execute(
+            select(CameraModel).where(
+                CameraModel.is_custom.is_(False),
+                CameraModel.organization_id.is_(None),
+            )
+        )
+        existing_cameras = {
+            _camera_name_key(cam.name): cam
+            for cam in result.scalars().all()
+        }
 
         inserted = 0
         updated = 0
         skipped = 0
 
         for entry in entries:
-            if entry['name'] in existing_cameras:
+            entry_name_key = _camera_name_key(entry['name'])
+            if entry_name_key in existing_cameras:
                 if sync_mode:
-                    cam = existing_cameras[entry['name']]
-                    if cam.is_custom:
-                        skipped += 1
-                    else:
-                        # Keep packaged io.csv changes synced for untouched standard models.
-                        _apply_camera_entry(cam, entry)
-                        updated += 1
+                    cam = existing_cameras[entry_name_key]
+                    # Keep packaged io.csv changes synced for standard models.
+                    _apply_camera_entry(cam, entry)
+                    updated += 1
                 else:
                     skipped += 1
                 continue

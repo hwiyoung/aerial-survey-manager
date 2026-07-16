@@ -27,7 +27,7 @@ export class S3MultipartUploader {
         concurrency = 6,      // Files in parallel
         partConcurrency = 4,  // Parts per file in parallel
         partSize = 10 * 1024 * 1024,  // 10MB
-        cameraModelName = null,  // Camera model to link to images
+        cameraModelId = null,  // Camera model to link to images
         initializedUploads = null  // Optional response prepared before EO upload
     } = {}) {
         const abortController = { aborted: false };
@@ -55,7 +55,7 @@ export class S3MultipartUploader {
             concurrency,
             partConcurrency,
             partSize,
-            cameraModelName,
+            cameraModelId,
             initializedUploads
         });
 
@@ -75,13 +75,13 @@ export class S3MultipartUploader {
         concurrency,
         partConcurrency,
         partSize,
-        cameraModelName,
+        cameraModelId,
         initializedUploads
     }) {
         try {
             // 1. Initialize all uploads at once (batch API call)
             const initResponse = initializedUploads
-                || await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelName);
+                || await this.initMultipartUploads(projectId, fileArray, partSize, cameraModelId);
 
             if (!initResponse.uploads || initResponse.uploads.length === 0) {
                 throw new Error('Failed to initialize uploads');
@@ -321,7 +321,7 @@ export class S3MultipartUploader {
     /**
      * Initialize multipart uploads via backend API
      */
-    async initMultipartUploads(projectId, files, partSize, cameraModelName = null) {
+    async initMultipartUploads(projectId, files, partSize, cameraModelId = null) {
         const body = {
             files: files.map(f => ({
                 filename: f.name,
@@ -331,8 +331,8 @@ export class S3MultipartUploader {
             part_size: partSize
         };
 
-        if (cameraModelName) {
-            body.camera_model_name = cameraModelName;
+        if (cameraModelId) {
+            body.camera_model_id = cameraModelId;
         }
 
         const response = await fetch(`${API_BASE}/upload/projects/${projectId}/multipart/init`, {

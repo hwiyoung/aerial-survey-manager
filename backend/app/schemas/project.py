@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List, Literal, Any
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # --- Project Schemas ---
@@ -176,11 +176,19 @@ class EOUploadResponse(BaseModel):
 # --- Camera Model Schemas ---
 class CameraModelBase(BaseModel):
     """Base camera model schema."""
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     focal_length: Optional[float] = None
     sensor_width: Optional[float] = None
     sensor_height: Optional[float] = None
     pixel_size: Optional[float] = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Camera model name must not be empty.")
+        return normalized
 
 
 class CameraModelCreate(CameraModelBase):
@@ -198,6 +206,7 @@ class CameraModelResponse(CameraModelBase):
 
     id: UUID
     is_custom: bool
+    organization_id: Optional[UUID] = None
     # Sensor size in pixels (image dimensions)
     sensor_width_px: Optional[int] = None  # pixels
     sensor_height_px: Optional[int] = None  # pixels

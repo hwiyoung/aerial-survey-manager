@@ -790,7 +790,7 @@ function Dashboard() {
     };
   }, [isResizing]);
 
-  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModel, sourceDir, filePaths, autoProcess, processMode, imageCount }) => {
+  const handleUploadComplete = async ({ projectData, files, eoFile, eoConfig, cameraModelId, sourceDir, filePaths, autoProcess, processMode, imageCount }) => {
     try {
       // 1. Create Project via API
       console.log('Creating project:', projectData);
@@ -873,7 +873,7 @@ function Dashboard() {
           image_count: expectedLocalCount,
           images: generatePlaceholderImages(created.id, expectedLocalCount),
           bounds: { x: 30, y: 30, w: 40, h: 40 },
-          cameraModel,
+          cameraModelId,
           upload_in_progress: true,
           upload_completed_count: 0,
           upload_excluded_count: 0,
@@ -893,7 +893,7 @@ function Dashboard() {
         const runLocalImport = async () => {
           console.log('Registering local images from:', sourceDir);
           try {
-            const importResult = await api.localImport(created.id, sourceDir, selectedLocalPaths, cameraModel);
+            const importResult = await api.localImport(created.id, sourceDir, selectedLocalPaths, cameraModelId);
             console.log('Local import result:', importResult);
             const localExcludedFiles = importResult.invalid_files || [];
             const localImageCount = importResult.registered || 0;
@@ -1062,7 +1062,7 @@ function Dashboard() {
             created.id,
             Array.from(files),
             multipartPartSize,
-            cameraModel,
+            cameraModelId,
           );
         } catch (err) {
           console.error('Failed to initialize multipart uploads:', err);
@@ -1147,7 +1147,7 @@ function Dashboard() {
           concurrency: 3,
           partConcurrency: 2,
           partSize: multipartPartSize,
-          cameraModelName: cameraModel, // Link images to camera model
+          cameraModelId, // Link images to camera model
           initializedUploads,
           onFileProgress: (idx, name, progress) => {
             setUploadsByProject(prev => {
@@ -1329,7 +1329,7 @@ function Dashboard() {
         image_count: files?.length || 0,
         images: imagesToUse, // Use real images if fetched, else placeholders
         bounds: { x: 30, y: 30, w: 40, h: 40 },
-        cameraModel: cameraModel,
+        cameraModelId,
         // Upload tracking
         upload_in_progress: hasFilesToUpload, // Will be set to false when uploads complete
         upload_completed_count: hasFilesToUpload ? 0 : (files?.length || 0), // 0 initially, updated as uploads complete

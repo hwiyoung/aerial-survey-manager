@@ -7,6 +7,7 @@ import proj4 from 'proj4';
 import api from '../../api/client';
 import ServerFileBrowser from './ServerFileBrowser';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
+import { useAuth } from '../../contexts/AuthContext';
 
 const createDefaultEoConfig = () => ({
     delimiter: 'space',
@@ -653,10 +654,11 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
 }
 
 export default function UploadWizard({ isOpen, onClose, onComplete }) {
+    const { isAdmin, organizationId } = useAuth();
     const [step, setStep] = useState(1);
     const [imageCount, setImageCount] = useState(0);
     const [eoFileName, setEoFileName] = useState(null);
-    const [cameraModel, setCameraModel] = useState("");
+    const [cameraModelId, setCameraModelId] = useState("");
     const [cameraModels, setCameraModels] = useState([]);
     const [isAddingCamera, setIsAddingCamera] = useState(false);
     const [editingCameraId, setEditingCameraId] = useState(null);
@@ -671,17 +673,31 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
         if (isOpen) {
             api.getCameraModels().then(models => {
                 setCameraModels(models);
-                // Set default to first camera model if not already set
-                if (models.length > 0) {
-                    setCameraModel(current => current || models[0].name);
-                }
+                setCameraModelId(current => (
+                    models.some(model => model.id === current)
+                        ? current
+                        : (models[0]?.id || '')
+                ));
             }).catch(console.error);
         }
     }, [isOpen]);
 
     const selectedCamera = useMemo(() => {
-        return cameraModels.find(c => c.name === cameraModel) || { focal_length: 0, sensor_width: 0, sensor_height: 0, pixel_size: 0 };
-    }, [cameraModel, cameraModels]);
+        return cameraModels.find(c => c.id === cameraModelId) || { focal_length: 0, sensor_width: 0, sensor_height: 0, pixel_size: 0 };
+    }, [cameraModelId, cameraModels]);
+
+    const canManageSelectedCamera = Boolean(
+        selectedCamera?.id
+        && (
+            isAdmin
+            || (
+                selectedCamera.is_custom
+                && organizationId
+                && selectedCamera.organization_id === organizationId
+            )
+        )
+    );
+    const canCreateCamera = Boolean(organizationId);
 
     const cameraModelCounts = useMemo(() => {
         const standard = cameraModels.filter(c => !c.is_custom).length;
@@ -726,16 +742,16 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
             const payload = {
                 ...newCamera,
                 name: newCamera.name || 'Custom Camera',
-                is_custom: editingCameraId ? true : newCamera.is_custom,
+                is_custom: newCamera.is_custom,
             };
             if (editingCameraId) {
                 const updated = await api.updateCameraModel(editingCameraId, payload);
                 setCameraModels(prev => prev.map(item => item.id === updated.id ? updated : item));
-                setCameraModel(updated.name);
+                setCameraModelId(updated.id);
             } else {
                 const created = await api.createCameraModel(payload);
                 setCameraModels(prev => [...prev, created]);
-                setCameraModel(created.name);
+                setCameraModelId(created.id);
             }
             closeCameraForm();
         } catch (err) {
@@ -751,7 +767,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
             await api.deleteCameraModel(selectedCamera.id);
             setCameraModels(prev => {
                 const next = prev.filter(item => item.id !== selectedCamera.id);
-                setCameraModel(next[0]?.name || '');
+                setCameraModelId(next[0]?.id || '');
                 return next;
             });
             if (editingCameraId === selectedCamera.id) {
@@ -831,6 +847,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setAutoProcess(true);
             setIsFinishing(false);
             setEoCrsTouched(false);
+            setCameraModelId('');
             setIsAddingCamera(false);
             setEditingCameraId(null);
             setNewCamera(createDefaultCameraModel());
@@ -1133,7 +1150,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 filePaths: serverFilePaths,
                 eoFile: selectedEoFile,
                 eoConfig: uploadEoConfig,
-                cameraModel,
+                cameraModelId,
                 autoProcess: autoProcess && !!eoFileName,
                 processMode,
                 imageCount,
@@ -1337,7 +1354,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                             <div className="space-y-1">
                                 <h4 className="text-xl font-bold text-slate-800">3. 카메라 모델 (IO) 선택</h4>
                                 <div className="text-xs text-slate-500">
-                                    io.csv 기본 모델 {cameraModelCounts.standard}개 · 사용자 모델 {cameraModelCounts.custom}개
+                                    io.csv 기본 모델 {cameraModelCounts.standard}개 · 조직 공유 모델 {cameraModelCounts.custom}개
                                 </div>
                             </div>
                             <div className="max-w-sm mx-auto space-y-6 w-full pb-4">
@@ -1400,11 +1417,11 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
 	                                ) : (
 	                                    <div className="space-y-3">
                                         <div className="relative">
-                                            <select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none" value={cameraModel} onChange={(e) => setCameraModel(e.target.value)}>
+                                            <select className="w-full p-4 border border-slate-300 rounded-xl bg-white font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none" value={cameraModelId} onChange={(e) => setCameraModelId(e.target.value)}>
                                                 {Array.isArray(cameraModels) && cameraModels.length > 0 ? (
                                                     cameraModels.map(c => (
-                                                        <option key={c.id} value={c.name}>
-                                                            {c.name}
+                                                        <option key={c.id} value={c.id}>
+                                                            {c.name} {c.is_custom ? '(조직 공유)' : '(표준)'}
                                                         </option>
                                                     ))
                                                 ) : (
@@ -1414,16 +1431,17 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
 	                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
 	                                        </div>
                                             <div className="grid grid-cols-3 gap-2">
-                                                <button onClick={openAddCameraForm} className="min-h-11 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs">
+                                                <button onClick={openAddCameraForm} disabled={!canCreateCamera} title={!canCreateCamera ? '조직에 소속된 사용자만 공유 모델을 만들 수 있습니다.' : ''} className="min-h-11 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
                                                     <FilePlus size={16} /> 추가
                                                 </button>
-                                                <button onClick={openEditCameraForm} disabled={!selectedCamera?.id} className="min-h-11 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                <button onClick={openEditCameraForm} disabled={!canManageSelectedCamera} className="min-h-11 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
                                                     <Pencil size={15} /> 수정
                                                 </button>
-                                                <button onClick={handleDeleteCamera} disabled={!selectedCamera?.id} className="min-h-11 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                <button onClick={handleDeleteCamera} disabled={!canManageSelectedCamera} className="min-h-11 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
                                                     <Trash2 size={15} /> 삭제
                                                 </button>
                                             </div>
+                                            <p className="text-xs text-slate-500">추가한 모델은 같은 조직의 사용자와 공유됩니다.</p>
 	                                    </div>
 	                                )}
 
@@ -1458,7 +1476,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 </div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">입력 이미지</span><div className="text-right"><span className="text-xl font-bold text-slate-800">{imageCount}</span><span className="text-sm text-slate-400 ml-1">장</span></div></div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoCrsValues[0] || eoConfig.crs} · 유효 {effectiveEoLineCount}줄{excludedEoImageKeys.size > 0 ? ` / 제외 ${excludedEoImageKeys.size}개` : ''}{hasDuplicateEoImages ? ` / 원본 ${eoLineCount}줄` : ''}</div></div></div>
-                                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{cameraModel}</span></div>
+                                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{selectedCamera.name ? `${selectedCamera.name} ${selectedCamera.is_custom ? '(조직 공유)' : '(표준)'}` : '-'}</span></div>
                                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
                                 <label className={`flex items-center gap-3 pt-4 border-t border-slate-100 cursor-pointer ${!eoFileName ? 'opacity-50 cursor-not-allowed' : ''}`}>
                                     <input

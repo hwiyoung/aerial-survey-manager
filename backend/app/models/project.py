@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -162,6 +163,26 @@ class CameraModel(Base):
     """Camera model/Interior Orientation parameters."""
 
     __tablename__ = "camera_models"
+    __table_args__ = (
+        CheckConstraint(
+            "(is_custom = false AND organization_id IS NULL) OR "
+            "(is_custom = true AND organization_id IS NOT NULL)",
+            name="ck_camera_models_sharing_scope",
+        ),
+        Index(
+            "uq_camera_models_public_name_ci",
+            text("lower(TRIM(BOTH FROM name))"),
+            unique=True,
+            postgresql_where=text("organization_id IS NULL"),
+        ),
+        Index(
+            "uq_camera_models_org_name_ci",
+            "organization_id",
+            text("lower(TRIM(BOTH FROM name))"),
+            unique=True,
+            postgresql_where=text("organization_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

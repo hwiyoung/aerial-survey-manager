@@ -176,11 +176,16 @@ docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
 # io.csv 기준으로 표준 카메라 모델 동기화
 docker compose exec api python /app/scripts/seed_camera_models.py -f /app/data/io.csv --sync
 
-# 전체 초기화 후 등록
+# 신규/빈 DB에서만 전체 초기화 후 등록
 docker compose exec api python /app/scripts/seed_camera_models.py -f /app/data/io.csv --clear
 ```
 
 `io.csv`의 `$PIXEL_SIZE` 값은 마이크로미터(µm)로 관리합니다. 처리 엔진으로 전달할 때만 mm로 변환됩니다.
+
+- `--sync`는 공용 표준 모델만 갱신하며 조직 공유 모델은 보존합니다.
+- 일반 사용자가 추가한 모델은 해당 사용자의 조직 안에서 공유됩니다.
+- 같은 조직에서는 대소문자와 앞뒤 공백을 무시한 중복 이름을 만들 수 없습니다.
+- `--clear`는 조직 공유 모델까지 삭제하므로 기존 운영 DB에서는 사용하지 마십시오.
 
 ---
 
