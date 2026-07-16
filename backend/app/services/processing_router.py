@@ -1,7 +1,6 @@
 """Processing engine router and implementations."""
 import os
 import subprocess
-import asyncio
 import re
 import logging
 import time
@@ -626,7 +625,6 @@ class MetashapeEngine(ProcessingEngine):
         # 1. 사이클 시작: 라이선스 활성화
         script_base = Path("/app/engines/metashape/pipeline")
         activate_script = self._get_script_path(script_base, "activate.py")
-        deactivate_script = self._get_script_path(script_base, "deactivate.py")
         
         try:
             if activate_script.exists():

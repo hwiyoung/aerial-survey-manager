@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session

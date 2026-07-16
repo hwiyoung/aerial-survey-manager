@@ -183,15 +183,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.10 src/components/Dashboard/StatsCard.jsx — 통계 카드
-
-**역할:** 재사용 가능한 메트릭 표시 컴포넌트
-- `StatsCard` — 단일 메트릭 (아이콘, 값, 단위, 트렌드)
-- `StatsCardsGrid` — 그리드 레이아웃
-
----
-
-### 2.11 src/components/Dashboard/Charts.jsx — 차트
+### 2.10 src/components/Dashboard/Charts.jsx — 차트
 
 **역할:** Recharts 기반 시각화
 - `TrendLineChart` — 월별 처리 현황
@@ -201,7 +193,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.12 src/components/Upload/UploadWizard.jsx — 업로드 마법사
+### 2.11 src/components/Upload/UploadWizard.jsx — 업로드 마법사
 
 **역할:** 4단계 프로젝트 생성 마법사
 
@@ -216,7 +208,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.13 src/components/Upload/ServerFileBrowser.jsx — 서버 파일 탐색기
+### 2.12 src/components/Upload/ServerFileBrowser.jsx — 서버 파일 탐색기
 
 **역할:** 서버 파일시스템 탐색 (외장하드, 네트워크 드라이브)
 
@@ -231,7 +223,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.14 src/components/Upload/UploadProgressPanel.jsx — 업로드 진행 패널
+### 2.13 src/components/Upload/UploadProgressPanel.jsx — 업로드 진행 패널
 
 **역할:** 다중 파일 업로드 상태 실시간 표시
 
@@ -239,7 +231,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.15 src/components/Project/InspectorPanel.jsx — 인스펙터 패널
+### 2.14 src/components/Project/InspectorPanel.jsx — 인스펙터 패널
 
 **역할:** 프로젝트 상세 정보, 처리 상태, 정사영상 관리
 
@@ -257,7 +249,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.16 src/components/Project/ProjectMap.jsx — 프로젝트 지도
+### 2.15 src/components/Project/ProjectMap.jsx — 프로젝트 지도
 
 **역할:** EO 포인트, 정사영상 타일, 베이스맵 표시
 
@@ -275,7 +267,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.17 src/components/Project/ExportDialog.jsx — 내보내기 대화상자
+### 2.16 src/components/Project/ExportDialog.jsx — 내보내기 대화상자
 
 **역할:** 정사영상 배치 내보내기, 좌표계/GSD 설정
 
@@ -290,7 +282,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.18 src/components/Project/SheetGridOverlay.jsx — 도엽 격자 오버레이
+### 2.17 src/components/Project/SheetGridOverlay.jsx — 도엽 격자 오버레이
 
 **역할:** Leaflet 지도에 도엽 Rectangle 표시, 선택/해제
 
@@ -301,7 +293,7 @@ Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
 
 ---
 
-### 2.19 src/config/mapConfig.js — 지도 설정
+### 2.18 src/config/mapConfig.js — 지도 설정
 
 **역할:** 오프라인/온라인 타일 URL 및 기본 설정
 
@@ -317,7 +309,7 @@ getTileConfig() → {
 
 ---
 
-### 2.20 Custom Hooks
+### 2.19 Custom Hooks
 
 | 훅 | 파일 | 역할 |
 |----|------|------|

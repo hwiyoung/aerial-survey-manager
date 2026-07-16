@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 try:
     import resource
 except Exception:
@@ -21,7 +21,6 @@ from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
 from app.utils.storage_paths import (
     legacy_processing_work_dir,
-    normalize_crs_label,
     orthomosaic_key,
     processing_exclusion_path,
     processing_images_dir,
@@ -29,7 +28,6 @@ from app.utils.storage_paths import (
     processing_metadata_path,
     processing_status_path,
     processing_work_dir,
-    project_preview_key,
     project_root_dir,
     source_images_prefix,
     source_thumbnail_key,
