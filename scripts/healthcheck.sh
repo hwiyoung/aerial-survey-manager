@@ -56,11 +56,20 @@ fi
 
 services=$(docker compose -f "$compose_file" ps --format json 2>/dev/null | jq -r '.Name' 2>/dev/null || docker compose -f "$compose_file" ps --services 2>/dev/null)
 
+storage_backend="local"
+if [ -f ".env" ]; then
+    storage_backend=$(grep "^STORAGE_BACKEND=" .env | cut -d'=' -f2)
+    storage_backend=${storage_backend:-local}
+fi
+
 if [ -z "$services" ]; then
     check_fail "Docker 서비스가 실행되지 않았습니다"
 else
     # 각 서비스 상태 확인
-    for service in api frontend db redis minio nginx worker-engine celery-beat celery-worker titiler flower; do
+    for service in api frontend db redis minio nginx worker-engine celery-beat celery-worker celery-worker-thumbnail titiler flower; do
+        if [ "$service" = "minio" ] && [ "$storage_backend" != "minio" ]; then
+            continue
+        fi
         status=$(docker compose -f "$compose_file" ps "$service" --format "{{.Status}}" 2>/dev/null || echo "not found")
         if [[ "$status" == *"Up"* ]] || [[ "$status" == *"running"* ]]; then
             check_pass "$service: 실행 중"
@@ -119,12 +128,6 @@ echo ""
 # MinIO 스토리지 확인
 # ============================================================
 echo -e "${BLUE}[Storage]${NC}"
-
-storage_backend="local"
-if [ -f ".env" ]; then
-    storage_backend=$(grep "^STORAGE_BACKEND=" .env | cut -d'=' -f2)
-    storage_backend=${storage_backend:-local}
-fi
 
 if [ "$storage_backend" = "minio" ]; then
     if docker compose -f "$compose_file" exec -T minio curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1; then

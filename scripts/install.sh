@@ -699,7 +699,7 @@ print_completion() {
     echo ""
     echo -e "${BLUE}접속 정보:${NC}"
     echo "  웹 UI: http://$domain:$web_port"
-    echo "  API 문서: http://$domain:$web_port/api/v1/docs"
+    echo "  API 문서: 프로덕션 외부 비공개"
     echo "  호스트 바인드: $host_bind:$web_port"
     echo ""
     echo -e "${BLUE}관리 도구:${NC}"
