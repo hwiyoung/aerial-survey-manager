@@ -10,6 +10,7 @@
 | DEPLOY | 배포 구조 단순화 | 미사용 celery-beat 제거, 설치 폴더 기준 상대경로 및 조직 공동 운영 계정 안내 통일 |
 | CLEANUP | Airflow 레거시 제거 | 미사용 Airflow Compose·DAG·의존성·문서를 제거하고 Metashape 실행 스크립트를 Celery 전용 `pipeline`으로 분리 |
 | REFACTOR | 처리 단계 정의 통합 | API·Celery 엔진·상태 계산의 단계 이름·순서·메시지를 단일 정의로 통합하고 포인트클라우드 진행 표시 누락 수정 |
+| REFACTOR | 재시작 판정 분리 | 처리 API에 섞여 있던 체크포인트 유효성·재시작 요약 로직을 독립 서비스와 단위 테스트로 분리 |
 
 ---
 
