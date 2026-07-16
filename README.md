@@ -101,12 +101,12 @@ ADMIN_PASSWORD=choose-a-strong-password
 
 # Storage Backend: "local" (단일 서버) 또는 "minio" (S3 호환)
 STORAGE_BACKEND=local
-LOCAL_STORAGE_PATH=/path/to/storage        # 로컬 모드
+LOCAL_STORAGE_PATH=./data                  # 배포 폴더 기준 기본값
 # MINIO_ACCESS_KEY=minioadmin              # MinIO 모드
 # MINIO_SECRET_KEY=your-password           # MinIO 모드
 
-# Processing Data (대용량 드라이브 권장)
-PROCESSING_DATA_PATH=/path/to/processing
+# Processing Data
+PROCESSING_DATA_PATH=./data/projects
 ```
 
 > 전체 환경변수는 `.env.example` 참조

@@ -69,6 +69,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: always
+    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     environment:
       - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
@@ -205,8 +206,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-    command: celery -A app.workers.tasks beat --loglevel=info
+    command: celery -A app.workers.tasks beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     restart: always
+    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     environment:
       - TZ=${TZ:-Asia/Seoul}
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
@@ -235,6 +237,7 @@ services:
       dockerfile: Dockerfile.prod
     command: celery -A app.workers.tasks worker -Q thumbnail --loglevel=info --concurrency=1 -n worker-thumbnail@%h
     restart: always
+    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-thumbnail@$$HOSTNAME --timeout 10 | grep -q pong || exit 1"]
       interval: 60s
@@ -276,6 +279,7 @@ services:
       dockerfile: Dockerfile.prod
     command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2 -n worker-celery@%h
     restart: always
+    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.workers.tasks inspect ping -d worker-celery@$$HOSTNAME --timeout 10 | grep -q pong || exit 1"]
       interval: 60s
@@ -449,6 +453,7 @@ services:
       dockerfile: Dockerfile.prod
     command: celery -A app.workers.tasks flower --port=5555
     restart: always
+    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     environment:
       - TZ=${TZ:-Asia/Seoul}
       - REDIS_URL=redis://redis:6379/0
@@ -468,6 +473,7 @@ services:
       dockerfile: Dockerfile.prod
     command: celery -A app.workers.tasks flower --port=5555
     restart: unless-stopped
+    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     environment:
       - TZ=${TZ:-Asia/Seoul}
       - REDIS_URL=redis://redis:6379/0

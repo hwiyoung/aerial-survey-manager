@@ -50,11 +50,17 @@ docker compose config
 변경하지 않습니다.
 
 ```text
-AERIAL_DATA_ROOT=/data/aerial-survey
-LOCAL_STORAGE_PATH=/data/aerial-survey
-PROCESSING_DATA_PATH=/data/aerial-survey/projects
-EXPORT_ROOT_PATH=/data/aerial-survey/orthomosaic
+AERIAL_DATA_ROOT=./data
+LOCAL_STORAGE_PATH=./data
+PROCESSING_DATA_PATH=./data/projects
+EXPORT_ROOT_PATH=./data/orthomosaic
 ```
+
+상대경로는 배포 패키지의 `docker-compose.yml`이 있는 폴더를 기준으로 합니다.
+외장 디스크를 사용할 때만 절대경로로 변경합니다. 설치 스크립트는 API와
+일반 Celery 서비스가 생성하는 파일의 소유자가 설치 사용자와 일치하도록
+`AERIAL_CONTAINER_UID/GID`도 자동 설정합니다. GPU worker는 Metashape
+라이선스 호환성을 위해 별도로 관리합니다.
 
 컨테이너에는 다음처럼 마운트됩니다.
 

@@ -400,6 +400,8 @@ setup_environment() {
     upsert_env "ADMIN_EMAIL" "$admin_email"
     upsert_env "ADMIN_PASSWORD" "$admin_password"
     upsert_env "ADMIN_NAME" "관리자"
+    upsert_env "AERIAL_CONTAINER_UID" "$(id -u)"
+    upsert_env "AERIAL_CONTAINER_GID" "$(id -g)"
     upsert_env "AERIAL_DATA_ROOT" "$data_root"
     upsert_env "PROCESSING_DATA_PATH" "$processing_path"
     upsert_env "LOCAL_STORAGE_PATH" "$storage_path"

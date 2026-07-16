@@ -47,10 +47,11 @@ cd aerial-survey-manager
 | `JWT_SECRET_KEY` | JWT 서명 키 (32자+) | `openssl rand -hex 32` |
 | `ALLOW_WEAK_JWT_SECRET` | 약한 JWT 키 허용 여부 | 배포는 반드시 `false` |
 | `STORAGE_BACKEND` | `local` 또는 `minio` | `local` |
-| `AERIAL_DATA_ROOT` | 신규 설치용 데이터 기준 경로 | `/data/aerial-survey` |
-| `LOCAL_STORAGE_PATH` | 로컬 스토리지 기준 경로 | `/data/aerial-survey` |
-| `PROCESSING_DATA_PATH` | 프로젝트별 소스/처리 데이터 경로 | `/data/aerial-survey/projects` |
-| `EXPORT_ROOT_PATH` | 최종 COG 정사영상 경로 | `/data/aerial-survey/orthomosaic` |
+| `AERIAL_CONTAINER_UID/GID` | API·일반 Celery 파일 소유자 | 설치 스크립트가 자동 설정 |
+| `AERIAL_DATA_ROOT` | 신규 설치용 데이터 기준 경로 | `./data` |
+| `LOCAL_STORAGE_PATH` | 로컬 스토리지 기준 경로 | `./data` |
+| `PROCESSING_DATA_PATH` | 프로젝트별 소스/처리 데이터 경로 | `./data/projects` |
+| `EXPORT_ROOT_PATH` | 최종 COG 정사영상 경로 | `./data/orthomosaic` |
 | `AUTO_EXPORT_ENABLED` | 별도 자동 내보내기 활성화 | `false` |
 | `AUTO_EXPORT_TARGET_CRS` | 최종 COG 목표 좌표계 | `EPSG:5186` |
 | `ENGINE_LICENSE_KEY` | 처리 엔진 라이선스 키 | |
@@ -63,7 +64,7 @@ cd aerial-survey-manager
 | `VITE_TILE_URL` | `/tiles/{z}/{x}/{y}` |
 | `TILES_PATH` | 호스트 타일 디렉토리 경로 |
 
-> 신규 설치는 `AERIAL_DATA_ROOT`를 먼저 정하고 프로젝트 데이터는 `AERIAL_DATA_ROOT/projects`, 최종 정사영상은 `AERIAL_DATA_ROOT/orthomosaic` 또는 별도 `EXPORT_ROOT_PATH`로 정리하는 방식을 권장합니다. 컨테이너에는 `LOCAL_STORAGE_PATH/projects`만 `/data/storage/projects`로, `EXPORT_ROOT_PATH`가 `/data/storage/orthomosaic`와 `/data/exports`로 마운트되므로 `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 만들 필요가 없습니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
+> 신규 배포 패키지는 설치 폴더 기준 상대경로인 `./data`를 사용합니다. 외장 디스크를 사용할 때만 절대경로로 바꾸세요. 컨테이너에는 `LOCAL_STORAGE_PATH/projects`만 `/data/storage/projects`로, `EXPORT_ROOT_PATH`가 `/data/storage/orthomosaic`와 `/data/exports`로 마운트되므로 `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 만들 필요가 없습니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
 > 전체 변수 목록: `.env.example` 참조
 
 ### 3. GPU 연결 확인
