@@ -29,6 +29,30 @@ logger = logging.getLogger(__name__)
 COG_LOOKUP_WARN_MS = float(os.getenv("COG_LOOKUP_WARN_MS", "1000"))
 
 
+def _latest_completed_job_query(project_id: UUID):
+    """Select one deterministic latest completed result for a project."""
+    return (
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.status == "completed",
+        )
+        .order_by(
+            ProcessingJob.completed_at.desc().nullslast(),
+            ProcessingJob.created_at.desc(),
+        )
+        .limit(1)
+    )
+
+
+async def _get_latest_completed_job(
+    db: AsyncSession,
+    project_id: UUID,
+) -> ProcessingJob | None:
+    result = await db.execute(_latest_completed_job_query(project_id))
+    return result.scalar_one_or_none()
+
+
 async def _get_scoped_project(
     project_id: UUID,
     current_user: User,
@@ -176,15 +200,7 @@ async def download_orthophoto(
         )
     
     # Get the latest completed processing job
-    result = await db.execute(
-        select(ProcessingJob)
-        .where(
-            ProcessingJob.project_id == project_id,
-            ProcessingJob.status == "completed",
-        )
-        .order_by(ProcessingJob.completed_at.desc())
-    )
-    job = result.scalar_one_or_none()
+    job = await _get_latest_completed_job(db, project_id)
     
     if not job or not job.result_path:
         raise HTTPException(
@@ -364,15 +380,7 @@ async def get_download_info(
         )
     
     # Get the latest completed processing job
-    result = await db.execute(
-        select(ProcessingJob)
-        .where(
-            ProcessingJob.project_id == project_id,
-            ProcessingJob.status == "completed",
-        )
-        .order_by(ProcessingJob.completed_at.desc())
-    )
-    job = result.scalar_one_or_none()
+    job = await _get_latest_completed_job(db, project_id)
     
     if not job or not job.result_path:
         raise HTTPException(
@@ -489,15 +497,7 @@ async def get_cog_url(
     # Try Project.ortho_path first, then fall back to ProcessingJob
     ortho_path = project.ortho_path
     if not ortho_path:
-        result = await db.execute(
-            select(ProcessingJob)
-            .where(
-                ProcessingJob.project_id == project_id,
-                ProcessingJob.status == "completed",
-            )
-            .order_by(ProcessingJob.completed_at.desc())
-        )
-        job = result.scalar_one_or_none()
+        job = await _get_latest_completed_job(db, project_id)
         if job and job.result_path:
             ortho_path = job.result_path
 
@@ -686,15 +686,7 @@ async def _collect_export_files(
 
         ortho_path = project.ortho_path
         if not ortho_path:
-            result = await db.execute(
-                select(ProcessingJob)
-                .where(
-                    ProcessingJob.project_id == project_id,
-                    ProcessingJob.status == "completed",
-                )
-                .order_by(ProcessingJob.completed_at.desc())
-            )
-            job = result.scalar_one_or_none()
+            job = await _get_latest_completed_job(db, project_id)
             if job and job.result_path:
                 ortho_path = job.result_path
 
