@@ -10,6 +10,7 @@
 - **정사영상 생성**: GPU 가속 처리 엔진
 - **결과물 다운로드**: 대용량 정사영상 Resumable Download
 - **대시보드**: 실시간 지도 시각화, COG 정사영상 오버레이
+- **조직 공유 운영**: 하나의 조직 공동 계정으로 프로젝트·그룹·카메라 모델 공유
 
 ## Architecture
 
@@ -24,14 +25,14 @@
 └───┬───────────────────────────┬───────────────┬─────────────┘
     │                           │               │
 ┌───▼───┐                 ┌─────▼─────┐   ┌─────▼──────┐
-│FastAPI│                 │  TiTiler  │   │  Storage   │
-│Backend│                 │(COG Tiles)│   │(Local/MinIO)│
+│FastAPI│──signed tile───▶│  TiTiler  │   │  Storage   │
+│Backend│                 │(internal) │   │(Local/MinIO)│
 └───┬───┘                 └───────────┘   └────────────┘
     │
-┌───▼───┐    ┌───────────────┐    ┌──────────────────┐
-│ Redis │───▶│ celery-worker │    │  worker-engine   │
-│(Queue)│    │(파일관리/썸네일)│    │   (GPU Engine)  │
-└───────┘    └───────────────┘    └──────────────────┘
+┌───▼───┐    ┌───────────────┐ ┌───────────────┐ ┌──────────────────┐
+│ Redis │───▶│ general worker│ │thumbnail worker│ │  worker-engine   │
+│(Queue)│    │(파일/삭제)     │ │(미리보기)      │ │   (GPU, 1 job)  │
+└───────┘    └───────────────┘ └───────────────┘ └──────────────────┘
     │
 ┌───▼───────┐
 │PostgreSQL │
@@ -95,7 +96,7 @@ POSTGRES_PASSWORD=your-password
 JWT_SECRET_KEY=replace-with-at-least-32-random-characters
 ALLOW_WEAK_JWT_SECRET=false
 
-# First administrator (used once only when the users table is empty)
+# Initial shared operator account (ADMIN_* names are kept for compatibility)
 ADMIN_EMAIL=admin
 ADMIN_PASSWORD=choose-a-strong-password
 

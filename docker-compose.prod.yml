@@ -93,14 +93,13 @@ services:
       # 기존 설치는 사용자가 있으면 그대로 시작하며, 신규 설치만 아래 값이 필수입니다.
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-      - ADMIN_NAME=${ADMIN_NAME:-관리자}
+      - ADMIN_NAME=${ADMIN_NAME:-운영 계정}
       - ALLOW_WEAK_ADMIN_PASSWORD=false
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:18100}
     volumes:
       # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
@@ -132,7 +131,7 @@ services:
       context: .
       dockerfile: engines/metashape/Dockerfile.prod
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q ${PROCESSING_ENGINE_QUEUE:-gpu-engine} --loglevel=info --concurrency=1 -n worker-engine@%h
+    command: celery -A app.workers.tasks worker -Q ${PROCESSING_ENGINE_QUEUE:-gpu-engine} --loglevel=info --concurrency=1 --max-tasks-per-child=1 -n worker-engine@%h
     restart: always
     stop_signal: SIGTERM
     stop_grace_period: 120s
@@ -200,42 +199,13 @@ services:
     logging: *worker-logging
 
   # ============================================================
-  # Celery Beat (Scheduler)
-  # ============================================================
-  celery-beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.prod
-    command: celery -A app.workers.tasks beat --loglevel=info --schedule=/tmp/celerybeat-schedule
-    restart: always
-    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
-    environment:
-      - TZ=${TZ:-Asia/Seoul}
-      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
-      - LOCAL_STORAGE_PATH=/data/storage
-      - PROCESSING_DATA_PATH=/data/processing
-      - EXPORT_ROOT_PATH=/data/exports
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:18100}
-    volumes:
-      - ${LOCAL_STORAGE_PATH:-${AERIAL_DATA_ROOT:-./data}}/projects:/data/storage/projects
-      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/storage/orthomosaic
-      - ${EXPORT_ROOT_PATH:-${AERIAL_DATA_ROOT:-./data}/orthomosaic}:/data/exports
-    depends_on:
-      - redis
-    networks:
-      - aerial-network
-    logging: *default-logging
-
-  # ============================================================
   # Celery Worker - 썸네일 전용 (처리 중에도 동시 실행)
   # ============================================================
   celery-worker-thumbnail:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-    command: celery -A app.workers.tasks worker -Q thumbnail --loglevel=info --concurrency=1 -n worker-thumbnail@%h
+    command: celery -A app.workers.tasks worker -Q thumbnail --loglevel=info --concurrency=1 --max-tasks-per-child=100 -n worker-thumbnail@%h
     restart: always
     user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     healthcheck:
@@ -277,7 +247,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2 -n worker-celery@%h
+    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2 --max-tasks-per-child=100 -n worker-celery@%h
     restart: always
     user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     healthcheck:
@@ -445,7 +415,7 @@ services:
     logging: *default-logging
 
   # ============================================================
-  # Flower (Celery Monitoring) - 관리자 전용
+  # Flower (Celery Monitoring) - 운영 디버그 전용
   # ============================================================
   flower:
     build:

@@ -232,38 +232,39 @@ generate_password() {
     openssl rand -base64 24 | tr -d '/+=' | head -c 24
 }
 
-prompt_initial_admin_credentials() {
+prompt_initial_account_credentials() {
     local requested_email
     local requested_password
     local confirmed_password
 
     echo ""
-    echo -e "${YELLOW}최초 관리자 계정 설정${NC}"
+    echo -e "${YELLOW}조직 공동 운영 계정 설정${NC}"
     echo "기존 DB에 사용자가 있으면 계정을 새로 만들거나 비밀번호를 변경하지 않습니다."
+    echo "신규 설치는 비밀번호를 직접 입력하거나 Enter를 눌러 임의 비밀번호를 생성할 수 있습니다."
 
     while true; do
-        read -r -p "최초 관리자 아이디 [admin]: " requested_email
+        read -r -p "운영 계정 아이디 [admin]: " requested_email
         requested_email=${requested_email:-admin}
         if [[ "$requested_email" =~ ^[A-Za-z0-9._@+-]+$ ]]; then
-            admin_email="$requested_email"
+            account_email="$requested_email"
             break
         fi
-        log_warn "관리자 아이디에는 영문, 숫자, ., _, @, +, -만 사용할 수 있습니다."
+        log_warn "계정 아이디에는 영문, 숫자, ., _, @, +, -만 사용할 수 있습니다."
     done
 
     while true; do
-        read -r -s -p "최초 관리자 비밀번호 (자동 생성하려면 Enter): " requested_password
+        read -r -s -p "운영 계정 비밀번호 (자동 생성하려면 Enter): " requested_password
         echo ""
 
         if [ -z "$requested_password" ]; then
-            admin_password=$(generate_password)
-            admin_password_generated=true
-            log_info "최초 관리자 비밀번호를 자동 생성했습니다."
+            account_password=$(generate_password)
+            account_password_generated=true
+            log_info "운영 계정 비밀번호를 임의로 생성했습니다."
             break
         fi
 
         if [ "${#requested_password}" -lt 12 ]; then
-            log_warn "관리자 비밀번호는 12자 이상이어야 합니다."
+            log_warn "계정 비밀번호는 12자 이상이어야 합니다."
             continue
         fi
 
@@ -272,15 +273,15 @@ prompt_initial_admin_credentials() {
             continue
         fi
 
-        read -r -s -p "관리자 비밀번호 확인: " confirmed_password
+        read -r -s -p "계정 비밀번호 확인: " confirmed_password
         echo ""
         if [ "$requested_password" != "$confirmed_password" ]; then
             log_warn "입력한 비밀번호가 일치하지 않습니다."
             continue
         fi
 
-        admin_password="$requested_password"
-        admin_password_generated=false
+        account_password="$requested_password"
+        account_password_generated=false
         break
     done
 }
@@ -384,22 +385,23 @@ setup_environment() {
         log_warn "라이선스 키 없이 설치합니다. 처리 기능은 .env의 ENGINE_LICENSE_KEY 설정 후 사용 가능합니다."
     fi
 
-    # 내부 보안 값은 자동 생성하고, 최초 관리자 비밀번호는 사용자가
+    # 내부 보안 값은 자동 생성하고, 최초 운영 계정 비밀번호는 사용자가
     # 직접 입력하거나 Enter를 눌러 자동 생성할 수 있습니다.
     echo ""
     log_info "내부 보안 키 자동 생성 중..."
 
     postgres_password=$(generate_password)
     jwt_secret=$(generate_secret)
-    prompt_initial_admin_credentials
+    prompt_initial_account_credentials
 
     # .env 파일 업데이트
     upsert_env "POSTGRES_PASSWORD" "$postgres_password"
     upsert_env "JWT_SECRET_KEY" "$jwt_secret"
     upsert_env "ALLOW_WEAK_JWT_SECRET" "false"
-    upsert_env "ADMIN_EMAIL" "$admin_email"
-    upsert_env "ADMIN_PASSWORD" "$admin_password"
-    upsert_env "ADMIN_NAME" "관리자"
+    # ADMIN_* 이름은 기존 배포 패키지 호환을 위해 유지합니다.
+    upsert_env "ADMIN_EMAIL" "$account_email"
+    upsert_env "ADMIN_PASSWORD" "$account_password"
+    upsert_env "ADMIN_NAME" "운영 계정"
     upsert_env "AERIAL_CONTAINER_UID" "$(id -u)"
     upsert_env "AERIAL_CONTAINER_GID" "$(id -g)"
     upsert_env "AERIAL_DATA_ROOT" "$data_root"
@@ -412,8 +414,6 @@ setup_environment() {
     upsert_env "ENGINE_LICENSE_KEY" "$engine_license"
     upsert_env "HOST_BIND" "$host_bind"
     upsert_env "AERIAL_WEB_PORT" "$web_port"
-    upsert_env "MINIO_PUBLIC_ENDPOINT" "$domain:$web_port"
-
     # 도메인 설정
     upsert_env "DOMAIN" "$domain"
 
@@ -436,13 +436,13 @@ setup_environment() {
     echo ""
     log_info "환경 설정 완료"
     echo ""
-    echo -e "${YELLOW}=== 최초 관리자 로그인 정보 ===${NC}"
-    echo "관리자 아이디: $admin_email"
-    if [ "$admin_password_generated" = "true" ]; then
-        echo "관리자 비밀번호: $admin_password"
-        echo "자동 생성된 비밀번호는 지금 안전한 곳에 보관하세요."
+    echo -e "${YELLOW}=== 조직 공동 운영 계정 로그인 정보 ===${NC}"
+    echo "계정 아이디: $account_email"
+    if [ "$account_password_generated" = "true" ]; then
+        echo "계정 비밀번호: $account_password"
+        echo "임의 생성된 비밀번호는 지금 안전한 곳에 보관하세요."
     else
-        echo "관리자 비밀번호: 설치 중 직접 입력한 값"
+        echo "계정 비밀번호: 설치 중 직접 입력한 값"
     fi
     echo ""
 }
@@ -709,7 +709,7 @@ print_completion() {
     echo "  Flower URL: http://127.0.0.1:18055"
     echo ""
     echo -e "${YELLOW}다음 단계:${NC}"
-    echo "  1. 설치 시 출력된 관리자 계정으로 웹 UI 로그인"
+    echo "  1. 설치 시 출력된 조직 공동 운영 계정으로 웹 UI 로그인"
     echo "  2. 테스트 프로젝트 생성 및 이미지 업로드 테스트"
     echo "  3. 처리 기능 테스트"
     echo ""

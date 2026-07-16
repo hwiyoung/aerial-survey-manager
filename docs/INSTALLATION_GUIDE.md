@@ -44,9 +44,9 @@ docker compose config
 
 설치 스크립트는 `.env`를 생성하고 서비스를 시작합니다. 신규 설치에서는 아래 구조를 권장합니다.
 
-신규 DB에서는 설치 중 최초 관리자 아이디와 비밀번호를 입력합니다.
-비밀번호 입력 없이 Enter를 누르면 강한 임의 비밀번호를 자동 생성해 한 번
-출력합니다. 기존 사용자가 있는 업그레이드 설치에서는 기존 로그인 정보를
+신규 DB에서는 설치 중 조직 공동 운영 계정의 아이디와 비밀번호를 입력합니다.
+비밀번호를 직접 입력하지 않고 Enter를 누르면 강한 임의 비밀번호를 생성해 한 번
+출력합니다. 기존 계정이 있는 업그레이드 설치에서는 기존 로그인 정보를
 변경하지 않습니다.
 
 ```text
@@ -105,7 +105,7 @@ sudo bash scripts/secure-deployment.sh --systemd-only
 `aerial-survey.service`는 핵심 서비스를 먼저 시작합니다.
 
 ```text
-db, redis, api, frontend, nginx, celery-beat, celery-worker,
+db, redis, api, frontend, nginx, celery-worker,
 celery-worker-thumbnail, flower, titiler
 ```
 

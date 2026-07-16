@@ -1,21 +1,27 @@
 import unittest
 
-from scripts.bootstrap_admin import MIN_ADMIN_PASSWORD_LENGTH, load_admin_bootstrap_config
+from scripts.bootstrap_admin import (
+    MIN_INITIAL_ACCOUNT_PASSWORD_LENGTH,
+    load_initial_account_bootstrap_config,
+)
 
 
-class AdminBootstrapConfigTests(unittest.TestCase):
+class InitialAccountBootstrapConfigTests(unittest.TestCase):
     def test_requires_credentials_for_empty_install(self):
         with self.assertRaisesRegex(ValueError, "ADMIN_EMAIL, ADMIN_PASSWORD"):
-            load_admin_bootstrap_config({})
+            load_initial_account_bootstrap_config({})
 
     def test_rejects_short_production_password(self):
-        with self.assertRaisesRegex(ValueError, str(MIN_ADMIN_PASSWORD_LENGTH)):
-            load_admin_bootstrap_config(
+        with self.assertRaisesRegex(
+            ValueError,
+            str(MIN_INITIAL_ACCOUNT_PASSWORD_LENGTH),
+        ):
+            load_initial_account_bootstrap_config(
                 {"ADMIN_EMAIL": "admin", "ADMIN_PASSWORD": "siqms"}
             )
 
     def test_allows_explicit_weak_development_password(self):
-        config = load_admin_bootstrap_config(
+        config = load_initial_account_bootstrap_config(
             {
                 "ADMIN_EMAIL": "admin",
                 "ADMIN_PASSWORD": "siqms",
@@ -26,7 +32,7 @@ class AdminBootstrapConfigTests(unittest.TestCase):
         self.assertEqual(config.password, "siqms")
 
     def test_accepts_strong_deployment_credentials(self):
-        config = load_admin_bootstrap_config(
+        config = load_initial_account_bootstrap_config(
             {
                 "ADMIN_EMAIL": "ops-admin",
                 "ADMIN_PASSWORD": "a-strong-initial-password",
@@ -38,7 +44,7 @@ class AdminBootstrapConfigTests(unittest.TestCase):
 
     def test_rejects_packaged_placeholder_password(self):
         with self.assertRaisesRegex(ValueError, "placeholder"):
-            load_admin_bootstrap_config(
+            load_initial_account_bootstrap_config(
                 {
                     "ADMIN_EMAIL": "admin",
                     "ADMIN_PASSWORD": "CHANGE_THIS_TO_STRONG_INITIAL_ADMIN_PASSWORD",

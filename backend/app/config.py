@@ -49,8 +49,6 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET: str = "aerial-survey"
     MINIO_SECURE: bool = False
-    # Legacy compatibility only. Browser storage URLs are now same-origin paths.
-    MINIO_PUBLIC_ENDPOINT: Optional[str] = "localhost:18110"
     TITILER_INTERNAL_URL: str = "http://titiler:80"
     
     # Processing Engines

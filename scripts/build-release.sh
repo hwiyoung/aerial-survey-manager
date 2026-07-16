@@ -104,7 +104,6 @@ echo "3. 이미지 태깅 중..."
 docker tag ${PROD_PROJECT}-frontend:latest ${IMAGE_PREFIX}:frontend-${VERSION}
 docker tag ${PROD_PROJECT}-api:latest ${IMAGE_PREFIX}:api-${VERSION}
 docker tag ${PROD_PROJECT}-worker-engine:latest ${IMAGE_PREFIX}:worker-engine-${VERSION}
-docker tag ${PROD_PROJECT}-celery-beat:latest ${IMAGE_PREFIX}:celery-beat-${VERSION}
 docker tag ${PROD_PROJECT}-celery-worker:latest ${IMAGE_PREFIX}:celery-worker-${VERSION}
 docker tag ${PROD_PROJECT}-flower:latest ${IMAGE_PREFIX}:flower-${VERSION}
 
@@ -127,7 +126,6 @@ service_images = {
     'frontend': f'{PREFIX}:frontend-{VERSION}',
     'api': f'{PREFIX}:api-{VERSION}',
     'worker-engine': f'{PREFIX}:worker-engine-{VERSION}',
-    'celery-beat': f'{PREFIX}:celery-beat-{VERSION}',
     'celery-worker-thumbnail': f'{PREFIX}:celery-worker-{VERSION}',
     'celery-worker': f'{PREFIX}:celery-worker-{VERSION}',
     'flower': f'{PREFIX}:flower-{VERSION}',
@@ -321,9 +319,6 @@ docker save ${IMAGE_PREFIX}:api-${VERSION} | gzip > "$RELEASE_DIR/images/api.tar
 
 echo "  - worker-engine 저장 중..."
 docker save ${IMAGE_PREFIX}:worker-engine-${VERSION} | gzip > "$RELEASE_DIR/images/worker-engine.tar.gz"
-
-echo "  - celery-beat 저장 중..."
-docker save ${IMAGE_PREFIX}:celery-beat-${VERSION} | gzip > "$RELEASE_DIR/images/celery-beat.tar.gz"
 
 echo "  - celery-worker 저장 중..."
 docker save ${IMAGE_PREFIX}:celery-worker-${VERSION} | gzip > "$RELEASE_DIR/images/celery-worker.tar.gz"

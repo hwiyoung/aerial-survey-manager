@@ -43,7 +43,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=True)
-    role: Mapped[str] = mapped_column(String(20), default="user")  # admin, manager, user
+    # Retained for existing database compatibility; runtime authorization does
+    # not distinguish account roles.
+    role: Mapped[str] = mapped_column(String(20), default="user")
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True
     )

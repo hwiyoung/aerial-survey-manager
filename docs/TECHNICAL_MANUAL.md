@@ -1,6 +1,6 @@
 # 실감정사영상 생성 플랫폼 — 기술 매뉴얼
 
-> 버전: v1.0.9 (2026-03-20)
+> 기준일: 2026-07-16
 > 대상: 개발자, 유지보수 담당자
 
 ---
@@ -19,26 +19,16 @@
 ## 1. 아키텍처 개요
 
 ```
-┌─────────────┐     ┌─────────┐     ┌──────────────┐
-│  Frontend   │────▶│  Nginx  │────▶│  FastAPI (api)│
-│  (React)    │     │ :18110  │     │  :8000       │
-└─────────────┘     └─────────┘     └──────┬───────┘
-                         │                  │
-                    ┌────▼────┐       ┌─────▼──────┐
-                    │ TiTiler │       │ PostgreSQL │
-                    │ (COG)   │       │ + PostGIS  │
-                    └─────────┘       └────────────┘
-                                           │
-                                     ┌─────▼──────┐
-                                     │   Redis    │
-                                     │ (Celery)   │
-                                     └─────┬──────┘
-                              ┌────────────┼────────────┐
-                        ┌─────▼─────┐ ┌────▼────┐ ┌─────▼──────┐
-                        │worker-    │ │celery-  │ │celery-     │
-                        │engine     │ │worker   │ │worker-     │
-                        │(GPU Engine)│ │(파일)    │ │thumbnail   │
-                        └───────────┘ └─────────┘ └────────────┘
+Browser ─▶ Nginx(18110 dev / 18100 prod) ─▶ Frontend
+                         │
+                         └───────────────▶ FastAPI
+                                             ├─▶ PostgreSQL + PostGIS
+                                             ├─▶ Storage(Local/MinIO)
+                                             ├─▶ internal TiTiler (signed tile source only)
+                                             └─▶ Redis queues
+                                                   ├─▶ worker-engine (GPU, concurrency 1)
+                                                   ├─▶ celery-worker (general, concurrency 2)
+                                                   └─▶ thumbnail worker (concurrency 1)
 ```
 
 | 서비스 | 기술 | 역할 |
@@ -51,8 +41,7 @@
 | worker-engine | Celery + GPU 처리 엔진 | GPU 정사영상 처리 (GPU 미인식 시 CPU fallback, 10배+ 느림) |
 | celery-worker | Celery | 파일 관리, COG 인제스트 |
 | celery-worker-thumbnail | Celery | 썸네일 전용 워커 |
-| celery-beat | Celery Beat | 스케줄러 |
-| titiler | TiTiler 0.18 | COG 타일 서빙 |
+| titiler | TiTiler 0.18 | API 내부 전용 COG 타일 렌더링 |
 | flower | Flower | Celery 모니터링 |
 
 ---
@@ -103,7 +92,7 @@
 
 ### 2.3 src/services/s3Upload.js — S3 멀티파트 업로드
 
-**역할:** MinIO/S3 직접 업로드 (현재 로컬 모드에서는 미사용, 레거시 코드)
+**역할:** MinIO/S3 모드의 동일 출처 멀티파트 직접 업로드
 
 **클래스:** `S3MultipartUploader`
 - `uploadFiles(files, projectId, options)` — 병렬 업로드 시작
@@ -115,10 +104,10 @@
 
 ### 2.4 src/contexts/AuthContext.jsx — 인증 컨텍스트
 
-**역할:** 전역 사용자 인증 상태, 권한 판단
+**역할:** 조직 공동 운영 계정의 전역 인증 상태
 
 **제공 값:**
-- `user`, `isAuthenticated`, `isAdmin`
+- `user`, `isAuthenticated`, `organizationId`
 - `canCreateProject`, `canEditProject`, `canDeleteProject`
 - `login()`, `logout()`
 
@@ -389,7 +378,7 @@ getTileConfig() → {
 | 스키마 | 용도 |
 |--------|------|
 | `ProjectCreate/Update` | 입력 검증 |
-| `ProjectResponse` | 응답 (image_count, can_edit 포함) |
+| `ProjectResponse` | 응답 (image_count, ortho_thumbnail_url 포함) |
 | `ProcessingOptions` | 처리 옵션 (engine, gsd, output_crs, process_mode) |
 | `ProcessingJobResponse` | 작업 상태 (progress, step_status 포함) |
 | `EOConfig/EOUploadResponse` | EO 데이터 관련 |
@@ -542,7 +531,7 @@ getTileConfig() → {
 | `upload_file()` | 파일 복사 (같은 경로면 스킵) |
 | `move_file()` | 파일 이동 (복사보다 효율적) |
 | `get_local_path()` | 로컬 절대 경로 반환 |
-| `get_presigned_url()` | nginx alias 기반 URL 반환 |
+| `get_presigned_url()` | 인증 API 또는 동일 출처 MinIO 서명 URL 반환 |
 | `delete_recursive()` | 재귀 삭제 |
 | `object_exists()` | 파일 존재 확인 |
 
@@ -571,6 +560,8 @@ getTileConfig() → {
 - `visibility_timeout`: 604800초 (7일) — 장시간 처리 시 Redis 재전달 방지
 - `worker_prefetch_multiplier`: 1 — 한 번에 1개만 가져옴
 - `task_routes`: 엔진별 큐 분리 (gpu-engine, thumbnail, celery)
+- `acks_late` + `reject_on_worker_lost`: 비정상 워커 종료 시 안전한 작업 재전달
+- `result_expires`: 1일 — Redis 결과 데이터 누적 제한
 
 **주요 태스크:**
 
@@ -578,8 +569,8 @@ getTileConfig() → {
 |--------|-----|------|
 | `process_orthophoto` | gpu-engine | 메인 처리 파이프라인 |
 | `generate_thumbnail` | thumbnail | 이미지 썸네일 생성 (GDAL 우선 → PIL 폴백) |
-| `delete_project_data` | celery | 프로젝트 데이터 삭제 |
-| `save_eo_metadata` | celery | EO 메타데이터 저장 |
+| `delete_project_data` | celery | 프로젝트 스토리지/처리 데이터 삭제 후 잔여 파일 검증 |
+| `delete_source_images` | celery | 원본/썸네일 삭제, 실패 시 재시도 |
 | `inject_external_cog` | celery | 외부 COG 인제스트 |
 
 **process_orthophoto 단계:**
@@ -591,7 +582,8 @@ getTileConfig() → {
 6. 스토리지 업로드, 체크섬(SHA256) 계산
 7. DB 업데이트, 메트릭 저장
 
-**멱등성:** `job.status == 'completed'`이면 재실행 skip
+**멱등성:** 동일 task id의 Redis redelivery만 `processing` 작업을 재개하며,
+일반 중복 전달과 다른 task id는 skip합니다.
 
 ---
 
@@ -602,7 +594,7 @@ getTileConfig() → {
 2. Alembic 마이그레이션 (단일 head 확인 후 적용, 실패 시 서비스 시작 중단)
 3. 공용 표준 카메라 모델 시드 (`seed_camera_models.py`)
 4. 권역 데이터 시드 (`regions_seed.sql` 우선 → GeoJSON 폴백)
-5. 사용자가 없는 신규 DB에서 환경변수 기반 최초 관리자 계정 생성
+5. 사용자가 없는 신규 DB에서 `ADMIN_*` 환경변수 기반 조직 공동 운영 계정 생성
 6. Uvicorn 서버 시작 (0.0.0.0:8000)
 
 표준 모델 시드는 `organization_id IS NULL`, `is_custom = false`인 레코드만
@@ -688,6 +680,7 @@ deactivate_engine_license.py
 | DB 포트 | 18132 노출 | 미노출 (보안) |
 | Redis 포트 | 18179 노출 | 미노출 |
 | worker-engine | 기본 실행 | 기본 실행 |
+| worker 자식 프로세스 | GPU 작업당 재생성, 일반/썸네일 100건당 재생성 | 동일 |
 | restart | unless-stopped | always |
 
 **호스트 파일시스템 마운트:**
@@ -706,9 +699,11 @@ deactivate_engine_license.py
 |------|------|
 | `/` | frontend (React) |
 | `/api/` | api (FastAPI) |
-| `/titiler/` | titiler (COG 타일) |
+| `/titiler/` | 외부 접근 차단 (404) |
 | `/tiles/{z}/{x}/{y}` | 오프라인 타일 (try_files .jpg .jpeg .png) |
-| `/storage/` | 로컬 저장소 (정사영상 서빙) |
+| `/api/v1/storage/assets/{token}` | 서명된 프로젝트 미리보기 |
+| `/api/v1/download/projects/{id}/tiles/...` | 서명된 프로젝트 COG 타일 |
+| `/storage/` | 서명된 MinIO 요청 또는 공개 시스템 자산만 허용 |
 
 ### 5.3 scripts/build-release.sh
 
@@ -726,7 +721,7 @@ deactivate_engine_license.py
 **설치 흐름:**
 1. 시스템 요구사항 확인 (Docker, NVIDIA)
 2. **Docker GPU 전달 검증** — nvidia runtime 등록 확인 + 실제 컨테이너 GPU 테스트. 실패 시 자동 복구 시도
-3. `.env` 생성 (최초 관리자 비밀번호 직접 입력 또는 Enter 시 자동 생성)
+3. `.env` 생성 (조직 공동 운영 계정 비밀번호 직접 입력 또는 Enter 시 임의 생성)
 4. nginx 설정 (도메인)
 5. SSL 설정 (선택)
 6. Docker 이미지 로드 또는 빌드
@@ -755,7 +750,7 @@ deactivate_engine_license.py
 | `shutdown-engine.sh` | 처리 엔진 라이선스 비활성화 → worker-engine 종료 → 전체 종료 (선택) |
 | `system-info.sh` | OS/CPU/RAM/디스크/GPU/Docker/네트워크 정보 출력 |
 | `setup-autostart.sh` | `systemctl enable docker` + restart 정책 확인 |
-| `secure-deployment.sh` | .env 권한 제한, systemd 서비스 등록, 사용자 관리 명령어 생성 |
+| `secure-deployment.sh` | .env 권한 제한, systemd 서비스 등록, 운영 명령어 생성 |
 
 ---
 
@@ -788,9 +783,9 @@ deactivate_engine_license.py
 ### 6.3 정사영상 표시
 ```
 사용자 → 프로젝트 선택 → FootprintMap
-  → api.getCogUrl(projectId) → presigned URL
-  → TiTilerOrthoLayer → TiTiler 서버
-  → /titiler/cog/tiles/{z}/{x}/{y}.png?url={cog_url}
+  → api.getCogUrl(projectId) → 프로젝트 범위의 단기 tile_url
+  → TiTilerOrthoLayer → 서명된 백엔드 tile endpoint
+  → 백엔드가 DB의 ortho_path만 내부 TiTiler에 전달
   → COG 내부 타일 구조 활용 (전체 파일 읽기 불필요)
 ```
 

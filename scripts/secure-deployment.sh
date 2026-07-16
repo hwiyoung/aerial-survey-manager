@@ -399,7 +399,7 @@ print_completion() {
     echo "  3. GPU watchdog timer: aerial-gpu-watchdog.timer"
     echo "  4. 사용자 명령어: aerial-status, aerial-restart, aerial-logs"
     echo ""
-    echo -e "${YELLOW}일반 사용자는 다음 항목에 접근할 수 없습니다:${NC}"
+    echo -e "${YELLOW}호스트 일반 사용자는 다음 항목에 접근할 수 없습니다:${NC}"
     echo "  - .env 파일 내용"
     echo "  - docker 명령어 (docker 그룹에서 제거된 경우)"
     echo "  - 컨테이너 내부 환경변수"

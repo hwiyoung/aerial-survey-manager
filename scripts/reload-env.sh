@@ -22,7 +22,7 @@ NC='\033[0m'
 EXTERNAL_SERVICES="db redis minio minio-init titiler nginx"
 
 # 앱 서비스 (환경변수 변경이 자주 있는 서비스)
-APP_SERVICES="api frontend worker-engine celery-worker celery-beat flower"
+APP_SERVICES="api frontend worker-engine celery-worker celery-worker-thumbnail flower"
 
 if [ $# -eq 0 ]; then
     # 인자 없으면 모든 앱 서비스 재생성
@@ -46,5 +46,4 @@ echo ""
 # 변경된 주요 환경변수 표시
 echo "현재 적용된 주요 설정:"
 echo "  - ENGINE_LICENSE_KEY: $(docker compose exec -T worker-engine printenv ENGINE_LICENSE_KEY 2>/dev/null | cut -c1-10)..."
-echo "  - MINIO_PUBLIC_ENDPOINT: $(docker compose exec -T api printenv MINIO_PUBLIC_ENDPOINT 2>/dev/null)"
 echo ""

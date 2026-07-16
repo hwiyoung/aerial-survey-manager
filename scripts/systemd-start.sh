@@ -23,7 +23,7 @@ has_service() {
 }
 
 core_services=()
-for svc in db redis api frontend nginx celery-beat celery-worker celery-worker-thumbnail flower titiler; do
+for svc in db redis api frontend nginx celery-worker celery-worker-thumbnail flower titiler; do
     if has_service "$svc"; then
         core_services+=("$svc")
     fi

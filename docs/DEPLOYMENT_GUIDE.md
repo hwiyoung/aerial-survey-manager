@@ -84,9 +84,11 @@ curl http://127.0.0.1:18100/health   # API 응답 확인
 ### 5. 접속
 - 기본 웹 UI: `http://배포PC_IP:18100`
 - 배포PC에서만 접속하게 제한하려면 `.env`의 `HOST_BIND`를 `127.0.0.1`로 변경
-- 최초 계정: `.env`의 `ADMIN_EMAIL` / `ADMIN_PASSWORD`
+- 최초 조직 공동 운영 계정: `.env`의 `ADMIN_EMAIL` / `ADMIN_PASSWORD`
+- `ADMIN_*` 이름은 기존 배포 패키지 호환용이며 관리자·일반 사용자 역할을 구분하지 않습니다.
 - 신규 DB에서 두 값이 없거나 비밀번호가 12자 미만이면 API가 시작되지 않습니다.
-- 기존 사용자가 있는 업그레이드 설치에서는 기존 계정과 비밀번호가 그대로 유지됩니다.
+- 설치 중 비밀번호 입력을 생략하면 임의 비밀번호가 한 번 출력됩니다.
+- 기존 계정이 있는 업그레이드 설치에서는 기존 계정과 비밀번호가 그대로 유지됩니다.
 
 ---
 
@@ -181,7 +183,7 @@ systemctl cat aerial-survey.service | grep -E 'WorkingDirectory|EnvironmentFile|
 
 `WorkingDirectory`, `EnvironmentFile`, `ExecStart`가 고정 symlink 경로를 가리켜야 합니다. `.env`는 보안 설정 후 root-only(`600`)가 되므로 일반 사용자의 직접 `docker compose` 실행은 permission denied가 날 수 있습니다. 운영자는 `aerial-status`, `aerial-restart`, `aerial-logs`를 사용하세요.
 
-코드 정비를 계속하는 체크아웃에서 `.env` 권한과 사용자 관리 설정은 유지하고 자동 시작 및 GPU watchdog 경로만 갱신하려면 다음 옵션을 사용합니다.
+코드 정비를 계속하는 체크아웃에서 `.env` 권한은 유지하고 자동 시작 및 GPU watchdog 경로만 갱신하려면 다음 옵션을 사용합니다.
 
 ```bash
 sudo bash scripts/secure-deployment.sh --systemd-only
@@ -191,7 +193,7 @@ sudo bash scripts/secure-deployment.sh --systemd-only
 
 `aerial-survey.service`는 핵심 서비스를 먼저 시작하고 `worker-engine`은 best-effort로 분리합니다.
 
-- 핵심 서비스: `db`, `redis`, `api`, `frontend`, `nginx`, `celery-beat`, `celery-worker`, `celery-worker-thumbnail`, `flower`, `titiler`
+- 핵심 서비스: `db`, `redis`, `api`, `frontend`, `nginx`, `celery-worker`, `celery-worker-thumbnail`, `flower`, `titiler`
 - GPU 처리 엔진: `worker-engine`
 
 GPU 드라이버나 NVIDIA Docker runtime이 부팅 직후 늦게 준비되면 `worker-engine`만 실패할 수 있습니다. 이 경우에도 핵심 서비스가 올라오면 `aerial-survey.service`는 success가 될 수 있고, `aerial-gpu-watchdog.timer`가 나중에 `worker-engine` 복구를 시도합니다.

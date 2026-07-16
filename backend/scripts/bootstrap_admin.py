@@ -1,7 +1,10 @@
-"""Create the first administrator from deployment-provided credentials.
+"""Create the initial shared operator account.
 
 Existing installations are left untouched: bootstrap settings are only required
 when the users table is empty.
+
+The ADMIN_* environment variable names and this legacy script filename are kept
+for deployment-package compatibility. They do not imply a separate admin role.
 """
 from __future__ import annotations
 
@@ -22,24 +25,24 @@ from app.database import async_session
 from app.models.user import Organization, User
 
 
-MIN_ADMIN_PASSWORD_LENGTH = 12
+MIN_INITIAL_ACCOUNT_PASSWORD_LENGTH = 12
 
 
 @dataclass(frozen=True)
-class AdminBootstrapConfig:
+class InitialAccountBootstrapConfig:
     email: str
     password: str
     name: str
 
 
-def load_admin_bootstrap_config(
+def load_initial_account_bootstrap_config(
     environ: Mapping[str, str] | None = None,
-) -> AdminBootstrapConfig:
-    """Load and validate first-admin settings without exposing the password."""
+) -> InitialAccountBootstrapConfig:
+    """Load and validate initial account settings without exposing its password."""
     values = environ if environ is not None else os.environ
     email = values.get("ADMIN_EMAIL", "").strip()
     password = values.get("ADMIN_PASSWORD", "")
-    name = values.get("ADMIN_NAME", "관리자").strip() or "관리자"
+    name = values.get("ADMIN_NAME", "운영 계정").strip() or "운영 계정"
     allow_weak = values.get("ALLOW_WEAK_ADMIN_PASSWORD", "").strip().lower() in {
         "1",
         "true",
@@ -53,7 +56,9 @@ def load_admin_bootstrap_config(
     ]
     if missing:
         raise ValueError(
-            "First administrator is not configured. Set " + ", ".join(missing) + "."
+            "Initial operator account is not configured. Set "
+            + ", ".join(missing)
+            + "."
         )
 
     if len(email) > 255:
@@ -61,27 +66,28 @@ def load_admin_bootstrap_config(
     if len(name) > 100:
         raise ValueError("ADMIN_NAME must be 100 characters or fewer.")
     if not allow_weak:
-        if len(password) < MIN_ADMIN_PASSWORD_LENGTH:
+        if len(password) < MIN_INITIAL_ACCOUNT_PASSWORD_LENGTH:
             raise ValueError(
-                f"ADMIN_PASSWORD must be at least {MIN_ADMIN_PASSWORD_LENGTH} characters."
+                "ADMIN_PASSWORD must be at least "
+                f"{MIN_INITIAL_ACCOUNT_PASSWORD_LENGTH} characters."
             )
         normalized_password = password.lower().replace("_", "-")
         insecure_markers = ("change-this", "your-password", "example-password")
         if any(marker in normalized_password for marker in insecure_markers):
             raise ValueError("ADMIN_PASSWORD still contains a placeholder value.")
 
-    return AdminBootstrapConfig(email=email, password=password, name=name)
+    return InitialAccountBootstrapConfig(email=email, password=password, name=name)
 
 
-async def bootstrap_admin() -> bool:
-    """Create the first admin and return True, or skip an existing install."""
+async def bootstrap_initial_account() -> bool:
+    """Create the initial shared account, or skip an existing install."""
     async with async_session() as session:
         user_count = await session.scalar(select(func.count()).select_from(User))
         if user_count:
-            print(f"    Administrator bootstrap skipped ({user_count} users exist).")
+            print(f"    Initial account bootstrap skipped ({user_count} users exist).")
             return False
 
-        config = load_admin_bootstrap_config()
+        config = load_initial_account_bootstrap_config()
 
         organization = await session.scalar(select(Organization).limit(1))
         if organization is None:
@@ -98,15 +104,15 @@ async def bootstrap_admin() -> bool:
                 email=config.email,
                 password_hash=hash_password(config.password),
                 name=config.name,
-                role="admin",
+                role="user",
                 is_active=True,
                 organization_id=organization.id,
             )
         )
         await session.commit()
-        print(f"    Initial administrator created: {config.email}")
+        print(f"    Initial shared operator account created: {config.email}")
         return True
 
 
 if __name__ == "__main__":
-    asyncio.run(bootstrap_admin())
+    asyncio.run(bootstrap_initial_account())

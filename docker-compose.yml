@@ -69,14 +69,13 @@ services:
       # 개발 환경 전용 기본 계정. 운영 Compose에는 기본 비밀번호가 없습니다.
       - ADMIN_EMAIL=${ADMIN_EMAIL:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-siqms}
-      - ADMIN_NAME=${ADMIN_NAME:-관리자}
+      - ADMIN_NAME=${ADMIN_NAME:-운영 계정}
       - ALLOW_WEAK_ADMIN_PASSWORD=${ALLOW_WEAK_ADMIN_PASSWORD:-true}
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
       - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
       - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
       - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
       - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
       - COG_LOOKUP_WARN_MS=${COG_LOOKUP_WARN_MS:-1000}
     volumes:
       - ./backend:/app
@@ -121,7 +120,6 @@ services:
   #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
   #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
   #     - MINIO_BUCKET=aerial-survey
-  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
   #     - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
   #   volumes:
   #     - ./backend/app:/app/app
@@ -149,7 +147,6 @@ services:
   #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
   #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
   #     - MINIO_BUCKET=aerial-survey
-  #     - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
   #     - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
   #     - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
   #   volumes:
@@ -169,7 +166,7 @@ services:
       context: .
       dockerfile: engines/metashape/Dockerfile
     working_dir: /app
-    command: celery -A app.workers.tasks worker -Q ${PROCESSING_ENGINE_QUEUE:-gpu-engine} --loglevel=info --concurrency=1 -n worker-engine@%h
+    command: celery -A app.workers.tasks worker -Q ${PROCESSING_ENGINE_QUEUE:-gpu-engine} --loglevel=info --concurrency=1 --max-tasks-per-child=1 -n worker-engine@%h
     restart: always
     # Graceful shutdown (라이센스는 유지됨 - 오프라인 환경 지원)
     stop_signal: SIGTERM
@@ -245,38 +242,12 @@ services:
     mac_address: "02:42:AC:17:00:64"  # Static MAC for stable Machine ID
     logging: *worker-logging
 
-  # === Celery Beat (Scheduler) ===
-  celery-beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command: celery -A app.workers.tasks beat --loglevel=info --schedule=/tmp/celerybeat-schedule
-    user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
-      - LOCAL_STORAGE_PATH=/data/storage
-      - PROCESSING_DATA_PATH=/data/processing
-      - EXPORT_ROOT_PATH=/data/exports
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
-    volumes:
-      - ./backend:/app
-      - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects
-      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/storage/orthomosaic
-      - ${EXPORT_ROOT_PATH:-${DATA_PATH:-./data}/storage/orthomosaic}:/data/exports
-    depends_on:
-      - redis
-    networks:
-      - aerial-network
-    logging: *default-logging
-
   # === Celery Worker - 썸네일 전용 (처리 중에도 동시 실행) ===
   celery-worker-thumbnail:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q thumbnail --loglevel=info --concurrency=1 -n worker-thumbnail@%h
+    command: celery -A app.workers.tasks worker -Q thumbnail --loglevel=info --concurrency=1 --max-tasks-per-child=100 -n worker-thumbnail@%h
     restart: always
     user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     healthcheck:
@@ -296,7 +267,6 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-key-at-least-32-bytes}
       - ALLOW_WEAK_JWT_SECRET=true
     volumes:
@@ -326,7 +296,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2 -n worker-celery@%h
+    command: celery -A app.workers.tasks worker -Q celery --loglevel=info --concurrency=2 --max-tasks-per-child=100 -n worker-celery@%h
     restart: always
     user: "${AERIAL_CONTAINER_UID:-1000}:${AERIAL_CONTAINER_GID:-1000}"
     healthcheck:
@@ -346,7 +316,6 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=aerial-survey
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:${AERIAL_DEV_WEB_PORT:-18110}}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-key-at-least-32-bytes}
       - ALLOW_WEAK_JWT_SECRET=true
       - PROCESSING_QUEUE_WAIT_WARN_SECONDS=${PROCESSING_QUEUE_WAIT_WARN_SECONDS:-300}

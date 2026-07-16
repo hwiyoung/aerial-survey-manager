@@ -65,11 +65,7 @@ class StoragePrivacyTests(unittest.TestCase):
             f"{original}?X-Amz-Signature=signed"
         )
 
-        with (
-            patch.object(storage_minio.settings, "MINIO_PUBLIC_ENDPOINT", "192.168.10.203:18100"),
-            patch.object(storage_minio.settings, "MINIO_ENDPOINT", "minio:9000"),
-            patch.object(storage_minio.settings, "MINIO_SECURE", False),
-        ):
+        with patch.object(storage_minio.settings, "MINIO_SECURE", False):
             url = backend.get_presigned_url(original)
 
         self.assertEqual(

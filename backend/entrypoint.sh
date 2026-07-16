@@ -163,8 +163,8 @@ else
     echo "  - Regions already seeded ($REGION_COUNT records), skipping..."
 fi
 
-# 최초 관리자 계정 생성 (유저가 없을 때만, 배포 환경변수 필수)
-echo "  - Checking admin account..."
+# 최초 공동 운영 계정 생성 (사용자가 없을 때만, ADMIN_* 배포 변수 사용)
+echo "  - Checking initial operator account..."
 ADMIN_BOOTSTRAP_SCRIPT=""
 if [ -f "scripts/bootstrap_admin.pyc" ]; then
     ADMIN_BOOTSTRAP_SCRIPT="scripts/bootstrap_admin.pyc"
@@ -173,7 +173,7 @@ elif [ -f "scripts/bootstrap_admin.py" ]; then
 fi
 
 if [ -z "$ADMIN_BOOTSTRAP_SCRIPT" ]; then
-    echo "Error: administrator bootstrap script not found"
+    echo "Error: initial account bootstrap script not found"
     exit 1
 fi
 

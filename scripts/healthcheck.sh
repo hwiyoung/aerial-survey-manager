@@ -66,7 +66,7 @@ if [ -z "$services" ]; then
     check_fail "Docker 서비스가 실행되지 않았습니다"
 else
     # 각 서비스 상태 확인
-    for service in api frontend db redis minio nginx worker-engine celery-beat celery-worker celery-worker-thumbnail titiler flower; do
+    for service in api frontend db redis minio nginx worker-engine celery-worker celery-worker-thumbnail titiler flower; do
         if [ "$service" = "minio" ] && [ "$storage_backend" != "minio" ]; then
             continue
         fi

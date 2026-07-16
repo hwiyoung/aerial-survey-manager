@@ -28,7 +28,7 @@ ALLOWED_ROOTS = ["/media", "/mnt", "/run/media", "/home"]
 
 # Depth to scan for device-level directories
 # /media/<user>/<device> = 2, /run/media/<user>/<device> = 2
-# /mnt 제외: 수동 마운트 전용이라 일반 사용자에게 불필요
+# /mnt는 수동 마운트 전용이므로 자동 장치 탐색에서는 제외
 SCAN_DEPTHS = {"/media": 2, "/run/media": 2, "/home": 1}
 
 # Skip system mounts (snap, loop, etc.)

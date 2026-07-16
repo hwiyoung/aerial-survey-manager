@@ -102,7 +102,6 @@ required_services = [
     "frontend",
     "nginx",
     "worker-engine",
-    "celery-beat",
     "celery-worker",
     "celery-worker-thumbnail",
     "flower",
@@ -139,7 +138,6 @@ rw_services = [
     "worker-engine",
     "celery-worker",
     "celery-worker-thumbnail",
-    "celery-beat",
 ]
 ro_service_targets = {
     # TiTiler only needs final COGs. Mounting project sources would create a
@@ -170,7 +168,7 @@ for name in rw_services:
     ):
         if target not in targets:
             failures.append(f"prod {name}: missing volume target {target}")
-    if name != "celery-beat" and "/data/processing" not in targets:
+    if "/data/processing" not in targets:
         failures.append(f"prod {name}: missing volume target /data/processing")
 
 for compose_name, services in (("dev", dev_services), ("prod", prod_services)):
