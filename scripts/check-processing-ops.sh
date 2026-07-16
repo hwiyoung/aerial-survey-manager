@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Aerial Survey Manager - 처리 운영 점검 스크립트 (4차 스프린트)
+# Aerial Survey Manager - 처리 운영 점검 스크립트
 # 처리 엔진 정책, 큐 적재량, 워커 상태를 빠르게 확인합니다.
 #
 
@@ -40,21 +40,6 @@ to_bool() {
   esac
 }
 
-is_enabled() {
-  local raw
-  raw="$(get_env "$1")"
-  to_bool "${raw:-}" || return 1
-}
-
-queue_label() {
-  case "$1" in
-    metashape) echo "gpu-engine" ;;
-    odm) echo "odm" ;;
-    external) echo "external" ;;
-    *) echo "$1" ;;
-  esac
-}
-
 compose_file="docker-compose.yml"
 if [ -f "docker-compose.prod.yml" ]; then
   compose_file="docker-compose.prod.yml"
@@ -73,8 +58,6 @@ fi
 metashape_flag="${metashape_flag:-true}"
 processing_queue="$(get_env "PROCESSING_ENGINE_QUEUE")"
 processing_queue="${processing_queue:-gpu-engine}"
-odm_flag="$(get_env "ENABLE_ODM_ENGINE")"
-external_flag="$(get_env "ENABLE_EXTERNAL_ENGINE")"
 external_cog="$(get_env "ENABLE_EXTERNAL_COG_INGEST")"
 backend_candidates="$(get_env "BACKEND_DIAGNOSTIC_PORTS")"
 backend_default_port="${BACKEND_DEFAULT_PORT:-}"
@@ -96,14 +79,10 @@ echo ""
 echo -e "${BLUE}[1] Processing Engine Policy${NC}"
 if [ -f ".env" ]; then
   metashape="$metashape_flag"
-  odm="$odm_flag"
-  external="$external_flag"
   external_cog="$external_cog"
 
-  if [ -n "${metashape:-}" ] || [ -n "${odm:-}" ] || [ -n "${external:-}" ]; then
+  if [ -n "${metashape:-}" ]; then
     echo "  gpu_engine=$metashape"
-    echo "  odm=$odm"
-    echo "  external=$external"
     echo "  external_cog_ingest=$external_cog"
     log_ok "엔진 정책 환경변수 확인 완료"
   else
@@ -165,38 +144,21 @@ echo -e "${BLUE}[3] Queue Backlog Check${NC}"
 if ! docker compose -f "$compose_file" exec -T redis redis-cli ping >/dev/null 2>&1; then
   log_fail "redis ping 실패 (Redis 미기동)"
 else
-  for queue in "$processing_queue" odm external; do
-    enabled=true
-    if [ "$queue" = "$processing_queue" ] && ! to_bool "$metashape_flag"; then
-      enabled=false
-    fi
-    if [ "$queue" = "odm" ] && ! is_enabled "ENABLE_ODM_ENGINE"; then
-      enabled=false
-    fi
-    if [ "$queue" = "external" ] && ! is_enabled "ENABLE_EXTERNAL_ENGINE"; then
-      enabled=false
-    fi
-
-    if [ "$enabled" = false ]; then
-      disabled_len="$(docker compose -f "$compose_file" exec -T redis redis-cli llen "$queue" 2>/dev/null || echo 0)"
-      if [ "${disabled_len:-0}" -gt 0 ]; then
-        log_warn "redis 큐 '$(queue_label "$queue")'는 비활성 정책이나 잔여 작업이 존재할 수 있습니다"
+  if result="$(docker compose -f "$compose_file" exec -T redis redis-cli llen "$processing_queue" 2>/dev/null)"; then
+    if ! to_bool "$metashape_flag"; then
+      if [ "$result" -gt 0 ]; then
+        log_warn "GPU 엔진은 비활성이나 redis 큐 '$processing_queue'에 $result개 작업이 있습니다"
       else
-        log_ok "redis 큐 '$(queue_label "$queue")' 비활성(정책)"
+        log_ok "GPU 엔진 비활성, redis 큐 '$processing_queue' 비어 있음"
       fi
-      continue
-    fi
-
-    if result="$(docker compose -f "$compose_file" exec -T redis redis-cli llen "$queue" 2>/dev/null)"; then
-      if [ "$result" -gt 20 ]; then
-        log_warn "redis 큐 '$(queue_label "$queue")' 길이: $result (과다)"
-      else
-        log_ok "redis 큐 '$(queue_label "$queue")' 길이: $result"
-      fi
+    elif [ "$result" -gt 20 ]; then
+      log_warn "redis 큐 '$processing_queue' 길이: $result (과다)"
     else
-      log_fail "redis 큐 '$(queue_label "$queue")' 조회 실패 (Redis 미기동 또는 queue 없음)"
+      log_ok "redis 큐 '$processing_queue' 길이: $result"
     fi
-  done
+  else
+    log_fail "redis 큐 '$processing_queue' 조회 실패 (Redis 미기동 또는 queue 없음)"
+  fi
 fi
 echo ""
 
@@ -216,17 +178,6 @@ for svc in api worker-engine; do
   fi
 done
 
-if is_enabled "ENABLE_ODM_ENGINE" && echo "$services" | grep -q '^worker-odm$'; then
-  status="$(docker compose -f "$compose_file" ps worker-odm --format "{{.State}}" 2>/dev/null | tr -d '[:space:]')"
-  if [ "$status" = "running" ] || [ "$status" = "Up" ] || [[ "$status" == "Up"* ]]; then
-    log_ok "service worker-odm: running"
-  else
-    log_warn "service worker-odm: $status (비활성 큐라도 필요 시 점검)"
-  fi
-elif is_enabled "ENABLE_ODM_ENGINE"; then
-  log_fail "service worker-odm: 미정의인데 ODM이 ON"
-fi
-
 if docker compose -f "$compose_file" exec -T api celery -A app.workers.tasks inspect ping >/dev/null 2>&1; then
   log_ok "celery ping (api)"
 else
@@ -234,13 +185,10 @@ else
 fi
 echo ""
 
-# 5) 정책 불일치 가이드
-echo -e "${BLUE}[5] Policy mismatch quick hints${NC}"
+# 5) 운영 가이드
+echo -e "${BLUE}[5] Operating hints${NC}"
 if [ "${metashape:-}" = "false" ] && [ "$FAIL" -eq 0 ]; then
   echo "  GPU 처리 엔진 비활성화: worker-engine이 실행되지 않아도 정책 위반은 아닙니다."
-fi
-if [ "${external:-}" = "true" ] && [ "${odm:-}" = "false" ]; then
-  echo "  external만 활성일 경우 external 큐/worker 조합을 별도 점검하세요."
 fi
 
 echo ""

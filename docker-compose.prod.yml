@@ -96,10 +96,6 @@ services:
       - ADMIN_NAME=${ADMIN_NAME:-운영 계정}
       - ALLOW_WEAK_ADMIN_PASSWORD=false
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
-      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
-      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
-      - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
-      - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
     volumes:
       # 프로덕션: 소스 마운트 제거, 데이터 디렉토리만 마운트
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing
@@ -171,11 +167,8 @@ services:
       - ALLOW_WEAK_JWT_SECRET=false
       - ENGINE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
-      - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
-      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
-      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       # 프로덕션: 데이터 디렉토리 마운트
       - ${PROCESSING_DATA_PATH:-${AERIAL_DATA_ROOT:-./data}/projects}:/data/processing

@@ -53,11 +53,6 @@ class Settings(BaseSettings):
     
     # Processing Engines
     ENABLE_METASHAPE_ENGINE: bool = True
-    ENABLE_ODM_ENGINE: bool = False
-    ENABLE_EXTERNAL_ENGINE: bool = False
-    EXTERNAL_ENGINE_URL: str = ""
-    EXTERNAL_ENGINE_API_KEY: str = ""
-    ODM_DOCKER_IMAGE: str = "opendronemap/odm:latest"
     METASHAPE_LICENSE_KEY: str = ""
     
     # Upload / Data

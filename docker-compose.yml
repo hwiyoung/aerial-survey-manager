@@ -72,10 +72,6 @@ services:
       - ADMIN_NAME=${ADMIN_NAME:-운영 계정}
       - ALLOW_WEAK_ADMIN_PASSWORD=${ALLOW_WEAK_ADMIN_PASSWORD:-true}
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
-      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
-      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
-      - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
-      - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
       - COG_LOOKUP_WARN_MS=${COG_LOOKUP_WARN_MS:-1000}
     volumes:
       - ./backend:/app
@@ -106,58 +102,6 @@ services:
     networks:
       - aerial-network
     logging: *default-logging
-
-  # === Celery Worker - ODM Queue (DISABLED - using GPU engine only) ===
-  # worker-odm:
-  #   build:
-  #     context: .
-  #     dockerfile: engines/odm/Dockerfile
-  #   command: celery -A app.workers.tasks worker -Q odm --loglevel=info --concurrency=2
-  #   environment:
-  #     - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-  #     - REDIS_URL=redis://redis:6379/0
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-  #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-  #     - MINIO_BUCKET=aerial-survey
-  #     - HOST_DATA_PATH=${PROCESSING_DATA_PATH:-${PWD}/data/processing}
-  #   volumes:
-  #     - ./backend/app:/app/app
-  #     - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
-  #     - /var/run/docker.sock:/var/run/docker.sock
-  #   depends_on:
-  #     - redis
-  #     - db
-  #     - minio
-  #   restart: always
-  #   networks:
-  #     - aerial-network
-  #   logging: *worker-logging
-
-  # === Celery Worker - External API Queue (DISABLED - using GPU engine only) ===
-  # worker-external:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile
-  #   command: celery -A app.workers.tasks worker -Q external --loglevel=info --concurrency=4
-  #   environment:
-  #     - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/aerial_survey
-  #     - REDIS_URL=redis://redis:6379/0
-  #     - MINIO_ENDPOINT=minio:9000
-  #     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-  #     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-  #     - MINIO_BUCKET=aerial-survey
-  #     - EXTERNAL_ENGINE_URL=${EXTERNAL_ENGINE_URL:-}
-  #     - EXTERNAL_ENGINE_API_KEY=${EXTERNAL_ENGINE_API_KEY:-}
-  #   volumes:
-  #     - ./backend/app:/app/app
-  #     - ${PROCESSING_DATA_PATH:-${DATA_PATH:-./data}/processing}:/data/processing
-  #   depends_on:
-  #     - redis
-  #     - db
-  #   networks:
-  #     - aerial-network
-  #   logging: *default-logging
 
   # === Celery Worker - GPU Processing Engine ===
   worker-engine:
@@ -203,7 +147,6 @@ services:
       - ALLOW_WEAK_JWT_SECRET=true
       - ENGINE_LICENSE_KEY=${ENGINE_LICENSE_KEY:-}
       - PROJECT_ID=${PROJECT_ID:-unknown}
-      - PLATFORM_WEBHOOK_URL=http://api:8000/api/v1/processing/webhook
       - BACKEND_URL_ORTHO=http://api:8000/api/v1/processing
       - PROCESSING_QUEUE_WAIT_WARN_SECONDS=${PROCESSING_QUEUE_WAIT_WARN_SECONDS:-300}
       - PROCESSING_TOTAL_WARN_SECONDS=${PROCESSING_TOTAL_WARN_SECONDS:-7200}
@@ -211,8 +154,6 @@ services:
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
       - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
-      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
-      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       - ./backend/app:/app/app
       - ./engines/metashape:/app/engines/metashape
@@ -324,8 +265,6 @@ services:
       - ENABLE_EXTERNAL_COG_INGEST=${ENABLE_EXTERNAL_COG_INGEST:-false}
       - PROCESSING_ENGINE_QUEUE=${PROCESSING_ENGINE_QUEUE:-gpu-engine}
       - ENABLE_METASHAPE_ENGINE=${ENABLE_GPU_ENGINE:-${ENABLE_METASHAPE_ENGINE:-true}}
-      - ENABLE_ODM_ENGINE=${ENABLE_ODM_ENGINE:-false}
-      - ENABLE_EXTERNAL_ENGINE=${ENABLE_EXTERNAL_ENGINE:-false}
     volumes:
       - ./backend:/app
       - ${LOCAL_STORAGE_PATH:-${DATA_PATH:-./data}/storage}/projects:/data/storage/projects

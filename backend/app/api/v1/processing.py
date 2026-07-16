@@ -189,16 +189,6 @@ def _get_processing_engine_policies():
             "reason": "활성화됨" if settings.ENABLE_METASHAPE_ENGINE else "GPU 처리 엔진 비활성",
             "queue_name": PROCESSING_QUEUE,
         },
-        "odm": {
-            "enabled": settings.ENABLE_ODM_ENGINE,
-            "reason": "활성화됨 (ODM)" if settings.ENABLE_ODM_ENGINE else "4차 스프린트 정책상 비활성",
-            "queue_name": "odm",
-        },
-        "external": {
-            "enabled": settings.ENABLE_EXTERNAL_ENGINE,
-            "reason": "활성화됨 (External API)" if settings.ENABLE_EXTERNAL_ENGINE else "4차 스프린트 정책상 비활성",
-            "queue_name": "external",
-        },
     }
 
 
@@ -211,19 +201,8 @@ def _get_supported_processing_engines() -> set[str]:
 
 
 def _get_default_processing_engine() -> str | None:
-    policies = _get_processing_engine_policies()
-    for name in [DEFAULT_PROCESSING_ENGINE, "odm", "external"]:
-        if policies.get(name, {}).get("enabled"):
-            return name
-    return None
-
-
-def _get_queue_name(engine_name: str) -> str:
-    policies = _get_processing_engine_policies()
-    queue_name = policies.get(engine_name, {}).get("queue_name")
-    if queue_name:
-        return queue_name
-    return PROCESSING_QUEUE
+    policy = _get_processing_engine_policies()[DEFAULT_PROCESSING_ENGINE]
+    return DEFAULT_PROCESSING_ENGINE if policy["enabled"] else None
 
 
 def _metadata_path_for_project(project_id: UUID) -> Path:
@@ -1248,7 +1227,7 @@ async def start_processing(
                     celery_app.control.revoke(existing_job.celery_task_id, terminate=True)
                     _remove_queued_celery_message(
                         existing_job.celery_task_id,
-                        _get_queue_name(existing_job.engine or DEFAULT_PROCESSING_ENGINE),
+                        PROCESSING_QUEUE,
                     )
                 except Exception:
                     pass
@@ -1362,12 +1341,10 @@ async def start_processing(
 
     from app.workers.tasks import process_orthophoto
 
-    queue_name = _get_queue_name(options.engine)
-
     try:
         process_orthophoto.apply_async(
             args=[str(job.id), str(project_id), options.model_dump()],
-            queue=queue_name,
+            queue=PROCESSING_QUEUE,
             task_id=job.celery_task_id,
         )
     except Exception:
@@ -1522,10 +1499,9 @@ async def schedule_processing(
         try:
             from app.workers.tasks import process_orthophoto
             options_dict = processing_options_for_job(job)
-            queue_name = _get_queue_name(job.engine or DEFAULT_PROCESSING_ENGINE)
             process_orthophoto.apply_async(
                 args=[str(job.id), str(project_id), options_dict],
-                queue=queue_name,
+                queue=PROCESSING_QUEUE,
                 task_id=job.celery_task_id,
             )
         except Exception as celery_err:
@@ -1795,7 +1771,7 @@ async def cancel_processing(
         celery_app.control.revoke(celery_task_id, terminate=True)
         _remove_queued_celery_message(
             celery_task_id,
-            _get_queue_name(job.engine or DEFAULT_PROCESSING_ENGINE),
+            PROCESSING_QUEUE,
         )
     clear_active_processing_task_cache()
 
@@ -2069,7 +2045,7 @@ async def broadcast_update(
     x_internal_token: str = Header(default=None, alias="X-Internal-Token"),
     token: str = Query(default=None),
 ):
-    """Internal endpoint for Celery workers or external engines to trigger WebSocket broadcasts."""
+    """Internal endpoint for Celery workers to trigger WebSocket broadcasts."""
     _require_internal_token(
         internal_token=x_internal_token,
         query_token=token,
@@ -2084,63 +2060,6 @@ async def broadcast_update(
         "type": "progress" if request.status == "processing" else request.status,
     })
     return {"status": "broadcast_sent"}
-
-
-@router.post("/webhook")
-async def external_processing_webhook(
-    request: BroadcastRequest,
-    x_internal_token: str = Header(default=None, alias="X-Internal-Token"),
-    token: str = Query(default=None, alias="internal_token"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Webhook endpoint for external processing engines to report status.
-    """
-    _require_internal_token(
-        internal_token=x_internal_token,
-        query_token=token,
-        expected_scope="processing_webhook",
-    )
-
-    project_uuid = _safe_uuid(request.project_id)
-
-    # 1. Update Job and Project status in DB
-    result = await db.execute(
-        select(ProcessingJob)
-        .where(ProcessingJob.project_id == project_uuid)
-        .order_by(ProcessingJob.started_at.desc().nullslast())
-    )
-    job = result.scalar_one_or_none()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job.status = request.status
-    job.progress = request.progress
-    if request.status == "completed":
-        job.completed_at = datetime.utcnow()
-    elif request.status == "failed":
-        job.error_message = request.message
-        
-    # Update project
-    proj_result = await db.execute(select(Project).where(Project.id == project_uuid))
-    project = proj_result.scalar_one_or_none()
-    if project:
-        project.status = request.status
-        project.progress = request.progress
-
-    await db.commit()
-
-    # 2. Broadcast via WebSocket
-    await manager.broadcast(request.project_id, {
-        "project_id": request.project_id,
-        "status": request.status,
-        "progress": request.progress,
-        "message": request.message,
-        "type": "progress" if request.status == "processing" else request.status,
-    })
-
-    return {"status": "received"}
 
 
 # Function to be called by Celery worker to broadcast updates

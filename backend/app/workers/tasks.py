@@ -429,8 +429,8 @@ def _filter_excluded_processing_images(images, excluded_keys: set[str]):
 def process_orthophoto(self, job_id: str, project_id: str, options: dict):
     """
     Main orthophoto processing task.
-    
-    Dispatches to configured processing engines (metashape/odm/external).
+
+    Runs the configured Metashape GPU processing engine.
     """
     import asyncio
     from app.models.project import Project, ProcessingJob, Image

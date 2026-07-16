@@ -25,8 +25,6 @@ function normalizeRestartChoiceData(data) {
 function getProcessingEngineLabel(engineName) {
     const normalized = String(engineName || '').trim().toLowerCase();
     if (normalized === 'metashape') return 'GPU 처리 엔진';
-    if (normalized === 'odm') return 'ODM 처리 엔진';
-    if (normalized === 'external') return '외부 처리 엔진';
     return String(engineName || '처리 엔진');
 }
 
