@@ -23,6 +23,7 @@ from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role
 from app.config import get_settings
 from app.services.storage import get_storage
 from app.services.quota import ensure_organization_quota
+from app.services.processing_lifecycle import processing_options_for_job
 from app.services.upload_sessions import (
     MAX_MULTIPART_PARTS,
     MAX_MULTIPART_PART_SIZE,
@@ -1412,15 +1413,7 @@ async def complete_multipart_upload(
                     scoped_project.status = "queued"
                     scoped_project.progress = 0
 
-                    options_dict = {
-                        "engine": scheduled_job.engine,
-                        "gsd": scheduled_job.gsd,
-                        "output_crs": scheduled_job.output_crs,
-                        "output_format": scheduled_job.output_format,
-                        "process_mode": scheduled_job.process_mode or "Normal",
-                        "eo_only_align": True,
-                        "build_point_cloud": False,
-                    }
+                    options_dict = processing_options_for_job(scheduled_job)
                     queue_name = _processing_queue_name(scheduled_job.engine)
 
                     # Commit DB changes BEFORE submitting to Celery

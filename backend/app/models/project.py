@@ -219,6 +219,12 @@ class ProcessingJob(Base):
     # 처리 결과 메타데이터
     result_gsd: Mapped[float | None] = mapped_column(Float, nullable=True)  # 실제 결과 GSD (cm/pixel)
     process_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Preview, Normal, High
+    processing_options: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
 
     # Optional CRS tag correction applied before final COG/warp.
     crs_correction_source_crs: Mapped[str | None] = mapped_column(String(50), nullable=True)

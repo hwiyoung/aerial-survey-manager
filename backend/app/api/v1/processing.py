@@ -60,6 +60,7 @@ from app.services.processing_runtime import (
 )
 from app.services.processing_lifecycle import (
     ACTIVE_PROCESSING_STATUSES,
+    processing_options_for_job,
     stale_processing_job_reason,
 )
 from pyproj import Transformer
@@ -1434,6 +1435,7 @@ async def start_processing(
         output_format=options.output_format,
         status="queued",
         process_mode=options.process_mode,  # 처리 모드 저장
+        processing_options=options.model_dump(),
         queued_at=datetime.utcnow(),
         celery_task_id=str(uuid4()),
     )
@@ -1558,6 +1560,7 @@ async def schedule_processing(
             existing_job.output_crs = options.output_crs
             existing_job.output_format = options.output_format
             existing_job.process_mode = options.process_mode
+            existing_job.processing_options = options.model_dump()
             await db.commit()
             await db.refresh(existing_job)
             return ProcessingJobResponse.model_validate(existing_job)
@@ -1576,6 +1579,7 @@ async def schedule_processing(
         output_format=options.output_format,
         status="scheduled",
         process_mode=options.process_mode,
+        processing_options=options.model_dump(),
     )
     db.add(job)
     try:
@@ -1619,15 +1623,7 @@ async def schedule_processing(
 
         try:
             from app.workers.tasks import process_orthophoto
-            options_dict = {
-                "engine": job.engine,
-                "gsd": job.gsd,
-                "output_crs": job.output_crs,
-                "output_format": job.output_format,
-                "process_mode": job.process_mode or "Normal",
-                "eo_only_align": options.eo_only_align,
-                "build_point_cloud": options.build_point_cloud,
-            }
+            options_dict = processing_options_for_job(job)
             queue_name = _get_queue_name(job.engine or DEFAULT_PROCESSING_ENGINE)
             process_orthophoto.apply_async(
                 args=[str(job.id), str(project_id), options_dict],

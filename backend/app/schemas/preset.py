@@ -13,6 +13,7 @@ class PresetOptionsSchema(BaseModel):
     output_crs: str = "EPSG:5186"
     output_format: str = "GeoTiff"
     eo_only_align: bool = True  # EO reference와 매칭된 이미지만 정합
+    build_point_cloud: bool = False  # 포인트 클라우드 생성 여부
 
 
 class PresetBase(BaseModel):

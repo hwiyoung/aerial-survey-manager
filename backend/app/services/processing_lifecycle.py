@@ -10,6 +10,32 @@ ACTIVE_PROCESSING_STATUSES = frozenset({"scheduled", "queued", "processing"})
 QUEUED_STALE_AFTER = timedelta(hours=6)
 PROCESSING_STALE_AFTER = timedelta(hours=24)
 STARTUP_RECOVERY_GRACE = timedelta(minutes=15)
+DEFAULT_PROCESSING_OPTIONS = {
+    "engine": "metashape",
+    "gsd": 5.0,
+    "output_crs": "EPSG:5186",
+    "output_format": "GeoTiff",
+    "process_mode": "Normal",
+    "eo_only_align": True,
+    "build_point_cloud": False,
+    "resume_checkpoint": True,
+}
+
+
+def processing_options_for_job(job: object) -> dict:
+    """Return the complete options originally reserved for a processing job."""
+    stored_options = getattr(job, "processing_options", None)
+    options = dict(DEFAULT_PROCESSING_OPTIONS)
+    if isinstance(stored_options, dict):
+        options.update(stored_options)
+
+    # Keep duplicated searchable columns authoritative if old data or a manual
+    # DB edit caused the JSON snapshot to drift.
+    for key in ("engine", "gsd", "output_crs", "output_format", "process_mode"):
+        value = getattr(job, key, None)
+        if value is not None:
+            options[key] = value
+    return options
 
 
 def stale_processing_job_reason(

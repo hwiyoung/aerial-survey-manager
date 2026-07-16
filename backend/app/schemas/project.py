@@ -271,6 +271,7 @@ class ProcessingJobResponse(BaseModel):
     result_size: Optional[int] = None
     result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
     process_mode: Optional[str] = None  # Preview, Normal, High
+    processing_options: dict[str, Any] = Field(default_factory=dict)
     current_source_crs: Optional[str] = None
     eo_display_source_crs: Optional[str] = None
     crs_correction_source_crs: Optional[str] = None

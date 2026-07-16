@@ -1,7 +1,9 @@
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from app.services.processing_lifecycle import (
+    processing_options_for_job,
     stale_processing_job_reason,
     startup_recovery_in_grace_period,
 )
@@ -78,6 +80,47 @@ class ProcessingLifecycleTests(unittest.TestCase):
                 now=self.now,
             )
         )
+
+    def test_scheduled_job_preserves_advanced_processing_options(self):
+        job = SimpleNamespace(
+            engine="metashape",
+            gsd=3.0,
+            output_crs="EPSG:5187",
+            output_format="GeoTiff",
+            process_mode="High",
+            processing_options={
+                "eo_only_align": False,
+                "build_point_cloud": True,
+                "resume_checkpoint": False,
+            },
+        )
+
+        options = processing_options_for_job(job)
+
+        self.assertFalse(options["eo_only_align"])
+        self.assertTrue(options["build_point_cloud"])
+        self.assertFalse(options["resume_checkpoint"])
+        self.assertEqual(options["process_mode"], "High")
+
+    def test_job_columns_override_stale_option_snapshot(self):
+        job = SimpleNamespace(
+            engine="metashape",
+            gsd=5.0,
+            output_crs="EPSG:5186",
+            output_format="GeoTiff",
+            process_mode="Normal",
+            processing_options={
+                "engine": "odm",
+                "gsd": 99,
+                "build_point_cloud": True,
+            },
+        )
+
+        options = processing_options_for_job(job)
+
+        self.assertEqual(options["engine"], "metashape")
+        self.assertEqual(options["gsd"], 5.0)
+        self.assertTrue(options["build_point_cloud"])
 
 
 if __name__ == "__main__":
