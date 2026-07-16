@@ -228,18 +228,17 @@ docker run --rm \
 rm -f /tmp/aerial-release-nginx-test.log
 echo -e "    ${GREEN}✓ nginx -t 통과${NC}"
 
-# data 디렉토리 전체 복사 후, 이전 배포 구조와 호환되는 regions 사본도 유지
-echo "  - data 디렉토리 복사 중..."
-mkdir -p "$RELEASE_DIR/data"
-if [ -d "./data" ]; then
-    cp -a ./data/. "$RELEASE_DIR/data/"
-    echo "    ✓ ./data 전체 복사 완료"
-else
-    echo "    ⚠ ./data 디렉토리가 없습니다."
-fi
-
-# data/regions 디렉토리 생성 (이전 배포 구조 호환용)
-mkdir -p "$RELEASE_DIR/data/regions"
+# 운영 중 생성된 프로젝트, 스토리지, DB 백업은 새 설치 패키지에 포함하지 않는다.
+# 아래 단계에서 초기 시드에 필요한 GeoJSON/CSV만 명시적으로 복사한다.
+echo "  - 빈 런타임 데이터 디렉토리 생성 중..."
+mkdir -p \
+    "$RELEASE_DIR/data/tiles" \
+    "$RELEASE_DIR/data/minio" \
+    "$RELEASE_DIR/data/projects" \
+    "$RELEASE_DIR/data/orthomosaic" \
+    "$RELEASE_DIR/data/backups" \
+    "$RELEASE_DIR/data/regions"
+echo "    ✓ 운영 데이터와 DB 백업을 제외한 빈 디렉토리 생성 완료"
 
 # 권역 GeoJSON 데이터 복사 (초기 시드용, 파일명 후보 순서대로 탐색)
 echo "  - 권역 GeoJSON 데이터 복사 중..."
@@ -462,6 +461,20 @@ EOF
 
 echo ""
 echo "9. 패키지 압축 중..."
+
+# 신규 설치 패키지에 운영 중 생성된 데이터나 DB 백업이 섞이지 않았는지 방어적으로 확인한다.
+UNEXPECTED_RUNTIME_FILE=$(find \
+    "$RELEASE_DIR/data/backups" \
+    "$RELEASE_DIR/data/minio" \
+    "$RELEASE_DIR/data/projects" \
+    "$RELEASE_DIR/data/orthomosaic" \
+    "$RELEASE_DIR/data/tiles" \
+    -type f -print -quit)
+if [ -n "$UNEXPECTED_RUNTIME_FILE" ]; then
+    echo "ERROR: 배포 패키지에 운영 데이터가 포함되었습니다: $UNEXPECTED_RUNTIME_FILE"
+    exit 1
+fi
+echo -e "  ${GREEN}✓ 운영 데이터 및 DB 백업 미포함 확인${NC}"
 
 cd releases
 tar -czvf "${RELEASE_NAME}.tar.gz" "$RELEASE_NAME"
