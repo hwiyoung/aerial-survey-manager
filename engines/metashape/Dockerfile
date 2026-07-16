@@ -37,11 +37,8 @@ RUN python3 -m pip install --no-cache-dir --upgrade \
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# 지오스페이셜 및 과학 계산 패키지 설치 (Metashape 스크립트용)
-RUN pip install psycopg2-binary GDAL \
-    redis==4.5.1 geopandas==0.11.1 numpy==1.26.4 \
-    fiona==1.8.21 pyogrio==0.5.1 shapely==1.8.5.post1 \
-    rasterio==1.3.0 
+# Metashape 파이프라인이 직접 사용하는 수치/GDAL 패키지만 설치
+RUN pip install GDAL==3.4.1 numpy==1.26.4
     
 # Metashape 설치
 RUN wget https://download.agisoft.com/Metashape-2.2.0-cp37.cp38.cp39.cp310.cp311-abi3-linux_x86_64.whl && \
