@@ -19,7 +19,11 @@ from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, Image, CameraModel, ExteriorOrientation
 from app.schemas.project import ImageResponse, ImageUploadResponse
-from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role
+from app.auth.jwt import (
+    PermissionChecker,
+    apply_project_access_scope,
+    get_current_user,
+)
 from app.config import get_settings
 from app.services.storage import get_storage
 from app.services.quota import ensure_organization_quota
@@ -150,8 +154,7 @@ async def _get_scoped_project(
     db: AsyncSession,
 ):
     query = select(Project).where(Project.id == project_id)
-    if not is_admin_role(current_user.role):
-        query = query.where(Project.organization_id == current_user.organization_id)
+    query = apply_project_access_scope(query, current_user)
     result = await db.execute(query)
     return result.scalar_one_or_none()
 

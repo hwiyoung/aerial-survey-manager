@@ -18,7 +18,13 @@ from geoalchemy2.functions import ST_AsText
 from app.database import get_db
 from app.models.user import User
 from app.models.project import Project, ProcessingJob
-from app.auth.jwt import get_current_user, PermissionChecker, is_admin_role, verify_token
+from app.auth.jwt import (
+    PermissionChecker,
+    apply_project_access_scope,
+    get_current_user,
+    is_admin_role,
+    verify_token,
+)
 from app.services.storage import get_storage
 from app.services.download_tokens import create_download_token, consume_download_token
 from app.utils.checksum import calculate_file_checksum_async as calculate_file_checksum
@@ -59,8 +65,7 @@ async def _get_scoped_project(
     db: AsyncSession,
 ):
     query = select(Project).where(Project.id == project_id)
-    if not is_admin_role(current_user.role):
-        query = query.where(Project.organization_id == current_user.organization_id)
+    query = apply_project_access_scope(query, current_user)
     result = await db.execute(query)
     return result.scalar_one_or_none()
 

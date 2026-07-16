@@ -33,9 +33,11 @@ from app.schemas.project import (
     StorageStatsResponse,
 )
 from app.auth.jwt import (
-    get_current_user,
     PermissionChecker,
+    apply_project_access_scope,
+    get_current_user,
     is_admin_role,
+    resolve_project_permission,
 )
 from app.config import get_settings
 from app.services.eo_parser import EOParserService
@@ -111,21 +113,14 @@ async def _get_scoped_project(
     db: AsyncSession,
 ):
     query = select(Project).where(Project.id == project_id)
-    if not is_admin_role(current_user.role):
-        query = query.where(Project.organization_id == current_user.organization_id)
+    query = apply_project_access_scope(query, current_user)
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
 
 def _apply_project_access_scope(query, current_user: User):
     """Apply organization-first access scope for non-admin users."""
-    if is_admin_role(current_user.role):
-        return query
-
-    if current_user.organization_id is not None:
-        return query.where(Project.organization_id == current_user.organization_id)
-
-    return query.where(Project.owner_id == current_user.id)
+    return apply_project_access_scope(query, current_user)
 
 
 def _resolve_project_permission(
@@ -134,19 +129,7 @@ def _resolve_project_permission(
     explicit_permission: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve effective permission for current user on a project."""
-    if is_admin_role(current_user.role):
-        return "admin"
-
-    if project.owner_id == current_user.id:
-        return "admin"
-
-    if explicit_permission in {"view", "edit", "admin"}:
-        return explicit_permission
-
-    if project.organization_id == current_user.organization_id:
-        return "view"
-
-    return None
+    return resolve_project_permission(project, current_user, explicit_permission)
 
 
 def _build_project_access_fields(

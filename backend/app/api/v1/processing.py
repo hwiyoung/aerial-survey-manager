@@ -37,8 +37,9 @@ from app.schemas.project import (
     ProcessingMetricsSummary,
 )
 from app.auth.jwt import (
-    get_current_user,
     PermissionChecker,
+    apply_project_access_scope,
+    get_current_user,
     is_admin_role,
     verify_internal_token,
     verify_token,
@@ -1112,8 +1113,7 @@ async def _get_scoped_project(
     for_update: bool = False,
 ):
     query = select(Project).where(Project.id == project_id)
-    if not is_admin_role(current_user.role):
-        query = query.where(Project.organization_id == current_user.organization_id)
+    query = apply_project_access_scope(query, current_user)
     if for_update:
         query = query.with_for_update()
     result = await db.execute(query)
@@ -1121,13 +1121,7 @@ async def _get_scoped_project(
 
 
 def _apply_project_access_scope(query, current_user: User):
-    if is_admin_role(current_user.role):
-        return query
-
-    if current_user.organization_id is not None:
-        return query.where(Project.organization_id == current_user.organization_id)
-
-    return query.where(Project.owner_id == current_user.id)
+    return apply_project_access_scope(query, current_user)
 
 
 @router.get("/engines", response_model=ProcessingEnginesResponse)

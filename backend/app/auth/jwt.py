@@ -7,7 +7,7 @@ from jwt import PyJWTError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.config import get_settings
 from app.database import get_db
@@ -43,6 +43,53 @@ def is_admin_role(role: Optional[str]) -> bool:
 def is_manager_role(role: Optional[str]) -> bool:
     """Return True when role has manager or higher permission."""
     return normalize_role(role) in {"admin", "manager"}
+
+
+def apply_project_access_scope(query, user: User):
+    """Apply the canonical project visibility boundary to a SQL query."""
+    if is_admin_role(user.role):
+        return query
+
+    from app.models.project import Project
+    from app.models.user import ProjectPermission
+
+    if user.organization_id is not None:
+        return query.where(Project.organization_id == user.organization_id)
+
+    return query.where(
+        Project.organization_id.is_(None),
+        or_(
+            Project.owner_id == user.id,
+            Project.permissions.any(ProjectPermission.user_id == user.id),
+        ),
+    )
+
+
+def resolve_project_permission(
+    project,
+    user: User,
+    explicit_permission: str | None = None,
+) -> str | None:
+    """Resolve permission without treating two NULL organizations as shared."""
+    if is_admin_role(user.role):
+        return "admin"
+
+    if user.organization_id is not None:
+        if project.organization_id != user.organization_id:
+            return None
+    elif project.organization_id is not None:
+        return None
+
+    if project.owner_id == user.id:
+        return "admin"
+
+    if explicit_permission in {"view", "edit", "admin"}:
+        return explicit_permission
+
+    if user.organization_id is not None:
+        return "view"
+
+    return None
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -239,16 +286,19 @@ class PermissionChecker:
         if project is None:
             return False
 
-        if project.organization_id != user.organization_id:
+        if user.organization_id is not None:
+            if project.organization_id != user.organization_id:
+                return False
+        elif project.organization_id is not None:
             return False
 
         # Check if user is project owner
-        if project and project.owner_id == user.id:
+        if project.owner_id == user.id:
             return True
         
         # Check organization access
         # Users in same org have view access by default
-        if self.required_permission == "view":
+        if user.organization_id is not None and self.required_permission == "view":
             return True
         
         # Check explicit permissions
@@ -260,9 +310,11 @@ class PermissionChecker:
         )
         permission = result.scalar_one_or_none()
         
-        if permission:
-            user_level = self.permission_levels.get(permission.permission, 0)
-            required_level = self.permission_levels.get(self.required_permission, 0)
-            return user_level >= required_level
-        
-        return False
+        effective_permission = resolve_project_permission(
+            project,
+            user,
+            permission.permission if permission else None,
+        )
+        user_level = self.permission_levels.get(effective_permission, 0)
+        required_level = self.permission_levels.get(self.required_permission, 0)
+        return user_level >= required_level
