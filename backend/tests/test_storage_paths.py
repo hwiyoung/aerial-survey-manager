@@ -33,6 +33,25 @@ class OrthomosaicKeyTests(unittest.TestCase):
             "orthomosaic_EPSG5186_20260716_123045.tif",
         )
 
+    def test_job_suffix_prevents_reprocessing_from_overwriting_previous_result(self):
+        project_id = UUID("44444444-4444-4444-4444-444444444444")
+
+        first_key = orthomosaic_key(
+            project_id,
+            region="서울",
+            title="2026 촬영",
+            unique_suffix="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        )
+        second_key = orthomosaic_key(
+            project_id,
+            region="서울",
+            title="2026 촬영",
+            unique_suffix="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        )
+
+        self.assertNotEqual(first_key, second_key)
+        self.assertTrue(first_key.endswith("_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.tif"))
+
 
 if __name__ == "__main__":
     unittest.main()

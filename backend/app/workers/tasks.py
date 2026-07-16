@@ -295,6 +295,19 @@ def _upload_cog_to_storage(cog_path, object_name: str, storage) -> Path:
         return cog_path
 
 
+def _validate_and_publish_cog(cog_path: Path, object_name: str, storage):
+    """Validate a completed COG before making it visible in final storage.
+
+    The output key is job-specific, so a later database failure may leave an
+    orphan for cleanup but can never overwrite the previous completed result.
+    """
+    checksum = calculate_file_checksum(str(cog_path))
+    file_size = os.path.getsize(cog_path)
+    bounds_wkt = get_orthophoto_bounds(str(cog_path))
+    _upload_cog_to_storage(cog_path, object_name, storage)
+    return checksum, file_size, bounds_wkt
+
+
 def _prepare_images(storage, images, input_dir: Path, update_progress) -> int:
     """Symlink or download images for processing. Returns total source size.
 
@@ -471,7 +484,6 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     )
             
             # Setup directories
-            base_dir = project_root_dir(project_id)
             input_dir = processing_images_dir(project_id)
             output_dir = processing_work_dir(project_id)
             legacy_output_dir = legacy_processing_work_dir(project_id)
@@ -706,6 +718,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 str(target_ortho_crs),
                 region=project.region,
                 title=project.title,
+                unique_suffix=str(job.id),
             )
             orthomosaic_cog_path = output_dir / Path(result_object_name).name
 
@@ -777,7 +790,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     except Exception as del_err:
                         print(f"Failed to delete result.tif: {del_err}")
 
-                update_progress(92, "결과물 저장 중...")
+                update_progress(92, "결과물 COG 검증 중...")
 
                 if _is_cog_in_target_crs(cog_path, str(target_ortho_crs)):
                     print(
@@ -788,17 +801,16 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     shutil.move(str(cog_path), str(orthomosaic_cog_path))
                 else:
                     _warp_to_cog(str(cog_path), str(orthomosaic_cog_path), str(target_ortho_crs))
-                result_path = _upload_cog_to_storage(orthomosaic_cog_path, result_object_name, storage)
-                if not is_local_storage:
-                    # MinIO: COG를 output/으로 이동 (체크섬/bounds 추출용)
-                    final_output_dir = base_dir / "output"
-                    final_output_dir.mkdir(parents=True, exist_ok=True)
-                    final_cog_path = final_output_dir / Path(result_object_name).name
-                    shutil.move(str(orthomosaic_cog_path), str(final_cog_path))
-                    result_path = final_cog_path
+
+                update_progress(94, "체크섬 및 영역 정보 확인 중...")
+                checksum, file_size, bounds_wkt = _validate_and_publish_cog(
+                    orthomosaic_cog_path,
+                    result_object_name,
+                    storage,
+                )
 
                 # Clean up intermediate files in processing/.work/
-                update_progress(93, "중간 파일 정리 중...")
+                update_progress(96, "중간 파일 정리 중...")
                 files_to_keep = {"status.json"}
 
                 for item in output_dir.iterdir():
@@ -824,31 +836,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             except Exception as cog_error:
                 print(f"COG conversion failed: {cog_error}")
                 raise
-            phase_timings.append(("COG/저장/정리", time.time() - t0))
+            phase_timings.append(("COG 검증/저장/정리", time.time() - t0))
 
-            # Phase 4: 체크섬 계산 + 영역 정보 추출
-            t0 = time.time()
-            update_progress(95, "체크섬 계산 중...")
-            checksum = calculate_file_checksum(str(result_path))
-            file_size = os.path.getsize(result_path)
-
-            update_progress(96, "프로젝트 영역 정보 추출 중...")
-            bounds_wkt = get_orthophoto_bounds(str(result_path))
-
-            # MinIO 모드에서만 로컬 COG 삭제 (로컬 모드에서는 스토리지 자체가 로컬)
-            if not is_local_storage and result_path.exists():
-                try:
-                    result_path.unlink()
-                    output_parent = result_path.parent
-                    if output_parent.exists() and not any(output_parent.iterdir()):
-                        output_parent.rmdir()
-                    print(f"Deleted local COG after upload: {result_path}")
-                except Exception as del_err:
-                    print(f"Failed to delete local COG: {del_err}")
-
-            phase_timings.append(("체크섬/영역추출", time.time() - t0))
-
-            # Phase 5: 영역 정보 업데이트
+            # Phase 4: 영역 정보 업데이트
             t0 = time.time()
             update_progress(98, "프로젝트 영역 정보 업데이트 중...")
             if bounds_wkt:

@@ -116,22 +116,30 @@ def orthomosaic_key(
     when: datetime | None = None,
     region: str | None = None,
     title: str | None = None,
+    unique_suffix: str | None = None,
 ) -> str:
     """Compute the orthomosaic storage key / export filename.
 
     New outputs always live below a project UUID prefix so two projects with
-    the same region/title cannot overwrite one another. Existing output keys
-    stored in the database remain readable; this function only controls new
-    writes.
+    the same region/title cannot overwrite one another. Callers that can
+    regenerate a project should provide a job-specific ``unique_suffix`` so a
+    failed replacement can never destroy the previously completed output.
+    Existing output keys stored in the database remain readable; this function
+    only controls new writes.
     """
     prefix = orthomosaic_project_prefix(project_id)
+    safe_suffix = sanitize_filename_component(unique_suffix, max_len=64)
     safe_title = sanitize_filename_component(title)
     if safe_title:
         safe_region = sanitize_filename_component(region)
         basename = f"{safe_region}_{safe_title}" if safe_region else safe_title
+        if safe_suffix:
+            basename = f"{basename}_{safe_suffix}"
         return f"{prefix}{basename}.tif"
 
     stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    if safe_suffix:
+        stamp = f"{stamp}_{safe_suffix}"
     return (
         f"{prefix}orthomosaic_{normalize_crs_label(target_crs)}_{stamp}.tif"
     )

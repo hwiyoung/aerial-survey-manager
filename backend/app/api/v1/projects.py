@@ -46,6 +46,7 @@ from app.services.quota import ensure_organization_quota
 from app.utils.geo import get_region_for_point_db
 from app.utils.audit import log_audit_event
 from app.utils.storage_paths import (
+    orthomosaic_project_prefix,
     processing_exclusion_path,
     processing_images_dir,
     processing_metadata_path,
@@ -217,11 +218,14 @@ def _cleanup_project_storage(project_id: UUID, original_paths: list[str], ortho_
             except Exception as e:
                 print(f"Failed to delete uploaded file {path}: {e}")
 
+        # Processing outputs are versioned per job. Delete the whole project
+        # prefix so project removal cannot leave historical COG files behind.
         if ortho_path:
             try:
                 storage.delete_object(ortho_path)
             except Exception as e:
-                print(f"Failed to delete orthomosaic {ortho_path}: {e}")
+                print(f"Failed to delete current orthomosaic {ortho_path}: {e}")
+        storage.delete_recursive(orthomosaic_project_prefix(project_id))
 
         storage.delete_recursive(f"projects/{project_id}/")
     except Exception as e:
