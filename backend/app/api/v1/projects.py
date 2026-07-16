@@ -1,4 +1,5 @@
 """Project API endpoints."""
+import asyncio
 import os
 import re
 import logging
@@ -1712,7 +1713,6 @@ _last_refresh_ts: float = 0  # Global rate limit for refresh=true requests
 
 def _get_storage_lock():
     """Lazy-init asyncio.Lock (thread-safe, must be called inside event loop)."""
-    import asyncio
     global _storage_cache_lock
     if _storage_cache_lock is None:
         with _storage_cache_lock_init:

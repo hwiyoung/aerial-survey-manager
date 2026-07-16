@@ -212,22 +212,14 @@ export function useProcessingStatus(projectId) {
     }, [projectId]);
 
     const startProcessing = useCallback(async (options, force = false) => {
-        try {
-            const job = await api.startProcessing(projectId, options, force);
-            setStatus(job);
-            return job;
-        } catch (err) {
-            throw err;
-        }
+        const job = await api.startProcessing(projectId, options, force);
+        setStatus(job);
+        return job;
     }, [projectId]);
 
     const cancelProcessing = useCallback(async () => {
-        try {
-            await api.cancelProcessing(projectId);
-            setStatus(prev => ({ ...prev, status: 'cancelled' }));
-        } catch (err) {
-            throw err;
-        }
+        await api.cancelProcessing(projectId);
+        setStatus(prev => ({ ...prev, status: 'cancelled' }));
     }, [projectId]);
 
     return {

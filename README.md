@@ -111,6 +111,17 @@ PROCESSING_DATA_PATH=./data/projects
 
 > 전체 환경변수는 `.env.example` 참조
 
+## Development checks
+
+```bash
+npm run lint
+npm run build
+
+python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+pytest -q backend/tests
+ruff check --no-cache backend/app backend/tests backend/scripts
+```
+
 ## Documentation
 
 | 문서 | 대상 | 설명 |

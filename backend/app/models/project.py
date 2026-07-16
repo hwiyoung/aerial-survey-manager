@@ -1,6 +1,8 @@
 """Project and related models."""
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -19,6 +21,10 @@ from geoalchemy2 import Geometry
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.group import ProjectGroup
+    from app.models.user import Organization, ProjectPermission, User
 
 
 class Project(Base):

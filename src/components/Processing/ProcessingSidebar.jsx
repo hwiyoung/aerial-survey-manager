@@ -918,7 +918,7 @@ export default function ProcessingSidebar({
                     const hasEnabledEngine = processingEngines.some((engine) => engine.enabled);
                     const isDisabled = !hasEnabledEngine || !hasImages || uploadsInProgress || isProcessingNow || !selectedPresetId || !isSelectedEngineEnabled;
 
-                    let buttonText = '처리 시작';
+                    let buttonText;
                     if (frontendUploading) buttonText = `업로드 중... (${activeUploads.filter(u => u.status === 'completed').length}/${activeUploads.length})`;
                     else if (backendUploading) buttonText = `업로드 중... (${uploadCompleted}/${totalImages})`;
                     else if (!hasImages) buttonText = '업로드된 이미지 없음';

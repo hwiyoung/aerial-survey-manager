@@ -1,0 +1,11 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [
+    "backend/alembic/versions",
+]
+
+[tool.ruff.lint]
+# Start with correctness checks that can reveal runtime failures. Style and
+# unused-code enforcement can be enabled gradually as large modules are split.
+select = ["E9", "F63", "F7", "F82"]
