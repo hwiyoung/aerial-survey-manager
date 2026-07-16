@@ -209,6 +209,9 @@ docker compose logs -f celery-worker --tail=50
 
 ## 배포 패키지 생성 (개발 PC에서)
 
+아래 절차는 소스 저장소에서만 실행합니다. 생성된 설치 패키지에는
+빌드 전용 스크립트와 소스 코드가 포함되지 않습니다.
+
 ```bash
 ./scripts/build-release.sh v1.0.3
 ```
@@ -419,7 +422,7 @@ sudo ./scripts/pin-gpu-stack.sh --unhold
 | 스크립트 | 용도 | 실행 권한 |
 |----------|------|----------|
 | `install.sh` | 신규 설치 (GPU 검증 포함) | 일반 |
-| `build-release.sh` | 배포 패키지 생성 | 일반 |
+| `build-release.sh` | 배포 패키지 생성 (소스 저장소 전용, 설치 패키지 미포함) | 일반 |
 | `reload-env.sh` | .env 변경 후 서비스 반영 | 일반 |
 | `inject-cog.sh` | 외부 정사영상 COG 삽입 | 일반 |
 | `cleanup-storage.sh` | 중복 파일 정리 (dry-run 기본) | 일반 |

@@ -197,6 +197,10 @@ cp init.sql "$RELEASE_DIR/"
 
 # scripts 디렉토리 복사
 cp -r scripts "$RELEASE_DIR/"
+# 소스 트리와 Dockerfile이 필요한 빌드 전용 도구는 설치 패키지에서 제외한다.
+rm -f \
+    "$RELEASE_DIR/scripts/build-release.sh" \
+    "$RELEASE_DIR/scripts/check-release-parity.sh"
 
 # docs 복사
 mkdir -p "$RELEASE_DIR/docs"

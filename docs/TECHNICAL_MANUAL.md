@@ -705,7 +705,7 @@ deactivate_engine_license.py
 3. 이미지 태깅 (`aerial-survey-manager:{service}-{version}`)
 4. docker-compose.prod.yml → docker-compose.yml 변환 (Python: build → image 치환)
 5. Docker 이미지 tar.gz 저장
-6. 권역/도엽 GeoJSON, SSL 인증서, 스크립트 복사
+6. 권역/도엽 GeoJSON, SSL 인증서, 설치·운영 스크립트 복사
 7. 전체 패키지 tar.gz 생성
 
 ### 5.4 scripts/install.sh

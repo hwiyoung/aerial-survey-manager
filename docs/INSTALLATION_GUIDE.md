@@ -143,6 +143,9 @@ curl http://127.0.0.1:18100/health
 scripts/build-release.sh vYYYYMMDD
 ```
 
+이 명령은 소스 저장소가 있는 개발 PC에서만 사용합니다. 생성된 설치
+패키지에는 `build-release.sh`와 `check-release-parity.sh`를 포함하지 않습니다.
+
 릴리스를 만드는 저장소에도 원본 IO 파일을 `./data/io.csv`로 준비합니다.
 빌드 스크립트가 이를 배포패키지의 같은 상대경로에 포함합니다.
 
