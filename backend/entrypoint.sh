@@ -66,8 +66,19 @@ elif [ -f "scripts/seed_camera_models.py" ]; then
 fi
 
 if [ -n "$SEED_SCRIPT" ]; then
-    echo "  - Syncing camera models from io.csv..."
-    python "$SEED_SCRIPT" --sync 2>/dev/null || echo "    (camera model sync skipped; io.csv may be missing)"
+    CAMERA_IO_ACTIVE_PATH="${CAMERA_IO_CONFIG_PATH:-/data/config/io.csv}"
+    CAMERA_IO_PACKAGE_PATH="${CAMERA_IO_SOURCE_PATH:-/app/data/io.csv}"
+    if [ ! -f "$CAMERA_IO_ACTIVE_PATH" ] && [ -f "$CAMERA_IO_PACKAGE_PATH" ]; then
+        mkdir -p "$(dirname "$CAMERA_IO_ACTIVE_PATH")"
+        cp "$CAMERA_IO_PACKAGE_PATH" "$CAMERA_IO_ACTIVE_PATH" \
+            || echo "    (persistent io.csv initialization failed; packaged source will be used)"
+    fi
+    if [ ! -f "$CAMERA_IO_ACTIVE_PATH" ]; then
+        CAMERA_IO_ACTIVE_PATH="$CAMERA_IO_PACKAGE_PATH"
+    fi
+    echo "  - Syncing camera models from persistent io.csv..."
+    python "$SEED_SCRIPT" --file "$CAMERA_IO_ACTIVE_PATH" --sync 2>/dev/null \
+        || echo "    (camera model sync skipped; io.csv may be missing or invalid)"
 fi
 
 # 권역 데이터 시드 (GeoJSON 파일이 있는 경우)

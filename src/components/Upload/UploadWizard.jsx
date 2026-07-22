@@ -7,7 +7,6 @@ import proj4 from 'proj4';
 import api, { formatUserError } from '../../api/client';
 import ServerFileBrowser from './ServerFileBrowser';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
-import { useAuth } from '../../contexts/AuthContext';
 
 const createDefaultEoConfig = () => ({
     delimiter: 'space',
@@ -654,7 +653,6 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
 }
 
 export default function UploadWizard({ isOpen, onClose, onComplete }) {
-    const { organizationId } = useAuth();
     const [step, setStep] = useState(1);
     const [imageCount, setImageCount] = useState(0);
     const [eoFileName, setEoFileName] = useState(null);
@@ -663,6 +661,18 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const [isAddingCamera, setIsAddingCamera] = useState(false);
     const [editingCameraId, setEditingCameraId] = useState(null);
     const [newCamera, setNewCamera] = useState(createDefaultCameraModel);
+    const [ioEditor, setIoEditor] = useState({
+        isOpen: false,
+        isLoading: false,
+        isSaving: false,
+        content: '',
+        originalContent: '',
+        sha256: '',
+        encoding: '',
+        cameraBlockCount: 0,
+        modelCount: 0,
+        backupCount: 0,
+    });
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
     const [autoProcess, setAutoProcess] = useState(true);
@@ -686,13 +696,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
         return cameraModels.find(c => c.id === cameraModelId) || { focal_length: 0, sensor_width: 0, sensor_height: 0, pixel_size: 0 };
     }, [cameraModelId, cameraModels]);
 
-    const canManageSelectedCamera = Boolean(
-        selectedCamera?.id
-        && selectedCamera.is_custom
-        && organizationId
-        && selectedCamera.organization_id === organizationId
-    );
-    const canCreateCamera = Boolean(organizationId);
+    const canManageSelectedCamera = Boolean(selectedCamera?.id && selectedCamera.is_custom);
 
     const cameraModelCounts = useMemo(() => {
         const standard = cameraModels.filter(c => !c.is_custom).length;
@@ -730,6 +734,71 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
             is_custom: Boolean(selectedCamera.is_custom),
         });
         setIsAddingCamera(true);
+    };
+
+    const closeIoEditor = () => {
+        if (ioEditor.isSaving) return;
+        setIoEditor(prev => ({ ...prev, isOpen: false }));
+    };
+
+    const openIoEditor = async () => {
+        setIoEditor(prev => ({ ...prev, isOpen: true, isLoading: true }));
+        try {
+            const document = await api.getCameraIoConfig();
+            setIoEditor({
+                isOpen: true,
+                isLoading: false,
+                isSaving: false,
+                content: document.content || '',
+                originalContent: document.content || '',
+                sha256: document.sha256 || '',
+                encoding: document.encoding || '',
+                cameraBlockCount: document.camera_block_count || 0,
+                modelCount: document.model_count || 0,
+                backupCount: document.backup_count || 0,
+            });
+        } catch (error) {
+            setIoEditor(prev => ({ ...prev, isOpen: false, isLoading: false }));
+            alert(formatUserError(error, '표준 IO 설정을 불러오지 못했습니다.'));
+        }
+    };
+
+    const handleEditCamera = () => {
+        if (selectedCamera?.is_custom) {
+            openEditCameraForm();
+        } else {
+            void openIoEditor();
+        }
+    };
+
+    const handleSaveIoConfig = async () => {
+        if (!ioEditor.content || ioEditor.content === ioEditor.originalContent) return;
+        if (!window.confirm('표준 IO를 저장하고 카메라 모델 DB를 동기화하시겠습니까?')) return;
+        setIoEditor(prev => ({ ...prev, isSaving: true }));
+        try {
+            const result = await api.updateCameraIoConfig(ioEditor.content, ioEditor.sha256);
+            const models = await api.getCameraModels();
+            setCameraModels(models);
+            setCameraModelId(current => (
+                models.some(model => model.id === current) ? current : (models[0]?.id || '')
+            ));
+            setIoEditor({
+                isOpen: false,
+                isLoading: false,
+                isSaving: false,
+                content: '',
+                originalContent: '',
+                sha256: result.sha256 || '',
+                encoding: result.encoding || '',
+                cameraBlockCount: result.camera_block_count || 0,
+                modelCount: result.model_count || 0,
+                backupCount: result.backup_count || 0,
+            });
+            alert(`표준 IO 저장과 DB 동기화가 완료되었습니다.\n원본 백업: ${result.backup_created || '생성됨'}`);
+        } catch (error) {
+            setIoEditor(prev => ({ ...prev, isSaving: false }));
+            alert(formatUserError(error, '표준 IO 설정을 저장하지 못했습니다.'));
+        }
     };
 
     const handleSaveCamera = async () => {
@@ -846,13 +915,14 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setIsAddingCamera(false);
             setEditingCameraId(null);
             setNewCamera(createDefaultCameraModel());
+            setIoEditor(prev => ({ ...prev, isOpen: false, isLoading: false, isSaving: false }));
         }
     }, [isOpen]);
 
     // ESC key handler to close modal
     useEffect(() => {
         const handleKeyDown = (e) => {
-            if (e.key === 'Escape' && !isFinishing && !showMismatchWarning && !showFileBrowser && !showEoFileBrowser) {
+            if (e.key === 'Escape' && !isFinishing && !showMismatchWarning && !showFileBrowser && !showEoFileBrowser && !ioEditor.isOpen) {
                 if (imageCount > 0 || eoFileName) {
                     if (window.confirm('업로드를 취소하시겠습니까? 모든 선택이 초기화됩니다.')) {
                         onClose();
@@ -866,7 +936,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             document.addEventListener('keydown', handleKeyDown);
         }
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, imageCount, eoFileName, isFinishing, showMismatchWarning, showFileBrowser, showEoFileBrowser, onClose]);
+    }, [isOpen, imageCount, eoFileName, isFinishing, showMismatchWarning, showFileBrowser, showEoFileBrowser, ioEditor.isOpen, onClose]);
 
     const handleServerSelect = (result) => {
         const imageFilePaths = result.filePaths || [];
@@ -1349,7 +1419,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                             <div className="space-y-1">
                                 <h4 className="text-xl font-bold text-slate-800">3. 카메라 모델 (IO) 선택</h4>
                                 <div className="text-xs text-slate-500">
-                                    io.csv 기본 모델 {cameraModelCounts.standard}개 · 조직 공유 모델 {cameraModelCounts.custom}개
+                                    io.csv 표준 모델 {cameraModelCounts.standard}개 · 추가 모델 {cameraModelCounts.custom}개
                                 </div>
                             </div>
                             <div className="max-w-sm mx-auto space-y-6 w-full pb-4">
@@ -1416,7 +1486,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                 {Array.isArray(cameraModels) && cameraModels.length > 0 ? (
                                                     cameraModels.map(c => (
                                                         <option key={c.id} value={c.id}>
-                                                            {c.name} {c.is_custom ? '(조직 공유)' : '(표준)'}
+                                                            {c.name} {c.is_custom ? '(추가)' : '(표준)'}
                                                         </option>
                                                     ))
                                                 ) : (
@@ -1426,17 +1496,17 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
 	                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
 	                                        </div>
                                             <div className="grid grid-cols-3 gap-2">
-                                                <button onClick={openAddCameraForm} disabled={!canCreateCamera} title={!canCreateCamera ? '조직에 소속된 사용자만 공유 모델을 만들 수 있습니다.' : ''} className="min-h-11 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                <button onClick={openAddCameraForm} className="min-h-11 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs">
                                                     <FilePlus size={16} /> 추가
                                                 </button>
-                                                <button onClick={openEditCameraForm} disabled={!canManageSelectedCamera} className="min-h-11 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
-                                                    <Pencil size={15} /> 수정
+                                                <button onClick={handleEditCamera} disabled={!selectedCamera?.id} className="min-h-11 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                    <Pencil size={15} /> {selectedCamera?.is_custom ? '수정' : '표준 IO 관리'}
                                                 </button>
                                                 <button onClick={handleDeleteCamera} disabled={!canManageSelectedCamera} className="min-h-11 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
                                                     <Trash2 size={15} /> 삭제
                                                 </button>
                                             </div>
-                                            <p className="text-xs text-slate-500">추가한 모델은 같은 조직의 사용자와 공유됩니다.</p>
+                                            <p className="text-xs text-slate-500">표준 모델 수정은 원본 백업 후 io.csv와 DB에 함께 반영됩니다.</p>
 	                                    </div>
 	                                )}
 
@@ -1471,7 +1541,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 </div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">입력 이미지</span><div className="text-right"><span className="text-xl font-bold text-slate-800">{imageCount}</span><span className="text-sm text-slate-400 ml-1">장</span></div></div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoCrsValues[0] || eoConfig.crs} · 유효 {effectiveEoLineCount}줄{excludedEoImageKeys.size > 0 ? ` / 제외 ${excludedEoImageKeys.size}개` : ''}{hasDuplicateEoImages ? ` / 원본 ${eoLineCount}줄` : ''}</div></div></div>
-                                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{selectedCamera.name ? `${selectedCamera.name} ${selectedCamera.is_custom ? '(조직 공유)' : '(표준)'}` : '-'}</span></div>
+                                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{selectedCamera.name ? `${selectedCamera.name} ${selectedCamera.is_custom ? '(추가)' : '(표준)'}` : '-'}</span></div>
                                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
                                 <label className={`flex items-center gap-3 pt-4 border-t border-slate-100 cursor-pointer ${!eoFileName ? 'opacity-50 cursor-not-allowed' : ''}`}>
                                     <input
@@ -1536,6 +1606,64 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 </div>
             </div>
         </div>
+        {ioEditor.isOpen && (
+            <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm">
+                <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+                    <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+                        <div>
+                            <h3 className="text-xl font-bold text-slate-800">표준 카메라 IO 관리</h3>
+                            <p className="mt-1 text-sm text-slate-500">
+                                저장 전 형식과 필수값을 검증하고, 원본 백업과 DB 동기화를 함께 수행합니다.
+                            </p>
+                        </div>
+                        <button onClick={closeIoEditor} disabled={ioEditor.isSaving} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40">
+                            <X size={20} />
+                        </button>
+                    </div>
+                    {ioEditor.isLoading ? (
+                        <div className="flex min-h-[420px] items-center justify-center gap-3 text-slate-500">
+                            <RefreshCw size={22} className="animate-spin" /> 표준 IO를 불러오는 중...
+                        </div>
+                    ) : (
+                        <>
+                            <div className="flex flex-wrap gap-2 border-b border-slate-100 bg-slate-50 px-6 py-3 text-xs text-slate-600">
+                                <span className="rounded bg-white px-2 py-1">인코딩 {ioEditor.encoding}</span>
+                                <span className="rounded bg-white px-2 py-1">카메라 블록 {ioEditor.cameraBlockCount}개</span>
+                                <span className="rounded bg-white px-2 py-1">DB 모델 예상 {ioEditor.modelCount}개</span>
+                                <span className="rounded bg-white px-2 py-1">보관 백업 {ioEditor.backupCount}개</span>
+                            </div>
+                            <div className="min-h-0 flex-1 p-6">
+                                <textarea
+                                    value={ioEditor.content}
+                                    onChange={(event) => setIoEditor(prev => ({ ...prev, content: event.target.value }))}
+                                    spellCheck={false}
+                                    className="h-[55vh] min-h-[360px] w-full resize-none rounded-xl border border-slate-300 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                                    aria-label="표준 카메라 IO CSV 내용"
+                                />
+                            </div>
+                            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
+                                <p className="text-xs text-slate-500">
+                                    `$CAMERA` 블록, 모델명, 초점거리, 센서 픽셀 크기와 픽셀 크기는 필수입니다.
+                                </p>
+                                <div className="flex gap-2">
+                                    <button onClick={closeIoEditor} disabled={ioEditor.isSaving} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-white disabled:opacity-40">
+                                        취소
+                                    </button>
+                                    <button
+                                        onClick={handleSaveIoConfig}
+                                        disabled={ioEditor.isSaving || !ioEditor.content || ioEditor.content === ioEditor.originalContent}
+                                        className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        {ioEditor.isSaving && <RefreshCw size={16} className="animate-spin" />}
+                                        {ioEditor.isSaving ? '검증·동기화 중...' : '백업 후 저장'}
+                                    </button>
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        )}
         <ServerFileBrowser
             isOpen={showFileBrowser}
             onClose={() => setShowFileBrowser(false)}

@@ -1,4 +1,5 @@
 """Camera model API endpoints."""
+import asyncio
 from typing import List
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import get_current_user
 from app.database import get_db
+from app.errors import AppError
 from app.models.project import CameraModel, Image
 from app.models.user import User
 from app.schemas.project import CameraModelCreate, CameraModelResponse
@@ -19,8 +21,23 @@ from app.services.camera_models import (
     custom_model_organization_id,
     normalize_camera_model_name,
 )
+from app.services.camera_io import (
+    backup_and_replace_io,
+    cleanup_io_backups,
+    prepare_io_update,
+    read_io_document,
+    restore_io,
+    sync_standard_camera_models,
+)
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/camera-models", tags=["Camera Models"])
+io_update_lock = asyncio.Lock()
+
+
+class CameraIoUpdateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2_000_000)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def _organization_required_error(exc: ValueError) -> HTTPException:
@@ -87,6 +104,69 @@ async def list_camera_models(
     query = query.order_by(CameraModel.is_custom, func.lower(CameraModel.name))
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/io-config")
+async def get_camera_io_config(
+    _current_user: User = Depends(get_current_user),
+):
+    """Return the persistent standard IO document without exposing host paths."""
+    try:
+        return read_io_document()
+    except ValueError as exc:
+        raise AppError("CAMERA_IO_PARSE_FAILED", internal_detail=exc) from exc
+    except OSError as exc:
+        raise AppError("FILE_READ_FAILED", internal_detail=exc) from exc
+
+
+@router.put("/io-config")
+async def update_camera_io_config(
+    request: CameraIoUpdateRequest,
+    _current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate, back up, atomically save, and synchronize the standard IO catalog."""
+    async with io_update_lock:
+        try:
+            prepared = prepare_io_update(request.content, request.expected_sha256)
+        except FileExistsError as exc:
+            raise AppError("RESOURCE_STATE_CONFLICT", internal_detail=exc) from exc
+        except (UnicodeError, ValueError) as exc:
+            raise AppError("CAMERA_IO_PARSE_FAILED", internal_detail=exc) from exc
+        except OSError as exc:
+            raise AppError("CAMERA_IO_SAVE_FAILED", internal_detail=exc) from exc
+
+        try:
+            backup_path = backup_and_replace_io(prepared)
+        except OSError as exc:
+            raise AppError("CAMERA_IO_SAVE_FAILED", internal_detail=exc) from exc
+
+        try:
+            sync_result = await sync_standard_camera_models(db, prepared["entries"])
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            try:
+                restore_io(prepared)
+            except OSError as restore_error:
+                raise AppError(
+                    "CAMERA_IO_SYNC_FAILED",
+                    internal_detail={"sync": repr(exc), "restore": repr(restore_error)},
+                ) from exc
+            raise AppError("CAMERA_IO_SYNC_FAILED", internal_detail=exc) from exc
+
+        try:
+            cleanup_io_backups()
+        except OSError:
+            pass
+        document = read_io_document()
+        document.update(
+            {
+                "backup_created": backup_path.name,
+                "sync": sync_result,
+            }
+        )
+        return document
 
 
 @router.post("", response_model=CameraModelResponse, status_code=status.HTTP_201_CREATED)

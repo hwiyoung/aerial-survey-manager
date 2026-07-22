@@ -72,6 +72,22 @@ docker compose exec worker-engine ls /data/processing/{project-id}/images/metada
 
 ---
 
+## 표준 카메라 IO 관리
+
+프로젝트 등록의 카메라 선택 단계에서 표준 모델을 선택한 뒤 **표준 IO 관리**를
+누르면 운영 `io.csv` 원문을 편집할 수 있습니다. 저장 시 형식 검증, 원본 백업,
+원자적 파일 교체와 DB 동기화가 한 흐름으로 수행됩니다.
+
+- 운영 파일: `${CONFIG_DATA_PATH}/io.csv` (기본 `AERIAL_DATA_ROOT/config/io.csv`)
+- 백업: `${CONFIG_DATA_PATH}/backups/io.<시각>.<checksum>.csv`
+- 기본 보존: 최근 20개
+- DB 동기화 실패: 직전 `io.csv` 자동 복원
+
+동시에 다른 화면에서 저장해 체크섬이 달라진 경우에는 기존 화면 내용을
+덮어쓰지 않습니다. 표준 IO 관리 창을 닫고 최신 내용을 다시 불러온 뒤 수정하세요.
+
+---
+
 ## 처리 엔진 라이선스 관리
 
 ### 정상 동작

@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     PROCESSING_ERROR_BUNDLE_PROJECT_LIMIT: int = 20
     PROCESSING_ERROR_BUNDLE_TOTAL_MAX_BYTES: int = 20 * 1024 * 1024 * 1024
     PROCESSING_ERROR_BUNDLE_LOG_TAIL_BYTES: int = 5 * 1024 * 1024
+    CAMERA_IO_SOURCE_PATH: str = "/app/data/io.csv"
+    CAMERA_IO_CONFIG_PATH: str = "/data/config/io.csv"
+    CAMERA_IO_BACKUP_COUNT: int = 20
 
     # MinIO/S3 (only used when STORAGE_BACKEND=minio)
     MINIO_ENDPOINT: str = "localhost:9000"

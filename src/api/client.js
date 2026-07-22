@@ -443,6 +443,17 @@ class ApiClient {
         return this.request('/camera-models');
     }
 
+    async getCameraIoConfig() {
+        return this.request('/camera-models/io-config');
+    }
+
+    async updateCameraIoConfig(content, expectedSha256) {
+        return this.request('/camera-models/io-config', {
+            method: 'PUT',
+            body: JSON.stringify({ content, expected_sha256: expectedSha256 }),
+        });
+    }
+
     async createCameraModel(data) {
         return this.request('/camera-models', {
             method: 'POST',

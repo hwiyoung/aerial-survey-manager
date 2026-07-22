@@ -287,6 +287,7 @@ mkdir -p \
     "$RELEASE_DIR/data/minio" \
     "$RELEASE_DIR/data/projects" \
     "$RELEASE_DIR/data/orthomosaic" \
+    "$RELEASE_DIR/data/config" \
     "$RELEASE_DIR/data/backups" \
     "$RELEASE_DIR/data/regions"
 echo "    ✓ 운영 데이터와 DB 백업을 제외한 빈 디렉토리 생성 완료"
@@ -522,6 +523,7 @@ UNEXPECTED_RUNTIME_FILE=$(find \
     "$RELEASE_DIR/data/minio" \
     "$RELEASE_DIR/data/projects" \
     "$RELEASE_DIR/data/orthomosaic" \
+    "$RELEASE_DIR/data/config" \
     "$RELEASE_DIR/data/tiles" \
     -type f -print -quit)
 if [ -n "$UNEXPECTED_RUNTIME_FILE" ]; then

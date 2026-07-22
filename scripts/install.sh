@@ -335,6 +335,8 @@ setup_environment() {
     read -p "프로젝트/처리 데이터 경로 [$data_root/projects]: " processing_path
     processing_path=${processing_path:-$data_root/projects}
 
+    config_path="$data_root/config"
+
     read -p "로컬 스토리지 기준 경로 [$data_root]: " storage_path
     storage_path=${storage_path:-$data_root}
 
@@ -406,6 +408,7 @@ setup_environment() {
     upsert_env "AERIAL_CONTAINER_GID" "$(id -g)"
     upsert_env "AERIAL_DATA_ROOT" "$data_root"
     upsert_env "PROCESSING_DATA_PATH" "$processing_path"
+    upsert_env "CONFIG_DATA_PATH" "$config_path"
     upsert_env "LOCAL_STORAGE_PATH" "$storage_path"
     upsert_env "EXPORT_ROOT_PATH" "$export_path"
     upsert_env "AUTO_EXPORT_ENABLED" "false"
@@ -427,6 +430,7 @@ setup_environment() {
 
     # 저장소 디렉토리 생성
     mkdir -p "$processing_path"
+    mkdir -p "$config_path"
     mkdir -p "$storage_path"
     mkdir -p "$storage_path/projects"
     mkdir -p "$export_path"
@@ -525,6 +529,16 @@ start_services() {
         compose_file="docker-compose.prod.yml"
     fi
 
+    # 기존 .env를 유지한 업그레이드에서도 API UID가 쓸 수 있는 IO 설정 경로를
+    # Docker 시작 전에 호스트 사용자 권한으로 생성한다.
+    config_path_value=$(grep "^CONFIG_DATA_PATH=" .env 2>/dev/null | cut -d'=' -f2-)
+    if [ -z "$config_path_value" ]; then
+        data_root_value=$(grep "^AERIAL_DATA_ROOT=" .env 2>/dev/null | cut -d'=' -f2-)
+        data_root_value=${data_root_value:-./data}
+        config_path_value="$data_root_value/config"
+    fi
+    mkdir -p "$config_path_value"
+
     # 배포 패키지인지 확인 (images 디렉토리 존재)
     if [ -d "images" ]; then
         # 배포 패키지: 이미지 로드 확인
@@ -561,7 +575,7 @@ setup_mount_dependency() {
     mount_points=()
     root_device=$(df / 2>/dev/null | awk 'NR==2 {print $1}')
 
-    for key in AERIAL_DATA_ROOT LOCAL_STORAGE_PATH PROCESSING_DATA_PATH EXPORT_ROOT_PATH TILES_PATH MINIO_DATA_PATH; do
+    for key in AERIAL_DATA_ROOT LOCAL_STORAGE_PATH PROCESSING_DATA_PATH CONFIG_DATA_PATH EXPORT_ROOT_PATH TILES_PATH MINIO_DATA_PATH; do
         path=$(grep "^${key}=" .env | cut -d'=' -f2-)
         if [ -z "$path" ] || [[ ! "$path" = /* ]]; then
             continue

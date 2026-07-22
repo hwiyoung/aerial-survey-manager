@@ -206,6 +206,10 @@ for name, expected_targets in ro_service_targets.items():
 api_targets = volume_targets(api)
 if "/app/data" not in api_targets:
     failures.append("prod api: missing ./data or ./data/regions mount at /app/data")
+if "/data/config" not in api_targets or api_targets["/data/config"].get("read_only"):
+    failures.append("prod api: /data/config must be mounted read-write")
+if api_env.get("CAMERA_IO_CONFIG_PATH") != "/data/config/io.csv":
+    failures.append("prod api: CAMERA_IO_CONFIG_PATH must use /data/config/io.csv")
 
 if io_csv:
     if not Path(io_csv).is_file():
@@ -250,6 +254,8 @@ source_paths = [
     "backend/app/api/v1/processing.py",
     "backend/app/workers/tasks.py",
     "backend/app/services/processing_router.py",
+    "backend/app/services/camera_io.py",
+    "backend/app/api/v1/camera_models.py",
     "backend/app/models/project.py",
     "src/components/Processing/ProcessingSidebar.jsx",
     "src/components/Upload/UploadWizard.jsx",
