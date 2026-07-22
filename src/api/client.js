@@ -595,10 +595,28 @@ class ApiClient {
                 project_ids: projectIds,
                 sheet_ids: sheetIds,
                 scale: options.scale || 5000,
+                format: options.format || 'GeoTiff',
                 crs: options.crs || 'EPSG:5186',
                 gsd: options.gsd ? parseFloat(options.gsd) : null,
+                custom_filename: options.custom_filename || null,
             }),
         });
+    }
+
+    async getClipExportJob(jobId) {
+        return this.request(`/download/clip/jobs/${jobId}`);
+    }
+
+    async getClipExportHistory(limit = 10) {
+        return this.request(`/download/clip/jobs?limit=${encodeURIComponent(limit)}`);
+    }
+
+    async cancelClipExport(jobId) {
+        return this.request(`/download/clip/jobs/${jobId}/cancel`, { method: 'POST' });
+    }
+
+    async prepareClipExportDownload(jobId) {
+        return this.request(`/download/clip/jobs/${jobId}/download`, { method: 'POST' });
     }
 
     async mergeExport(projectIds, sheetId, options = {}) {

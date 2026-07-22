@@ -61,6 +61,7 @@ ERROR_SPECS: dict[str, ErrorSpec] = {
     "DATABASE_CONFLICT": ErrorSpec(409, "동시에 변경된 정보와 충돌했습니다.", "화면을 새로고침한 뒤 다시 시도해주세요.", True),
     "QUEUE_UNAVAILABLE": ErrorSpec(503, "작업 대기열에 연결할 수 없습니다.", "워커와 대기열 상태를 확인한 뒤 다시 시도해주세요.", True),
     "EXPORT_SOURCE_NOT_FOUND": ErrorSpec(404, "내보낼 정사영상을 찾을 수 없습니다.", "프로젝트 처리 완료 여부를 확인해주세요.", False),
+    "EXPORT_SOURCE_INVALID": ErrorSpec(422, "내보낼 정사영상이 올바른 COG가 아닙니다.", "정사영상을 다시 생성하거나 COG 상태를 확인해주세요.", False),
     "EXPORT_FORMAT_INVALID": ErrorSpec(422, "선택한 내보내기 설정을 사용할 수 없습니다.", "형식, 좌표계, 해상도를 확인해주세요.", False),
     "EXPORT_CONVERSION_FAILED": ErrorSpec(500, "내보내기 파일을 만들지 못했습니다.", "설정을 확인하고 다시 시도해주세요.", True),
     "EXPORT_ARCHIVE_FAILED": ErrorSpec(500, "다운로드 묶음을 만들지 못했습니다.", "잠시 후 다시 시도해주세요.", True),

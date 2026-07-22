@@ -6,6 +6,7 @@ from app.models.project import (
     ExteriorOrientation,
     CameraModel,
     ProcessingJob,
+    ClipExportJob,
     QCResult,
 )
 from app.models.preset import ProcessingPreset
@@ -20,6 +21,7 @@ __all__ = [
     "ExteriorOrientation",
     "CameraModel",
     "ProcessingJob",
+    "ClipExportJob",
     "QCResult",
     "ProcessingPreset",
     "ProjectGroup",

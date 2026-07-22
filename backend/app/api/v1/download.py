@@ -18,7 +18,7 @@ from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
 from app.models.user import User
-from app.models.project import Project, ProcessingJob
+from app.models.project import ClipExportJob, Project, ProcessingJob
 from app.auth.jwt import (
     PermissionChecker,
     apply_project_access_scope,
@@ -28,6 +28,8 @@ from app.auth.jwt import (
 from app.services.storage import get_storage
 from app.services.asset_tokens import create_asset_token, verify_asset_token
 from app.services.download_tokens import create_download_token, consume_download_token
+from app.errors import AppError, public_error_payload
+from app.services.clip_exports import FORMAT_SPECS, make_clip_filename, normalize_export_format
 from app.utils.checksum import calculate_file_checksum_async as calculate_file_checksum
 from app.utils.gdal import extract_gsd_and_crs as get_source_gsd_and_crs
 
@@ -1131,12 +1133,14 @@ async def get_prepared_download(
 # ── 도엽 클립/머지 API ──
 
 class ClipRequest(BaseModel):
-    """도엽 클립 내보내기 요청."""
+    """비동기 단일 결과 도엽 클립 내보내기 요청."""
     project_ids: List[UUID]
     sheet_ids: List[str]  # MAPIDCD_NO 목록
     scale: int = 5000
+    format: str = "GeoTiff"
     crs: str = "EPSG:5186"
     gsd: float | None = None
+    custom_filename: str | None = None
 
 
 class MergeRequest(BaseModel):
@@ -1222,115 +1226,213 @@ async def clip_export(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """도엽 단위로 정사영상을 클립하여 다운로드한다."""
+    """Queue one union clip and persist the exact sheet selection as history."""
     from app.api.v1.sheets import _get_index
+    from app.workers.tasks import prepare_clip_export
 
     if not request.project_ids or not request.sheet_ids:
-        raise HTTPException(status_code=400, detail="project_ids와 sheet_ids가 필요합니다.")
+        raise AppError("CLIP_SELECTION_REQUIRED")
+    if len(request.project_ids) > 20:
+        raise AppError("REQUEST_INVALID", internal_detail="more than 20 clip projects")
     if len(request.sheet_ids) > 50:
-        raise HTTPException(status_code=400, detail="최대 50개 도엽까지 선택 가능합니다.")
+        raise AppError("REQUEST_INVALID", internal_detail="more than 50 clip sheets")
+    if not re.fullmatch(r"EPSG:\d{4,5}", request.crs or ""):
+        raise AppError("EXPORT_FORMAT_INVALID", internal_detail="invalid clip CRS")
+    if request.gsd is not None and not (0 < request.gsd <= 10_000):
+        raise AppError("EXPORT_FORMAT_INVALID", internal_detail="invalid clip GSD")
+    try:
+        output_format = normalize_export_format(request.format)
+        if output_format == "ECW":
+            raise ValueError("ECW driver is unavailable in the packaged GDAL runtime")
+    except ValueError as exc:
+        raise AppError("EXPORT_FORMAT_INVALID", internal_detail=repr(exc)) from exc
 
     idx = _get_index(request.scale)
     if not idx["loaded"]:
-        raise HTTPException(status_code=404, detail=f"1:{request.scale} 도엽 데이터가 없습니다.")
+        raise AppError("RESOURCE_NOT_FOUND", internal_detail=f"missing sheet scale {request.scale}")
 
-    # 도엽 정보 조회
-    sheet_infos = {}
-    for sid in request.sheet_ids:
-        if sid in idx["sheets"]:
-            sheet_infos[sid] = idx["sheets"][sid]
-    if not sheet_infos:
-        raise HTTPException(status_code=404, detail="유효한 도엽이 없습니다.")
+    sheet_ids = list(dict.fromkeys(str(sheet_id) for sheet_id in request.sheet_ids))
+    sheet_bounds = []
+    for sheet_id in sheet_ids:
+        sheet = idx["sheets"].get(sheet_id)
+        if not sheet:
+            raise AppError("RESOURCE_NOT_FOUND", internal_detail=f"unknown sheet {sheet_id}")
+        sheet_bounds.append(list(sheet["b4326"]))
 
-    # 프로젝트 COG 파일 수집
-    projects_with_files = await _collect_export_files(
-        request.project_ids, "EPSG:4326", None, current_user, db,
+    sources = []
+    actual_project_ids = []
+    for project_id in dict.fromkeys(request.project_ids):
+        permission_checker = PermissionChecker("view")
+        if not await permission_checker.check(str(project_id), current_user, db):
+            continue
+        project = await _get_scoped_project(project_id, current_user, db)
+        if not project:
+            continue
+        ortho_path = project.ortho_path
+        if not ortho_path:
+            completed_job = await _get_latest_completed_job(db, project_id)
+            ortho_path = completed_job.result_path if completed_job else None
+        if ortho_path:
+            actual_project_ids.append(str(project.id))
+            sources.append({
+                "project_id": str(project.id),
+                "title": project.title,
+                "ortho_path": ortho_path,
+            })
+    if not sources:
+        raise AppError("EXPORT_SOURCE_NOT_FOUND")
+
+    base_filename = request.custom_filename or (
+        f"{sources[0]['title']}_ortho" if len(sources) == 1 else "bulk_export"
     )
-    if not projects_with_files:
-        raise HTTPException(status_code=404, detail="정사영상이 있는 프로젝트가 없습니다.")
-
-    # 클립 실행
-    clipped_files = []
-    temp_files = []
+    output_filename = make_clip_filename(base_filename, output_format)
+    job = ClipExportJob(
+        user_id=current_user.id,
+        project_ids=actual_project_ids,
+        sheet_ids=sheet_ids,
+        scale=request.scale,
+        output_format=output_format,
+        output_crs=request.crs,
+        output_gsd=request.gsd,
+        base_filename=base_filename,
+        output_filename=output_filename,
+        status="queued",
+        progress=0,
+        stage="대기 중",
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
     try:
-        for sid, sinfo in sheet_infos.items():
-            extent = _get_sheet_bounds_in_crs(sinfo, request.crs)
-            for item in projects_with_files:
-                source = item["file_path"]
-                clipped = _clip_to_extent(source, request.crs, extent, request.gsd)
-                if clipped:
-                    safe_title = re.sub(r'[^\w\-]', '_', item["project"].title)
-                    arcname = f"{sid}_{safe_title}.tif"
-                    clipped_files.append({"path": clipped, "arcname": arcname})
-                    temp_files.append(clipped)
+        task = prepare_clip_export.delay(str(job.id), sources, sheet_bounds)
+        job.celery_task_id = task.id
+        await db.commit()
+    except Exception as exc:
+        job.status = "error"
+        job.error_code = "QUEUE_UNAVAILABLE"
+        from app.errors import new_error_reference_id
+        job.error_reference = new_error_reference_id()
+        job.completed_at = datetime.utcnow()
+        await db.commit()
+        raise AppError("QUEUE_UNAVAILABLE", internal_detail=repr(exc)) from exc
 
-        if not clipped_files:
-            raise HTTPException(status_code=404, detail="클립 결과가 없습니다. 도엽이 정사영상 범위 밖일 수 있습니다.")
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "progress": job.progress,
+        "filename": job.output_filename,
+        "sheet_ids": sheet_ids,
+    }
 
-        # 단일 파일: TIF 직접, 다중: ZIP
-        if len(clipped_files) == 1:
-            cf = clipped_files[0]
-            file_size = os.path.getsize(cf["path"])
-            token = await create_download_token(
-                file_path=cf["path"],
-                filename=cf["arcname"],
-                media_type="image/tiff",
-                file_size=file_size,
-                organization_id=str(current_user.organization_id) if current_user.organization_id else None,
-                project_ids=[str(p["project"].id) for p in projects_with_files],
-                user_id=str(current_user.id),
-            )
-            return {"download_id": token, "filename": cf["arcname"], "file_size": file_size}
 
-        # ZIP 패킹
-        temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
-        temp_zip.close()
-        temp_files.append(temp_zip.name)
+def _serialize_clip_job(job: ClipExportJob) -> dict:
+    error = None
+    if job.error_code:
+        error = public_error_payload(job.error_code, job.error_reference)["error"]
+    return {
+        "job_id": str(job.id),
+        "project_ids": job.project_ids,
+        "sheet_ids": job.sheet_ids,
+        "scale": job.scale,
+        "format": job.output_format,
+        "crs": job.output_crs,
+        "gsd": job.output_gsd,
+        "filename": job.output_filename,
+        "status": job.status,
+        "progress": job.progress,
+        "stage": job.stage,
+        "file_size": job.result_size,
+        "error": error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "download_available": bool(
+            job.status == "completed" and job.result_path and os.path.isfile(job.result_path)
+        ),
+    }
 
-        with zipfile.ZipFile(temp_zip.name, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            for cf in clipped_files:
-                zf.write(cf["path"], cf["arcname"])
 
-        zip_size = os.path.getsize(temp_zip.name)
-        zip_filename = f"clip_{request.scale}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+@router.get("/clip/jobs")
+async def list_clip_export_jobs(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    safe_limit = max(1, min(50, limit))
+    result = await db.execute(
+        select(ClipExportJob)
+        .where(ClipExportJob.user_id == current_user.id)
+        .order_by(ClipExportJob.created_at.desc())
+        .limit(safe_limit)
+    )
+    return {"jobs": [_serialize_clip_job(job) for job in result.scalars().all()]}
 
-        # 개별 클립 파일 정리 (ZIP에 넣었으므로)
-        for cf in clipped_files:
-            try:
-                os.unlink(cf["path"])
-            except Exception:
-                pass
 
-        token = await create_download_token(
-            file_path=temp_zip.name,
-            filename=zip_filename,
-            media_type="application/zip",
-            file_size=zip_size,
-            organization_id=str(current_user.organization_id) if current_user.organization_id else None,
-            project_ids=[str(p["project"].id) for p in projects_with_files],
-            user_id=str(current_user.id),
+async def _get_user_clip_job(job_id: UUID, current_user: User, db: AsyncSession) -> ClipExportJob:
+    result = await db.execute(
+        select(ClipExportJob).where(
+            ClipExportJob.id == job_id,
+            ClipExportJob.user_id == current_user.id,
         )
-        return {"download_id": token, "filename": zip_filename, "file_size": zip_size}
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise AppError("RESOURCE_NOT_FOUND")
+    return job
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        # 임시 파일 정리
-        for tf in temp_files:
-            try:
-                os.unlink(tf)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"클립 처리 실패: {str(e)}")
-    finally:
-        # _collect_export_files에서 만든 temp 파일 정리
-        for item in projects_with_files:
-            fp = item["file_path"]
-            if fp.startswith(tempfile.gettempdir()):
-                try:
-                    os.unlink(fp)
-                except Exception:
-                    pass
+
+@router.get("/clip/jobs/{job_id}")
+async def get_clip_export_job(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return _serialize_clip_job(await _get_user_clip_job(job_id, current_user, db))
+
+
+@router.post("/clip/jobs/{job_id}/cancel")
+async def cancel_clip_export_job(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.workers.tasks import celery_app
+
+    job = await _get_user_clip_job(job_id, current_user, db)
+    if job.status in {"completed", "error", "cancelled"}:
+        return _serialize_clip_job(job)
+    job.status = "cancelled"
+    job.stage = "취소됨"
+    job.completed_at = datetime.utcnow()
+    await db.commit()
+    if job.celery_task_id:
+        celery_app.control.revoke(job.celery_task_id, terminate=False)
+    return _serialize_clip_job(job)
+
+
+@router.post("/clip/jobs/{job_id}/download")
+async def prepare_clip_export_download(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await _get_user_clip_job(job_id, current_user, db)
+    if job.status != "completed" or not job.result_path or not os.path.isfile(job.result_path):
+        raise AppError("RESOURCE_STATE_CONFLICT", internal_detail="clip result unavailable")
+    spec = FORMAT_SPECS[normalize_export_format(job.output_format)]
+    token = await create_download_token(
+        file_path=job.result_path,
+        filename=job.output_filename or make_clip_filename(job.base_filename, job.output_format),
+        media_type=spec["media_type"],
+        file_size=os.path.getsize(job.result_path),
+        project_ids=[str(project_id) for project_id in job.project_ids],
+        user_id=str(current_user.id),
+    )
+    return {
+        "download_id": token,
+        "filename": job.output_filename,
+        "file_size": os.path.getsize(job.result_path),
+    }
 
 
 @router.post("/merge")

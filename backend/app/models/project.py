@@ -266,6 +266,44 @@ class ProcessingJob(Base):
     project: Mapped["Project"] = relationship("Project", back_populates="processing_jobs")
 
 
+class ClipExportJob(Base):
+    """Durable history and progress for a union sheet clip export."""
+
+    __tablename__ = "clip_export_jobs"
+    __table_args__ = (
+        Index("ix_clip_export_jobs_user_created", "user_id", "created_at"),
+        Index("ix_clip_export_jobs_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    project_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    sheet_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    scale: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
+    output_format: Mapped[str] = mapped_column(String(20), nullable=False, default="GeoTiff")
+    output_crs: Mapped[str] = mapped_column(String(20), nullable=False, default="EPSG:5186")
+    output_gsd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    base_filename: Mapped[str] = mapped_column(String(160), nullable=False)
+    output_filename: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stage: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_reference: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    result_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    result_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=text("CURRENT_TIMESTAMP")
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class QCResult(Base):
     """Quality Control result for images."""
     

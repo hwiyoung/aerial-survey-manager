@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     IMAGE_PREVIEW_CACHE_PATH: str = "/data/config/image-previews"
     IMAGE_PREVIEW_CACHE_RETENTION_DAYS: int = 7
     IMAGE_PREVIEW_CACHE_MAX_BYTES: int = 1024 * 1024 * 1024
+    CLIP_EXPORT_RETENTION_DAYS: int = 7
 
     # MinIO/S3 (only used when STORAGE_BACKEND=minio)
     MINIO_ENDPOINT: str = "localhost:9000"

@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON, Im
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api, formatUserError } from '../../api/client';
-import { Layers, Eye, EyeOff, ChevronRight, X, Map as MapIcon, Grid3X3, Search, Download } from 'lucide-react';
+import { Layers, Eye, EyeOff, ChevronRight, X, Map as MapIcon, Grid3X3, Search } from 'lucide-react';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 import SheetGridOverlay from '../Project/SheetGridOverlay';
 
@@ -574,7 +574,6 @@ function SheetSearchFitBounds({ searchResult }) {
 function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) {
     const [searchInput, setSearchInput] = useState('');
     const [searchResult, setSearchResult] = useState(null);
-    const [isClipping, setIsClipping] = useState(false);
     // 축척 버튼을 즉시 표시 (API 응답 대기 없음), 큰 축척(넓은 영역)부터 정렬
     const [availableScales, setAvailableScales] = useState([
         { scale: 50000, label: '1:50000' },
@@ -608,23 +607,6 @@ function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) 
                 });
             }
         }).catch(() => setSearchResult({ found: false }));
-    };
-
-    const handleClip = async () => {
-        if (!selectedProject?.id || !sheetState?.selectedSheets?.length) return;
-        setIsClipping(true);
-        try {
-            const result = await api.clipExport([selectedProject.id], sheetState.selectedSheets, {
-                scale: sheetState.scale || 5000,
-                crs: 'EPSG:5186',
-                gsd: selectedProject.result_gsd || null,
-            });
-            api.triggerDirectDownload(result.download_id);
-        } catch (err) {
-            alert('도엽 클립 실패: ' + formatUserError(err));
-        } finally {
-            setIsClipping(false);
-        }
     };
 
     // 좌상단→우하단 정렬: 위도 내림차순(위→아래), 같은 행이면 경도 오름차순(왼→오른)
@@ -750,7 +732,7 @@ function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) 
                 </div>
             )}
 
-            {/* 선택된 도엽 + 내보내기 버튼 */}
+            {/* 선택된 도엽 */}
             {selectedSheets.length > 0 && (
                 <div className="p-3">
                     <label className="text-[10px] font-bold text-slate-400 block mb-1">
@@ -775,14 +757,11 @@ function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) 
                         </p>
                     )}
 
-                    <button
-                        onClick={handleClip}
-                        disabled={isClipping || !hasOrtho}
-                        className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
-                    >
-                        <Download size={13} />
-                        {isClipping ? '클립 중...' : `클립 (${selectedSheets.length})`}
-                    </button>
+                    {hasOrtho && (
+                        <p className="text-[10px] text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1">
+                            클립 파일 생성은 프로젝트의 내보내기 창에서 진행합니다.
+                        </p>
+                    )}
                 </div>
             )}
         </div>

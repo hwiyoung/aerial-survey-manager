@@ -128,8 +128,187 @@ celery_app.conf.update(
         "app.workers.tasks.delete_source_images": {"queue": "celery"},
         "app.workers.tasks.inject_external_cog": {"queue": "celery"},
         "app.workers.tasks.inspect_worker_gpu": {"queue": PROCESSING_ENGINE_QUEUE},
+        "app.workers.tasks.prepare_clip_export": {"queue": "celery"},
     },
 )
+
+
+def _update_clip_export_job(job_id: str, **values) -> str | None:
+    """Update a clip job and return its current status."""
+
+    from app.models.project import ClipExportJob
+    from app.utils.db import sync_db_session
+
+    with sync_db_session() as db:
+        job = db.query(ClipExportJob).filter(ClipExportJob.id == job_id).first()
+        if not job:
+            return None
+        for key, value in values.items():
+            setattr(job, key, value)
+        db.commit()
+        return job.status
+
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.prepare_clip_export",
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def prepare_clip_export(
+    self,
+    job_id: str,
+    sources: list[dict],
+    sheet_bounds: list[list[float]],
+):
+    """Create one union clip in the shared export volume."""
+
+    from app.models.project import ClipExportJob
+    from app.services.clip_exports import (
+        ClipExportCancelled,
+        InvalidCogSource,
+        cleanup_expired_clip_exports,
+        make_clip_filename,
+        run_union_clip_export,
+        validate_cog_source,
+    )
+    from app.services.storage import get_storage
+    from app.utils.db import sync_db_session
+
+    cleanup_expired_clip_exports()
+    with sync_db_session() as db:
+        job = db.query(ClipExportJob).filter(ClipExportJob.id == job_id).first()
+        if not job or job.status in {"completed", "cancelled"}:
+            return {"status": job.status if job else "missing", "job_id": job_id}
+        job.status = "processing"
+        job.progress = 5
+        job.stage = "정사영상 확인 중"
+        job.started_at = datetime.utcnow()
+        db.commit()
+        output_format = job.output_format
+        output_crs = job.output_crs
+        output_gsd = job.output_gsd
+        output_filename = make_clip_filename(job.base_filename, output_format)
+
+    job_dir = Path(settings.EXPORT_ROOT_PATH) / "clip-jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    output_path = job_dir / output_filename
+    downloaded_sources: list[Path] = []
+    source_paths: list[str] = []
+    storage = get_storage()
+    last_progress = 5
+
+    def is_cancelled() -> bool:
+        with sync_db_session() as db:
+            current = db.query(ClipExportJob.status).filter(ClipExportJob.id == job_id).scalar()
+            return current in (None, "cancelled")
+
+    def on_progress(progress: int, stage: str) -> None:
+        nonlocal last_progress
+        bounded = max(last_progress, min(99, int(progress)))
+        if bounded == last_progress and progress < 98:
+            return
+        last_progress = bounded
+        _update_clip_export_job(job_id, progress=bounded, stage=stage)
+
+    try:
+        for index, source in enumerate(sources):
+            if is_cancelled():
+                raise ClipExportCancelled()
+            object_name = source["ortho_path"]
+            if os.path.isabs(object_name) and os.path.exists(object_name):
+                local_path = object_name
+            else:
+                try:
+                    local_path = storage.get_local_path(object_name)
+                except (TypeError, ValueError):
+                    local_path = None
+            if local_path and os.path.exists(local_path):
+                resolved = Path(local_path)
+            elif not os.path.isabs(object_name) and storage.object_exists(object_name):
+                resolved = job_dir / f".source-{index}.tif"
+                storage.download_file(object_name, str(resolved))
+                downloaded_sources.append(resolved)
+            elif os.path.exists(object_name):
+                resolved = Path(object_name)
+            else:
+                raise FileNotFoundError("clip source not found")
+            validate_cog_source(str(resolved))
+            source_paths.append(str(resolved))
+            on_progress(8 + round((index + 1) / len(sources) * 10), "COG 검증 중")
+
+        run_union_clip_export(
+            source_paths=source_paths,
+            sheet_bounds=sheet_bounds,
+            target_crs=output_crs,
+            target_gsd_cm=output_gsd,
+            output_format=output_format,
+            output_path=str(output_path),
+            on_progress=on_progress,
+            is_cancelled=is_cancelled,
+        )
+        if is_cancelled():
+            raise ClipExportCancelled()
+        _update_clip_export_job(
+            job_id,
+            status="completed",
+            progress=100,
+            stage="완료",
+            output_filename=output_filename,
+            result_path=str(output_path),
+            result_size=output_path.stat().st_size,
+            completed_at=datetime.utcnow(),
+            error_code=None,
+            error_reference=None,
+        )
+        return {"status": "completed", "job_id": job_id}
+    except ClipExportCancelled:
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        _update_clip_export_job(
+            job_id,
+            status="cancelled",
+            stage="취소됨",
+            completed_at=datetime.utcnow(),
+        )
+        return {"status": "cancelled", "job_id": job_id}
+    except Exception as exc:
+        error_code = (
+            "EXPORT_SOURCE_NOT_FOUND"
+            if isinstance(exc, FileNotFoundError)
+            else "EXPORT_SOURCE_INVALID"
+            if isinstance(exc, InvalidCogSource)
+            else "EXPORT_FORMAT_INVALID"
+            if isinstance(exc, ValueError)
+            else "CLIP_PROCESSING_FAILED"
+        )
+        error_reference = new_error_reference_id()
+        logger.exception(
+            "clip_export_failed job_id=%s reference_id=%s",
+            job_id,
+            error_reference,
+        )
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        _update_clip_export_job(
+            job_id,
+            status="error",
+            stage="오류",
+            error_code=error_code,
+            error_reference=error_reference,
+            completed_at=datetime.utcnow(),
+        )
+        raise
+    finally:
+        for path in downloaded_sources:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:
