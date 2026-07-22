@@ -646,8 +646,11 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                                 {preview.message}
                                             </div>
                                         ) : (
-                                            <div className="h-48 rounded bg-slate-50 flex items-center justify-center text-slate-500">
-                                                <RefreshCw size={16} className="animate-spin mr-2" /> 미리보기 생성 중
+                                            <div className="h-48 rounded bg-slate-50 flex flex-col items-center justify-center gap-2 text-slate-500">
+                                                <div className="flex items-center">
+                                                    <RefreshCw size={16} className="animate-spin mr-2" /> 미리보기 생성 중
+                                                </div>
+                                                <span className="text-[11px] text-slate-400">대용량 원본은 최초 생성에 몇 초가 걸릴 수 있습니다.</span>
                                             </div>
                                         )}
                                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -1524,7 +1527,6 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                     </div>
                                                 </div>
                                             </div>
-                                            <p className="text-xs text-slate-500">기본 제공 IO 모델 수정은 원본 백업 후 io.csv와 카메라 목록에 함께 반영됩니다.</p>
 	                                    </div>
 	                                )}
 
