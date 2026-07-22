@@ -105,6 +105,15 @@ const buildImageKeySetFromPaths = (filePaths = []) => (
     )
 );
 
+const buildImagePathMapFromPaths = (filePaths = []) => {
+    const pathsByImageKey = new Map();
+    (filePaths || []).forEach((filePath) => {
+        const key = normalizeEoImageKey(filePath);
+        if (key && !pathsByImageKey.has(key)) pathsByImageKey.set(key, filePath);
+    });
+    return pathsByImageKey;
+};
+
 const filterRowsBySelectedImages = (rows, selectedImageKeys) => {
     if (!selectedImageKeys || selectedImageKeys.size === 0) return rows;
     return rows.filter((row) => row.imageKey && selectedImageKeys.has(row.imageKey));
@@ -270,7 +279,7 @@ const buildPrimaryEoRows = (rows, excludedKeys = new Set()) => {
     return primaryRows;
 };
 
-const buildEoMapPoints = (rows, config, excludedKeys = new Set()) => {
+const buildEoMapPoints = (rows, config, excludedKeys = new Set(), imagePaths = new Map()) => {
     const seen = new Set();
     const points = [];
 
@@ -283,6 +292,7 @@ const buildEoMapPoints = (rows, config, excludedKeys = new Set()) => {
             imageKey: row.imageKey,
             imageName: row.imageName,
             sourceName: row.sourceName,
+            previewPath: imagePaths.get(row.imageKey) || null,
             excluded: excludedKeys.has(row.imageKey),
             ...transformed,
         });
@@ -399,10 +409,33 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
     const [selectionEnabled, setSelectionEnabled] = useState(false);
     const [selectedKeys, setSelectedKeys] = useState(() => new Set());
     const [contextMenu, setContextMenu] = useState(null);
+    const [previews, setPreviews] = useState({});
+    const previewRequestsRef = useRef(new Set());
     const validPoints = points.filter((point) => point.valid);
     const invalidCount = points.length - validPoints.length;
     const includedCount = validPoints.filter((point) => !point.excluded).length;
     const selectedCount = selectedKeys.size;
+
+    const loadPreview = async (point) => {
+        const previewKey = `${point.imageKey}:${point.previewPath || ''}`;
+        if (!point.previewPath || previews[previewKey] || previewRequestsRef.current.has(previewKey)) return;
+        previewRequestsRef.current.add(previewKey);
+        setPreviews((prev) => ({ ...prev, [previewKey]: { status: 'loading' } }));
+        try {
+            const result = await api.getImagePreview(point.previewPath);
+            setPreviews((prev) => ({
+                ...prev,
+                [previewKey]: { status: 'ready', dataUrl: result.data_url },
+            }));
+        } catch (error) {
+            setPreviews((prev) => ({
+                ...prev,
+                [previewKey]: { status: 'error', message: formatUserError(error, '미리보기를 만들 수 없습니다.') },
+            }));
+        } finally {
+            previewRequestsRef.current.delete(previewKey);
+        }
+    };
 
     useEffect(() => {
         setSelectedKeys((prev) => {
@@ -543,6 +576,7 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                     />
                     {validPoints.map((point) => {
                         const selected = selectedKeys.has(point.imageKey);
+                        const preview = previews[`${point.imageKey}:${point.previewPath || ''}`];
                         const markerColor = selected ? '#7c3aed' : (point.excluded ? '#475569' : '#2563eb');
                         const markerFill = selected ? '#c4b5fd' : (point.excluded ? '#94a3b8' : '#38bdf8');
                         return (
@@ -566,10 +600,9 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                                 else next.add(point.imageKey);
                                                 return next;
                                             });
-                                            return;
                                         }
-                                        onToggleExcluded(point.imageKey);
                                     },
+                                    popupopen: () => loadPreview(point),
                                     contextmenu: (event) => {
                                         if (!selectionEnabled) return;
                                         event.originalEvent.preventDefault();
@@ -587,9 +620,28 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                     </div>
                                 </Tooltip>
                                 <Popup>
-                                    <div className="text-xs space-y-1 min-w-[170px]">
+                                    <div className="text-xs space-y-1 min-w-[220px] max-w-[280px]">
                                         <div className="font-bold text-slate-800 break-all">{point.imageName}</div>
                                         <div className="text-slate-500 break-all">{point.sourceName}</div>
+                                        {!point.previewPath ? (
+                                            <div className="h-24 rounded bg-slate-50 flex items-center justify-center text-slate-400 text-center px-3">
+                                                선택한 원본 이미지와 연결되지 않았습니다.
+                                            </div>
+                                        ) : preview?.status === 'ready' ? (
+                                            <img
+                                                src={preview.dataUrl}
+                                                alt={`${point.imageName} 미리보기`}
+                                                className="w-full max-h-44 object-contain rounded bg-slate-900"
+                                            />
+                                        ) : preview?.status === 'error' ? (
+                                            <div className="min-h-24 rounded bg-red-50 text-red-700 whitespace-pre-line flex items-center justify-center text-center px-3 py-2">
+                                                {preview.message}
+                                            </div>
+                                        ) : (
+                                            <div className="h-24 rounded bg-slate-50 flex items-center justify-center text-slate-500">
+                                                <RefreshCw size={16} className="animate-spin mr-2" /> 미리보기 생성 중
+                                            </div>
+                                        )}
                                         <div className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${point.excluded ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-blue-50 text-blue-700'}`}>
                                             {point.excluded ? '처리 제외됨' : '처리 포함'}
                                         </div>
@@ -1084,9 +1136,13 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
         return primaryIncludedEoRows.length;
     }, [primaryIncludedEoRows]);
     const eoMapSourceRows = hasEoMatchWarning ? eoParsedRows : matchedEoRows;
+    const imagePathsByKey = useMemo(
+        () => buildImagePathMapFromPaths(serverFilePaths || []),
+        [serverFilePaths]
+    );
     const eoMapPoints = useMemo(
-        () => buildEoMapPoints(eoMapSourceRows, eoConfig, excludedEoImageKeys),
-        [eoMapSourceRows, eoConfig, excludedEoImageKeys]
+        () => buildEoMapPoints(eoMapSourceRows, eoConfig, excludedEoImageKeys, imagePathsByKey),
+        [eoMapSourceRows, eoConfig, excludedEoImageKeys, imagePathsByKey]
     );
 
     const eoFileSummaries = useMemo(() => {

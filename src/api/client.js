@@ -438,6 +438,13 @@ class ApiClient {
         return this.request(`/filesystem/read-text?path=${encodeURIComponent(path)}`);
     }
 
+    async getImagePreview(path) {
+        return this.request('/filesystem/image-preview', {
+            method: 'POST',
+            body: JSON.stringify({ path }),
+        });
+    }
+
     // --- Camera Models ---
     async getCameraModels() {
         return this.request('/camera-models');

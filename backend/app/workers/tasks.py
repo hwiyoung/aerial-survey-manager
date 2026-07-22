@@ -22,6 +22,7 @@ from app.services.processing_logs import (
     append_processing_log,
     create_processing_error_bundle,
 )
+from app.services.image_previews import generate_thumbnail_gdal, generate_thumbnail_pil
 from app.utils.checksum import calculate_file_checksum
 from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
@@ -1197,47 +1198,12 @@ def _generate_thumbnail_gdal(source_path: str, dest_path: str, size: int = 256):
     - 16-bit 이상: -scale 추가 (0-255 변환 필요)
     - 밴드 4개 이상: -b 1 -b 2 -b 3 으로 RGB만 추출
     """
-    import subprocess, json
-
-    # 파일 메타데이터 확인 (픽셀 데이터 미읽음, 빠름)
-    info = subprocess.run(
-        ["gdalinfo", "-json", source_path],
-        capture_output=True, text=True, timeout=30
-    )
-    if info.returncode != 0:
-        raise RuntimeError(f"gdalinfo 실패: {info.stderr.strip()}")
-
-    meta = json.loads(info.stdout)
-    bands = meta.get("bands", [])
-    band_count = len(bands)
-    data_type = bands[0].get("type", "Byte") if bands else "Byte"
-
-    cmd = ["gdal_translate", "-of", "JPEG", "-outsize", str(size), "0", "-r", "average"]
-
-    # 4밴드 이상(RGBN 등)이면 첫 3밴드만 선택
-    if band_count > 3:
-        cmd += ["-b", "1", "-b", "2", "-b", "3"]
-
-    # 16-bit 이상이면 0-255 스케일링 필요 (8-bit는 생략해 파일을 한 번만 읽음)
-    if data_type not in ("Byte",):
-        cmd += ["-scale"]
-
-    cmd += [source_path, dest_path]
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        raise RuntimeError(f"gdal_translate 실패: {result.stderr.strip()}")
+    generate_thumbnail_gdal(source_path, dest_path, size)
 
 
 def _generate_thumbnail_pil(source_path: str, dest_path: str, size: int = 256):
     """PIL로 썸네일 생성 (폴백, 전체 파일 읽음)."""
-    from PIL import Image as PILImage
-    PILImage.MAX_IMAGE_PIXELS = 300000000
-    with PILImage.open(source_path) as img:
-        if img.mode in ('RGBA', 'LA', 'P'):
-            img = img.convert('RGB')
-        img.thumbnail((size, size))
-        img.save(dest_path, "JPEG", quality=85)
+    generate_thumbnail_pil(source_path, dest_path, size)
 
 
 @celery_app.task(

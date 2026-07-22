@@ -1,4 +1,6 @@
-"""Filesystem browsing API for server-side directory navigation."""
+"""Filesystem browsing and lazy source preview APIs."""
+import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -6,10 +8,13 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from app.models.user import User
 from app.auth.jwt import get_current_user
+from app.errors import AppError
+from app.models.user import User
+from app.services.image_previews import get_image_preview
 
 router = APIRouter(prefix="/filesystem", tags=["Filesystem"])
+logger = logging.getLogger(__name__)
 
 # Image extensions recognised by the browser
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
@@ -297,6 +302,16 @@ class ReadTextResponse(BaseModel):
     size: int
 
 
+class ImagePreviewRequest(BaseModel):
+    path: str
+
+
+class ImagePreviewResponse(BaseModel):
+    data_url: str
+    width: int
+    cache_hit: bool
+
+
 # Maximum file size for read-text: 10 MB
 MAX_READ_TEXT_SIZE = 10 * 1024 * 1024
 
@@ -361,3 +376,30 @@ async def read_text_file(
         filename=target.name,
         size=file_size,
     )
+
+
+@router.post("/image-preview", response_model=ImagePreviewResponse)
+async def create_image_preview(
+    request: ImagePreviewRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a small preview only after an authenticated UI request."""
+
+    if ".." in Path(request.path).parts:
+        raise AppError("AUTH_ACCESS_DENIED", internal_detail="preview path traversal")
+
+    target = Path(request.path).resolve()
+    if not _is_within_allowed_root(str(target)):
+        raise AppError("AUTH_ACCESS_DENIED", internal_detail="preview outside allowed roots")
+    if not target.exists() or not target.is_file():
+        raise AppError("FILE_NOT_FOUND", internal_detail=str(target))
+    if target.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise AppError("FILE_FORMAT_UNSUPPORTED", internal_detail=target.suffix.lower())
+
+    try:
+        return await asyncio.to_thread(get_image_preview, str(target))
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("source_image_preview_failed")
+        raise AppError("FILE_READ_FAILED", internal_detail=repr(exc)) from exc
