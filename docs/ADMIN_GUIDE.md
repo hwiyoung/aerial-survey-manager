@@ -239,8 +239,8 @@ docker compose logs -f celery-worker --tail=50
 ./scripts/build-release.sh
 ```
 
-현재 `VERSION`이 `2.0.0`이면 결과는
-`releases/aerial-survey-manager-v2.0.0.tar.gz`입니다.
+현재 `VERSION`이 `2.0.1`이면 결과는
+`releases/aerial-survey-manager-v2.0.1.tar.gz`입니다.
 
 검증:
 ```bash
