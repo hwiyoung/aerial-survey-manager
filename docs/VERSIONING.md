@@ -55,14 +55,17 @@ perf(map): 대용량 도엽 렌더링 개선
 EO 미리보기·도엽 클립 같은 호환 기능 추가는 `v2.1.0`을 사용합니다. 운영
 검증이 필요한 기능 릴리스는 `v2.1.0-rc.1`부터 시작합니다.
 
+현재 운영 검증 후보는 `v2.1.0-rc.1`입니다. 사용자 승인 전에는 정식
+`v2.1.0` 태그를 만들지 않습니다.
+
 ## 릴리즈 절차
 
 ```bash
 ./scripts/check-version.sh
-git commit -m "chore(release): prepare v2.0.1"
-git tag -a v2.0.1 -m "Aerial Survey Manager v2.0.1"
+git commit -m "chore(release): prepare v2.1.0-rc.1"
+git tag -a v2.1.0-rc.1 -m "Aerial Survey Manager v2.1.0-rc.1"
 git push origin develop
-git push origin v2.0.1
+git push origin v2.1.0-rc.1
 ./scripts/build-release.sh
 ```
 
@@ -76,7 +79,7 @@ git push origin v2.0.1
 완성된 패키지는 다음 형식을 사용합니다.
 
 ```text
-aerial-survey-manager-v2.0.1.tar.gz
+aerial-survey-manager-v2.1.0-rc.1.tar.gz
 ```
 
 패키지 안의 `VERSION`과 `BUILD_INFO.txt`에서 버전, Git 커밋, 빌드 시각을
