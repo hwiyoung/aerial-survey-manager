@@ -138,6 +138,8 @@ ruff check --no-cache backend/app backend/tests backend/scripts
 | [USER_MANUAL.md](docs/USER_MANUAL.md) | 사용자 | 화면별 사용법 |
 | [TECHNICAL_MANUAL.md](docs/TECHNICAL_MANUAL.md) | 개발자 | 아키텍처, API, 내부 동작 |
 | [CHANGELOG.md](docs/CHANGELOG.md) | PM/개발자 | 스프린트별 변경 기록 |
+| [changes/README.md](docs/changes/README.md) | 개발자/PM | PR별 패치노트 조각 작성과 릴리즈 반영 규칙 |
+| [PATCH_NOTES_TEMPLATE.md](docs/PATCH_NOTES_TEMPLATE.md) | 사용자/운영자 | 게임 업데이트 공지 형태의 릴리즈 노트 템플릿 |
 | [ROADMAP.md](docs/ROADMAP.md) | PM | 현재 상태, 향후 계획, Known Issues |
 | [engines/README.md](engines/README.md) | 개발자 | 처리 엔진 가이드 |
 
