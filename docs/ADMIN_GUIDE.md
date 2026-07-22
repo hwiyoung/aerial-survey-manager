@@ -23,7 +23,11 @@
 docker compose logs -f worker-engine --tail=100
 
 # 상세 처리 로그 (프로젝트별)
-docker compose exec worker-engine cat /data/processing/{project-id}/.work/.processing.log
+docker compose exec worker-engine tail -100 /data/processing/{project-id}/processing/.logs/processing.log
+
+# 오류 참조번호별 진단 묶음 목록
+docker compose exec worker-engine \
+  ls -lh /data/processing/{project-id}/processing/.logs/errors/
 
 # 특정 컨테이너 로그 비우기
 sudo truncate -s 0 $(docker inspect --format='{{.LogPath}}' aerial-survey-manager-api-1)
@@ -32,7 +36,9 @@ sudo truncate -s 0 $(docker inspect --format='{{.LogPath}}' aerial-survey-manage
 docker system prune -f
 ```
 
-**로그 용량**: 기본 서비스 30MB, 처리 워커 250MB (로테이션 자동 설정)
+**로그 용량**: 기본 서비스 30MB, 처리 워커 250MB (Docker 순환). 프로젝트
+`processing.log`는 50MB와 백업 3개로 순환합니다. 오류 진단 묶음은 30일,
+프로젝트당 최근 20개, 전체 20GB를 기본값으로 자동 정리합니다.
 
 ---
 
@@ -42,7 +48,8 @@ docker system prune -f
 ```bash
 docker compose logs worker-engine | tail -50
 ```
-처리 실패 시 `.processing.log` 마지막 20줄이 자동 출력됩니다.
+처리 실패 시 `processing.log` 마지막 20줄이 Worker 로그에 출력되고, 사용자 화면의
+오류 참조번호와 같은 이름의 진단 묶음이 `.logs/errors/` 아래에 생성됩니다.
 
 ### "Empty DEM" 오류
 처리 중단 후 재시작 시 발생 가능. EO 파일명과 이미지 파일명 일치 여부를 확인하세요:

@@ -18,6 +18,11 @@ from app.services.processing_steps import (
     processing_step_pairs,
     task_name_for_script,
 )
+from app.services.processing_logs import (
+    append_processing_log,
+    processing_log_writer,
+    read_processing_log_tail,
+)
 from app.utils.storage_paths import orthomosaic_key, processing_log_path
 
 settings = get_settings()
@@ -118,13 +123,7 @@ class MetashapeEngine(ProcessingEngine):
     @staticmethod
     def _read_log_tail(log_path, lines=20):
         """로그 파일의 마지막 N줄을 읽어 반환"""
-        try:
-            with open(log_path, 'r') as f:
-                all_lines = f.readlines()
-                tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-                return ''.join(tail)
-        except Exception:
-            return "(로그 파일 읽기 실패)"
+        return read_processing_log_tail(Path(log_path), lines=lines)
 
     @staticmethod
     def _get_script_path(script_base: Path, script_name: str) -> Path:
@@ -555,7 +554,9 @@ class MetashapeEngine(ProcessingEngine):
             target_crs,
         )
 
-        with open(export_log_path, "a") as export_log, open(log_file_path, "a") as processing_log:
+        with processing_log_writer(export_log_path) as export_log, processing_log_writer(
+            log_file_path
+        ) as processing_log:
             started_at = datetime.now().isoformat(timespec="seconds")
             header = (
                 f"\n{'='*60}\n"
@@ -791,11 +792,15 @@ class MetashapeEngine(ProcessingEngine):
                         script_name,
                     )
                     step_timings.append((script_name, f"{message} (checkpoint)", 0.0))
-                    with open(log_file_path, 'a') as log_f:
-                        log_f.write(f"\n{'='*60}\n")
-                        log_f.write(f"[Step {step_num}/{total_steps}] {script_name} - checkpoint 재사용\n")
-                        log_f.write(f"[Skipped: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
-                        log_f.write(f"{'='*60}\n")
+                    append_processing_log(
+                        log_file_path,
+                        (
+                            f"\n{'='*60}\n"
+                            f"[Step {step_num}/{total_steps}] {script_name} - checkpoint 재사용\n"
+                            f"[Skipped: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n"
+                            f"{'='*60}\n"
+                        ),
+                    )
                     if progress_callback:
                         await progress_callback(min(99, ((i + 1) / total_steps) * 100), f"{message} 완료(checkpoint)")
                     continue
@@ -931,7 +936,7 @@ class MetashapeEngine(ProcessingEngine):
                 # stdout+stderr를 .processing.log에 직접 기록 (실시간)
                 returncode = None
                 gpu_lost_during_step = False
-                with open(log_file_path, 'a') as log_f:
+                with processing_log_writer(log_file_path) as log_f:
                     log_f.write(f"\n{'='*60}\n")
                     log_f.write(f"[Step {step_num}/{total_steps}] {script_name} - {message}\n")
                     log_f.write(f"[Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
@@ -977,16 +982,17 @@ class MetashapeEngine(ProcessingEngine):
                             log_f.flush()
                             self._terminate_step_process(process, log_f)
                         raise
-
                 elapsed = time.time() - step_start
                 step_timings.append((script_name, message, elapsed))
 
                 # 타이밍을 로그 파일에도 기록
-                with open(log_file_path, 'a') as log_f:
-                    log_f.write(
+                append_processing_log(
+                    log_file_path,
+                    (
                         f"\n[Step {step_num}/{total_steps}] 종료(returncode={returncode}): "
                         f"{self._format_elapsed(elapsed)}\n"
-                    )
+                    ),
+                )
 
                 if returncode != 0:
                     error_tail = self._read_log_tail(log_file_path)
@@ -1085,8 +1091,10 @@ class MetashapeEngine(ProcessingEngine):
                         logger.warning("[ProcessingEngine] Auto export did not produce a file; processing result remains completed.")
                 except Exception as export_error:
                     logger.error("[ProcessingEngine] Auto export failed without failing processing: %s", export_error)
-                    with open(log_file_path, "a") as log_f:
-                        log_f.write(f"\n[Auto Export] failed without failing processing: {export_error}\n")
+                    append_processing_log(
+                        log_file_path,
+                        f"\n[Auto Export] failed without failing processing: {export_error}\n",
+                    )
 
             if progress_callback:
                 await progress_callback(100, "처리 완료")

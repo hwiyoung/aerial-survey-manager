@@ -13,6 +13,7 @@ from app.database import async_session
 from app.errors import ERROR_SPECS, install_error_handlers, new_error_reference_id
 from app.models.project import ProcessingJob, Project
 from app.services.processing_lifecycle import startup_recovery_in_grace_period
+from app.services.processing_logs import cleanup_processing_error_bundles
 from app.utils.storage_paths import processing_status_path
 from app.version import APP_VERSION
 
@@ -306,6 +307,12 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     print(f"Starting {settings.APP_NAME}...")
+    cleanup_result = cleanup_processing_error_bundles()
+    if cleanup_result["removed_files"]:
+        print(
+            "[startup] 오래된 처리 오류 묶음 정리: "
+            f"files={cleanup_result['removed_files']} bytes={cleanup_result['removed_bytes']}"
+        )
     await _recover_stuck_jobs()
     yield
     # Shutdown

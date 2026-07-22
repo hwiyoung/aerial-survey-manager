@@ -18,6 +18,10 @@ from celery import Celery
 from app.config import get_settings
 from app.auth.jwt import create_internal_token
 from app.errors import ERROR_SPECS, classify_processing_error, new_error_reference_id
+from app.services.processing_logs import (
+    append_processing_log,
+    create_processing_error_bundle,
+)
 from app.utils.checksum import calculate_file_checksum
 from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
@@ -1053,9 +1057,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             # .processing.log에도 요약 추가
             log_file_path = processing_log_path(project_id)
             try:
-                log_file_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(log_file_path, 'a') as log_f:
-                    log_f.write(f"\n{summary_text}\n")
+                append_processing_log(log_file_path, f"\n{summary_text}\n")
             except Exception:
                 pass
 
@@ -1159,6 +1161,20 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 )
             except NameError:
                 pass  # write_status_file/phase_timings not yet defined (early failure)
+
+            bundle_path = create_processing_error_bundle(
+                project_id,
+                error_reference,
+                error_code=error_code,
+                job_id=str(getattr(job, "id", "")) or None,
+                technical_error=str(e),
+            )
+            if bundle_path:
+                logger.error(
+                    "processing_error_bundle_created reference_id=%s path=%s",
+                    error_reference,
+                    bundle_path,
+                )
 
             _broadcast_ws(
                 project_id,
