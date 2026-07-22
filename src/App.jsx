@@ -121,19 +121,34 @@ const getExcludedFileMessage = (excludedFiles = [], processingCount = null) => {
 // --- 2. COMPONENTS ---
 
 class ErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { hasError: false, error: null }; }
-  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  constructor(props) {
+    super(props);
+    const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    const suffix = Math.random().toString(16).slice(2, 14).padEnd(12, '0').toUpperCase();
+    this.state = { hasError: false, referenceId: `ERR-${date}-${suffix}` };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error, errorInfo) {
+    console.error(
+      `[ui_render_failed] reference_id=${this.state.referenceId}`,
+      error,
+      errorInfo,
+    );
+  }
   render() {
     if (this.state.hasError) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-red-50 p-10">
           <div className="bg-white p-8 rounded-xl shadow-lg max-w-2xl w-full">
-            <h1 className="text-2xl font-bold text-red-600 mb-4">Application Error</h1>
-            <pre className="bg-slate-900 text-slate-100 p-4 rounded overflow-auto text-sm font-mono whitespace-pre-wrap">
-              {this.state.error?.toString()}
-              {this.state.error?.stack}
-            </pre>
-            <button onClick={() => window.location.reload()} className="mt-6 px-4 py-2 bg-slate-800 text-white rounded hover:bg-slate-900">Reload Page</button>
+            <h1 className="text-2xl font-bold text-red-600 mb-4">화면을 표시하지 못했습니다.</h1>
+            <p className="text-slate-700">페이지를 새로고침한 뒤 다시 시도해주세요.</p>
+            <p className="mt-3 text-sm text-slate-500">
+              문제가 계속되면 오류 참조번호를 운영 담당자에게 전달해주세요.
+            </p>
+            <p className="mt-2 rounded bg-slate-100 px-3 py-2 font-mono text-sm text-slate-700">
+              오류 참조번호: {this.state.referenceId}
+            </p>
+            <button onClick={() => window.location.reload()} className="mt-6 px-4 py-2 bg-slate-800 text-white rounded hover:bg-slate-900">새로고침</button>
           </div>
         </div>
       );
