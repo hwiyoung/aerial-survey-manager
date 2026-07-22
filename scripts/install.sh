@@ -541,6 +541,8 @@ start_services() {
     else
         # 소스 코드: 이미지 빌드
         log_info "Docker 이미지 빌드 중... (최초 실행 시 시간이 소요됩니다)"
+        log_info "프론트엔드는 이전 이미지가 재사용되지 않도록 캐시 없이 먼저 빌드합니다."
+        docker compose -f "$compose_file" build --no-cache frontend
         docker compose -f "$compose_file" build
     fi
 

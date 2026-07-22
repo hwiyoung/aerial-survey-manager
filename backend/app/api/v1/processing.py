@@ -132,8 +132,12 @@ def _write_processing_terminal_status_file(
             payload["job_id"] = str(job_id)
         if metrics:
             payload["metrics"] = metrics
-        with open(status_file, "w", encoding="utf-8") as f:
+        temp_status_file = status_file.with_name(f".{status_file.name}.tmp")
+        with open(temp_status_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_status_file, status_file)
     except Exception as exc:
         print(f"[processing.status] failed to write terminal status file: {exc}")
 
@@ -1791,7 +1795,8 @@ async def cancel_processing(
     celery_task_id = job.celery_task_id or (active_task or {}).get("task_id")
     if celery_task_id:
         from app.workers.tasks import celery_app
-        celery_app.control.revoke(celery_task_id, terminate=True)
+        terminate_running_task = job.status == "processing" or bool(active_task)
+        celery_app.control.revoke(celery_task_id, terminate=terminate_running_task)
         _remove_queued_celery_message(
             celery_task_id,
             PROCESSING_QUEUE,
