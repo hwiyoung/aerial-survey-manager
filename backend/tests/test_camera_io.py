@@ -2,11 +2,13 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from uuid import uuid4
 
 import pytest
 
 from app.api.v1 import camera_models
 from app.errors import AppError
+from app.schemas.project import CameraModelCreate
 from app.services import camera_io
 
 
@@ -76,10 +78,59 @@ def test_io_update_rejects_stale_checksum_and_invalid_required_values(
         )
 
 
+def test_structured_camera_update_preserves_other_rows_and_returns_target_entry():
+    content = SAMPLE_IO + SAMPLE_IO.replace("카메라A", "카메라B")
+
+    updated, target = camera_io.update_io_camera_content(
+        content,
+        "카메라A - 업체A",
+        {
+            "name": "카메라A - 업체A",
+            "focal_length": 111.2,
+            "sensor_width_px": 11000,
+            "sensor_height_px": 13000,
+            "pixel_size": 4.6,
+            "ppa_x": 0.25,
+            "ppa_y": -0.5,
+        },
+    )
+
+    assert "$UNKNOWN_FIELD:,preserve-me" in updated
+    assert updated.count("$CAMERA_NAME:,카메라B") == 1
+    assert "$FOCAL_LENGTH:,111.2" in updated
+    assert "$SENSOR_SIZE:,11000,13000" in updated
+    assert "$PIXEL_SIZE:,4.6,4.6" in updated
+    assert "$PRINCIPAL_POINT_AUTOCOLLIMATION:,0.25,-0.5" in updated
+    assert target["name"] == "카메라A - 업체A"
+    assert target["focal_length"] == 111.2
+    assert target["sensor_width"] == 50.6
+
+
+def test_structured_camera_update_renames_base_without_duplicating_company():
+    updated, target = camera_io.update_io_camera_content(
+        SAMPLE_IO,
+        "카메라A - 업체A",
+        {
+            "name": "카메라A 개정",
+            "focal_length": 100.5,
+            "sensor_width_px": 10000,
+            "sensor_height_px": 12000,
+            "pixel_size": 5.2,
+            "ppa_x": 0.1,
+            "ppa_y": -0.2,
+        },
+    )
+
+    assert "$CAMERA_NAME:,카메라A 개정" in updated
+    assert target["name"] == "카메라A 개정 - 업체A"
+
+
 class _FakeDb:
     def __init__(self):
+        self.execute = AsyncMock()
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
+        self.refresh = AsyncMock()
 
 
 def test_io_api_restores_file_when_db_sync_fails():
@@ -153,3 +204,47 @@ def test_io_api_commits_sync_and_returns_new_document():
     db.commit.assert_awaited_once()
     assert result["backup_created"] == "backup.csv"
     assert result["sync"] == sync_result
+
+
+def test_camera_update_uses_structured_io_flow_for_builtin_model():
+    camera = SimpleNamespace(id=uuid4(), name="카메라A - 업체A", is_custom=False)
+    result = SimpleNamespace(scalar_one_or_none=lambda: camera)
+    db = _FakeDb()
+    db.execute.return_value = result
+    request = CameraModelCreate(
+        name=camera.name,
+        focal_length=110.0,
+        sensor_width=52.0,
+        sensor_height=62.4,
+        pixel_size=5.2,
+        sensor_width_px=10000,
+        sensor_height_px=12000,
+        ppa_x=0.1,
+        ppa_y=-0.2,
+        is_custom=False,
+    )
+    prepared = {
+        "entries": [{"name": camera.name}],
+        "target_entry": {"name": camera.name},
+    }
+
+    with (
+        patch.object(camera_models, "prepare_camera_io_model_update", return_value=prepared),
+        patch.object(camera_models, "backup_and_replace_io", return_value=Path("backup.csv")),
+        patch.object(camera_models, "apply_camera_entry") as apply_entry,
+        patch.object(camera_models, "sync_standard_camera_models", new=AsyncMock(return_value={})),
+        patch.object(camera_models, "cleanup_io_backups", new=Mock(return_value=0)),
+    ):
+        updated = asyncio.run(
+            camera_models.update_camera_model(
+                camera.id,
+                request,
+                SimpleNamespace(),
+                db,
+            )
+        )
+
+    assert updated is camera
+    apply_entry.assert_called_once_with(camera, prepared["target_entry"])
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(camera)

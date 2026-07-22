@@ -294,6 +294,14 @@ const buildEoMapPoints = (rows, config, excludedKeys = new Set(), imagePaths = n
             sourceName: row.sourceName,
             previewPath: imagePaths.get(row.imageKey) || null,
             excluded: excludedKeys.has(row.imageKey),
+            eo: {
+                x: row.parts?.[config?.columns?.x] ?? '-',
+                y: row.parts?.[config?.columns?.y] ?? '-',
+                z: row.parts?.[config?.columns?.z] ?? '-',
+                omega: row.parts?.[config?.columns?.omega] ?? '-',
+                phi: row.parts?.[config?.columns?.phi] ?? '-',
+                kappa: row.parts?.[config?.columns?.kappa] ?? '-',
+            },
             ...transformed,
         });
     });
@@ -619,34 +627,50 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                         <div>{point.excluded ? '처리 제외됨' : '처리 포함'} · {point.sourceCrs}</div>
                                     </div>
                                 </Tooltip>
-                                <Popup>
-                                    <div className="text-xs space-y-1 min-w-[220px] max-w-[280px]">
+                                <Popup minWidth={460} maxWidth={540}>
+                                    <div className="w-[460px] max-w-full space-y-2 text-xs">
                                         <div className="font-bold text-slate-800 break-all">{point.imageName}</div>
                                         <div className="text-slate-500 break-all">{point.sourceName}</div>
                                         {!point.previewPath ? (
-                                            <div className="h-24 rounded bg-slate-50 flex items-center justify-center text-slate-400 text-center px-3">
+                                            <div className="h-48 rounded bg-slate-50 flex items-center justify-center text-slate-400 text-center px-3">
                                                 선택한 원본 이미지와 연결되지 않았습니다.
                                             </div>
                                         ) : preview?.status === 'ready' ? (
                                             <img
                                                 src={preview.dataUrl}
                                                 alt={`${point.imageName} 미리보기`}
-                                                className="w-full max-h-44 object-contain rounded bg-slate-900"
+                                                className="w-full max-h-72 object-contain rounded bg-slate-900"
                                             />
                                         ) : preview?.status === 'error' ? (
-                                            <div className="min-h-24 rounded bg-red-50 text-red-700 whitespace-pre-line flex items-center justify-center text-center px-3 py-2">
+                                            <div className="min-h-48 rounded bg-red-50 text-red-700 whitespace-pre-line flex items-center justify-center text-center px-3 py-2">
                                                 {preview.message}
                                             </div>
                                         ) : (
-                                            <div className="h-24 rounded bg-slate-50 flex items-center justify-center text-slate-500">
+                                            <div className="h-48 rounded bg-slate-50 flex items-center justify-center text-slate-500">
                                                 <RefreshCw size={16} className="animate-spin mr-2" /> 미리보기 생성 중
                                             </div>
                                         )}
-                                        <div className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${point.excluded ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-blue-50 text-blue-700'}`}>
-                                            {point.excluded ? '처리 제외됨' : '처리 포함'}
+                                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                            <div className="mb-2 flex items-center justify-between gap-3">
+                                                <span className="font-bold text-slate-700">EO 전체 정보</span>
+                                                <span className="font-mono text-[11px] text-slate-500">{point.sourceCrs}</span>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                                                {Object.entries({ X: point.eo.x, Y: point.eo.y, Z: point.eo.z, Omega: point.eo.omega, Phi: point.eo.phi, Kappa: point.eo.kappa }).map(([label, value]) => (
+                                                    <div key={label} className="flex min-w-0 justify-between gap-3">
+                                                        <span className="font-semibold text-slate-500">{label}</span>
+                                                        <span className="truncate font-mono text-slate-800" title={String(value)}>{value}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
-                                        <div className="font-mono text-slate-500">
-                                            {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${point.excluded ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-blue-50 text-blue-700'}`}>
+                                                {point.excluded ? '처리 제외됨' : '처리 포함'}
+                                            </div>
+                                            <div className="font-mono text-[11px] text-slate-500">
+                                                WGS84 {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
+                                            </div>
                                         </div>
                                         <button
                                             onClick={() => onToggleExcluded(point.imageKey)}
@@ -713,18 +737,6 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const [isAddingCamera, setIsAddingCamera] = useState(false);
     const [editingCameraId, setEditingCameraId] = useState(null);
     const [newCamera, setNewCamera] = useState(createDefaultCameraModel);
-    const [ioEditor, setIoEditor] = useState({
-        isOpen: false,
-        isLoading: false,
-        isSaving: false,
-        content: '',
-        originalContent: '',
-        sha256: '',
-        encoding: '',
-        cameraBlockCount: 0,
-        modelCount: 0,
-        backupCount: 0,
-    });
     const [projectName, setProjectName] = useState('');
     const [showMismatchWarning, setShowMismatchWarning] = useState(false);
     const [autoProcess, setAutoProcess] = useState(true);
@@ -751,10 +763,10 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
     const canManageSelectedCamera = Boolean(selectedCamera?.id && selectedCamera.is_custom);
 
     const cameraModelCounts = useMemo(() => {
-        const standard = cameraModels.filter(c => !c.is_custom).length;
+        const builtIn = cameraModels.filter(c => !c.is_custom).length;
         return {
-            standard,
-            custom: cameraModels.length - standard
+            builtIn,
+            custom: cameraModels.length - builtIn
         };
     }, [cameraModels]);
 
@@ -788,69 +800,8 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
         setIsAddingCamera(true);
     };
 
-    const closeIoEditor = () => {
-        if (ioEditor.isSaving) return;
-        setIoEditor(prev => ({ ...prev, isOpen: false }));
-    };
-
-    const openIoEditor = async () => {
-        setIoEditor(prev => ({ ...prev, isOpen: true, isLoading: true }));
-        try {
-            const document = await api.getCameraIoConfig();
-            setIoEditor({
-                isOpen: true,
-                isLoading: false,
-                isSaving: false,
-                content: document.content || '',
-                originalContent: document.content || '',
-                sha256: document.sha256 || '',
-                encoding: document.encoding || '',
-                cameraBlockCount: document.camera_block_count || 0,
-                modelCount: document.model_count || 0,
-                backupCount: document.backup_count || 0,
-            });
-        } catch (error) {
-            setIoEditor(prev => ({ ...prev, isOpen: false, isLoading: false }));
-            alert(formatUserError(error, '표준 IO 설정을 불러오지 못했습니다.'));
-        }
-    };
-
     const handleEditCamera = () => {
-        if (selectedCamera?.is_custom) {
-            openEditCameraForm();
-        } else {
-            void openIoEditor();
-        }
-    };
-
-    const handleSaveIoConfig = async () => {
-        if (!ioEditor.content || ioEditor.content === ioEditor.originalContent) return;
-        if (!window.confirm('표준 IO를 저장하고 카메라 모델 DB를 동기화하시겠습니까?')) return;
-        setIoEditor(prev => ({ ...prev, isSaving: true }));
-        try {
-            const result = await api.updateCameraIoConfig(ioEditor.content, ioEditor.sha256);
-            const models = await api.getCameraModels();
-            setCameraModels(models);
-            setCameraModelId(current => (
-                models.some(model => model.id === current) ? current : (models[0]?.id || '')
-            ));
-            setIoEditor({
-                isOpen: false,
-                isLoading: false,
-                isSaving: false,
-                content: '',
-                originalContent: '',
-                sha256: result.sha256 || '',
-                encoding: result.encoding || '',
-                cameraBlockCount: result.camera_block_count || 0,
-                modelCount: result.model_count || 0,
-                backupCount: result.backup_count || 0,
-            });
-            alert(`표준 IO 저장과 DB 동기화가 완료되었습니다.\n원본 백업: ${result.backup_created || '생성됨'}`);
-        } catch (error) {
-            setIoEditor(prev => ({ ...prev, isSaving: false }));
-            alert(formatUserError(error, '표준 IO 설정을 저장하지 못했습니다.'));
-        }
+        openEditCameraForm();
     };
 
     const handleSaveCamera = async () => {
@@ -967,14 +918,13 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             setIsAddingCamera(false);
             setEditingCameraId(null);
             setNewCamera(createDefaultCameraModel());
-            setIoEditor(prev => ({ ...prev, isOpen: false, isLoading: false, isSaving: false }));
         }
     }, [isOpen]);
 
     // ESC key handler to close modal
     useEffect(() => {
         const handleKeyDown = (e) => {
-            if (e.key === 'Escape' && !isFinishing && !showMismatchWarning && !showFileBrowser && !showEoFileBrowser && !ioEditor.isOpen) {
+            if (e.key === 'Escape' && !isFinishing && !showMismatchWarning && !showFileBrowser && !showEoFileBrowser) {
                 if (imageCount > 0 || eoFileName) {
                     if (window.confirm('업로드를 취소하시겠습니까? 모든 선택이 초기화됩니다.')) {
                         onClose();
@@ -988,7 +938,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             document.addEventListener('keydown', handleKeyDown);
         }
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, imageCount, eoFileName, isFinishing, showMismatchWarning, showFileBrowser, showEoFileBrowser, ioEditor.isOpen, onClose]);
+    }, [isOpen, imageCount, eoFileName, isFinishing, showMismatchWarning, showFileBrowser, showEoFileBrowser, onClose]);
 
     const handleServerSelect = (result) => {
         const imageFilePaths = result.filePaths || [];
@@ -1292,7 +1242,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
         <>
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={handleCancelUpload}>
             <div
-                className={`bg-white rounded-xl shadow-2xl flex flex-col ${step === 2 ? 'w-[min(1280px,96vw)] h-[98vh]' : 'w-[900px] max-h-[95vh]'}`}
+                className={`bg-white rounded-xl shadow-2xl flex flex-col ${step === 2 ? 'w-[min(1600px,98vw)] h-[98vh]' : 'w-[900px] max-h-[95vh]'}`}
                 onClick={e => e.stopPropagation()}
             >
                 <div className="h-16 border-b border-slate-200 flex items-center justify-between px-8 bg-slate-50">
@@ -1401,8 +1351,8 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                     )}
                                 </div>
                             )}
-                            <div className="flex-1 min-h-[460px] grid grid-cols-[0.9fr_1.1fr] gap-4">
-                                <div className="min-h-[460px] flex flex-col bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                            <div className="flex-1 min-h-[520px] grid grid-cols-[minmax(0,1.05fr)_minmax(520px,1.25fr)] gap-5">
+                                <div className="min-h-[520px] flex flex-col bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
                                     <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center shrink-0"><span className="text-sm font-bold text-slate-700 flex items-center gap-2"><TableIcon size={16} className="text-slate-400" /> EO 행 선택</span>{eoFileName && <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded font-bold">표 또는 지도에서 제외 가능</span>}</div>
                                     <div className="flex-1 overflow-auto custom-scrollbar relative">
                                         {!eoFileName ? (<div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300"><FileText size={48} className="mb-3 opacity-30" /><p className="text-sm font-medium">상단에서 EO 파일을 로드하면<br />이곳에 미리보기가 표시됩니다.</p></div>) : (
@@ -1458,7 +1408,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                         </div>
                                     )}
                                 </div>
-                                <div className="min-h-[460px] bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                <div className="min-h-[520px] bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
                                     <EoLocationPreview
                                         points={eoMapPoints}
                                         excludedCount={excludedEoImageKeys.size}
@@ -1475,7 +1425,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                             <div className="space-y-1">
                                 <h4 className="text-xl font-bold text-slate-800">3. 카메라 모델 (IO) 선택</h4>
                                 <div className="text-xs text-slate-500">
-                                    io.csv 표준 모델 {cameraModelCounts.standard}개 · 추가 모델 {cameraModelCounts.custom}개
+                                    IO 모델 {cameraModelCounts.builtIn}개 · 직접 추가 {cameraModelCounts.custom}개
                                 </div>
                             </div>
                             <div className="max-w-sm mx-auto space-y-6 w-full pb-4">
@@ -1484,7 +1434,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
 	                                {isAddingCamera ? (
 	                                    <div className="bg-white p-6 rounded-xl border border-blue-200 shadow-lg space-y-4 text-left animate-in fade-in zoom-in-95 duration-200">
 	                                        <div className="flex justify-between items-center mb-2">
-	                                            <h5 className="font-bold text-blue-600">{editingCameraId ? '카메라 모델 수정' : '새 카메라 추가'}</h5>
+                                            <h5 className="font-bold text-blue-600">{editingCameraId ? '카메라 모델 수정' : '새 카메라 추가'}</h5>
 	                                            <button onClick={closeCameraForm} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
 	                                        </div>
                                         <div className="space-y-1">
@@ -1504,11 +1454,11 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1">
                                                 <label className="text-xs font-bold text-slate-500">Sensor W (mm)</label>
-                                                <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_width} onChange={e => setNewCamera({ ...newCamera, sensor_width: parseFloat(e.target.value) })} />
+                                                <input type="number" disabled={Boolean(editingCameraId && !selectedCamera?.is_custom)} className="w-full p-2 border rounded text-sm disabled:bg-slate-100 disabled:text-slate-500" value={editingCameraId && !selectedCamera?.is_custom ? ((newCamera.sensor_width_px * newCamera.pixel_size) / 1000).toFixed(2) : newCamera.sensor_width} onChange={e => setNewCamera({ ...newCamera, sensor_width: parseFloat(e.target.value) })} />
                                             </div>
                                             <div className="space-y-1">
                                                 <label className="text-xs font-bold text-slate-500">Sensor H (mm)</label>
-                                                <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_height} onChange={e => setNewCamera({ ...newCamera, sensor_height: parseFloat(e.target.value) })} />
+                                                <input type="number" disabled={Boolean(editingCameraId && !selectedCamera?.is_custom)} className="w-full p-2 border rounded text-sm disabled:bg-slate-100 disabled:text-slate-500" value={editingCameraId && !selectedCamera?.is_custom ? ((newCamera.sensor_height_px * newCamera.pixel_size) / 1000).toFixed(2) : newCamera.sensor_height} onChange={e => setNewCamera({ ...newCamera, sensor_height: parseFloat(e.target.value) })} />
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
@@ -1530,8 +1480,13 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                 <label className="text-xs font-bold text-slate-500">PPA Y (mm)</label>
                                                 <input type="number" step="0.001" className="w-full p-2 border rounded text-sm" value={newCamera.ppa_y} onChange={e => setNewCamera({ ...newCamera, ppa_y: parseFloat(e.target.value) })} />
                                             </div>
-                                        </div>
-	                                        <button onClick={handleSaveCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">
+                                            </div>
+                                            {editingCameraId && !selectedCamera?.is_custom && (
+                                                <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
+                                                    저장하면 io.csv 원본을 백업한 뒤 형식을 검증하고 카메라 목록을 동기화합니다. Sensor W/H는 이미지 크기와 Pixel Size로 다시 계산됩니다.
+                                                </p>
+                                            )}
+		                                        <button onClick={handleSaveCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">
                                                 {editingCameraId ? '수정 저장' : '저장 및 선택'}
                                             </button>
 	                                    </div>
@@ -1542,7 +1497,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                 {Array.isArray(cameraModels) && cameraModels.length > 0 ? (
                                                     cameraModels.map(c => (
                                                         <option key={c.id} value={c.id}>
-                                                            {c.name} {c.is_custom ? '(추가)' : '(표준)'}
+                                                            {c.name} {c.is_custom ? '(추가)' : ''}
                                                         </option>
                                                     ))
                                                 ) : (
@@ -1551,18 +1506,25 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                             </select>
 	                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">▼</div>
 	                                        </div>
-                                            <div className="grid grid-cols-3 gap-2">
+	                                            <div className="grid grid-cols-3 gap-2">
                                                 <button onClick={openAddCameraForm} className="min-h-11 border-2 border-dashed border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs">
                                                     <FilePlus size={16} /> 추가
                                                 </button>
                                                 <button onClick={handleEditCamera} disabled={!selectedCamera?.id} className="min-h-11 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
-                                                    <Pencil size={15} /> {selectedCamera?.is_custom ? '수정' : '표준 IO 관리'}
+                                                    <Pencil size={15} /> 수정
                                                 </button>
-                                                <button onClick={handleDeleteCamera} disabled={!canManageSelectedCamera} className="min-h-11 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
-                                                    <Trash2 size={15} /> 삭제
-                                                </button>
+                                                <div className="group relative">
+                                                    <button onClick={handleDeleteCamera} disabled={!canManageSelectedCamera} className="min-h-11 w-full border border-red-200 text-red-600 rounded-xl hover:bg-red-50 font-bold transition-colors flex items-center justify-center gap-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40">
+                                                        <Trash2 size={15} /> 삭제
+                                                    </button>
+                                                    <div role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 w-64 rounded-lg bg-slate-900 px-3 py-2 text-left text-[11px] font-medium leading-5 text-white opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
+                                                        {canManageSelectedCamera
+                                                            ? '직접 추가한 모델만 삭제할 수 있습니다. 사용 중인 모델을 삭제하면 기존 이미지와의 연결은 해제됩니다.'
+                                                            : '삭제는 직접 추가한 모델만 가능합니다. 기본 제공 IO 모델은 수정할 수 있지만 삭제할 수 없습니다.'}
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <p className="text-xs text-slate-500">표준 모델 수정은 원본 백업 후 io.csv와 DB에 함께 반영됩니다.</p>
+                                            <p className="text-xs text-slate-500">기본 제공 IO 모델 수정은 원본 백업 후 io.csv와 카메라 목록에 함께 반영됩니다.</p>
 	                                    </div>
 	                                )}
 
@@ -1597,7 +1559,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                 </div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">입력 이미지</span><div className="text-right"><span className="text-xl font-bold text-slate-800">{imageCount}</span><span className="text-sm text-slate-400 ml-1">장</span></div></div>
                                 <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">위치 데이터(EO)</span><div className="text-right"><div className="font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle2 size={16} /> {eoFileName}</div><div className="text-xs text-slate-400 mt-1">{eoCrsValues[0] || eoConfig.crs} · 유효 {effectiveEoLineCount}줄{excludedEoImageKeys.size > 0 ? ` / 제외 ${excludedEoImageKeys.size}개` : ''}{hasDuplicateEoImages ? ` / 원본 ${eoLineCount}줄` : ''}</div></div></div>
-                                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{selectedCamera.name ? `${selectedCamera.name} ${selectedCamera.is_custom ? '(추가)' : '(표준)'}` : '-'}</span></div>
+                                <div className="flex justify-between border-b border-slate-100 pb-4 items-center"><span className="text-slate-500 font-medium">카메라 모델</span><span className="font-bold text-slate-800">{selectedCamera.name ? `${selectedCamera.name}${selectedCamera.is_custom ? ' (추가)' : ''}` : '-'}</span></div>
                                 <div className="flex justify-between items-center pt-2"><span className="text-slate-500 font-medium">데이터 상태</span><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">준비 완료</span></div>
                                 <label className={`flex items-center gap-3 pt-4 border-t border-slate-100 cursor-pointer ${!eoFileName ? 'opacity-50 cursor-not-allowed' : ''}`}>
                                     <input
@@ -1662,64 +1624,6 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                 </div>
             </div>
         </div>
-        {ioEditor.isOpen && (
-            <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm">
-                <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-                    <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
-                        <div>
-                            <h3 className="text-xl font-bold text-slate-800">표준 카메라 IO 관리</h3>
-                            <p className="mt-1 text-sm text-slate-500">
-                                저장 전 형식과 필수값을 검증하고, 원본 백업과 DB 동기화를 함께 수행합니다.
-                            </p>
-                        </div>
-                        <button onClick={closeIoEditor} disabled={ioEditor.isSaving} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40">
-                            <X size={20} />
-                        </button>
-                    </div>
-                    {ioEditor.isLoading ? (
-                        <div className="flex min-h-[420px] items-center justify-center gap-3 text-slate-500">
-                            <RefreshCw size={22} className="animate-spin" /> 표준 IO를 불러오는 중...
-                        </div>
-                    ) : (
-                        <>
-                            <div className="flex flex-wrap gap-2 border-b border-slate-100 bg-slate-50 px-6 py-3 text-xs text-slate-600">
-                                <span className="rounded bg-white px-2 py-1">인코딩 {ioEditor.encoding}</span>
-                                <span className="rounded bg-white px-2 py-1">카메라 블록 {ioEditor.cameraBlockCount}개</span>
-                                <span className="rounded bg-white px-2 py-1">DB 모델 예상 {ioEditor.modelCount}개</span>
-                                <span className="rounded bg-white px-2 py-1">보관 백업 {ioEditor.backupCount}개</span>
-                            </div>
-                            <div className="min-h-0 flex-1 p-6">
-                                <textarea
-                                    value={ioEditor.content}
-                                    onChange={(event) => setIoEditor(prev => ({ ...prev, content: event.target.value }))}
-                                    spellCheck={false}
-                                    className="h-[55vh] min-h-[360px] w-full resize-none rounded-xl border border-slate-300 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                                    aria-label="표준 카메라 IO CSV 내용"
-                                />
-                            </div>
-                            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
-                                <p className="text-xs text-slate-500">
-                                    `$CAMERA` 블록, 모델명, 초점거리, 센서 픽셀 크기와 픽셀 크기는 필수입니다.
-                                </p>
-                                <div className="flex gap-2">
-                                    <button onClick={closeIoEditor} disabled={ioEditor.isSaving} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-white disabled:opacity-40">
-                                        취소
-                                    </button>
-                                    <button
-                                        onClick={handleSaveIoConfig}
-                                        disabled={ioEditor.isSaving || !ioEditor.content || ioEditor.content === ioEditor.originalContent}
-                                        className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                        {ioEditor.isSaving && <RefreshCw size={16} className="animate-spin" />}
-                                        {ioEditor.isSaving ? '검증·동기화 중...' : '백업 후 저장'}
-                                    </button>
-                                </div>
-                            </div>
-                        </>
-                    )}
-                </div>
-            </div>
-        )}
         <ServerFileBrowser
             isOpen={showFileBrowser}
             onClose={() => setShowFileBrowser(false)}

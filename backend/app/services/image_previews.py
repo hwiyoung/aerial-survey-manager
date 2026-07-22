@@ -115,7 +115,7 @@ def _cleanup_preview_cache(cache_root: Path) -> None:
             break
 
 
-def get_image_preview(source_path: str, size: int = 320) -> dict[str, object]:
+def get_image_preview(source_path: str, size: int = 640) -> dict[str, object]:
     """Return a cached data URL, generating it atomically on first request."""
 
     source = Path(source_path).resolve()

@@ -72,19 +72,21 @@ docker compose exec worker-engine ls /data/processing/{project-id}/images/metada
 
 ---
 
-## 표준 카메라 IO 관리
+## 기본 제공 카메라 IO 수정
 
-프로젝트 등록의 카메라 선택 단계에서 표준 모델을 선택한 뒤 **표준 IO 관리**를
-누르면 운영 `io.csv` 원문을 편집할 수 있습니다. 저장 시 형식 검증, 원본 백업,
-원자적 파일 교체와 DB 동기화가 한 흐름으로 수행됩니다.
+프로젝트 등록의 카메라 선택 단계에서 모델을 선택한 뒤 **수정**을 누르면 추가
+화면과 같은 입력 폼에서 IO 값을 편집할 수 있습니다. 기본 제공 모델은 저장 시
+해당 `io.csv` 카메라 블록만 변경하며 형식 검증, 원본 백업, 원자적 파일 교체와
+DB 동기화를 한 흐름으로 수행합니다.
 
 - 운영 파일: `${CONFIG_DATA_PATH}/io.csv` (기본 `AERIAL_DATA_ROOT/config/io.csv`)
 - 백업: `${CONFIG_DATA_PATH}/backups/io.<시각>.<checksum>.csv`
 - 기본 보존: 최근 20개
 - DB 동기화 실패: 직전 `io.csv` 자동 복원
 
-동시에 다른 화면에서 저장해 체크섬이 달라진 경우에는 기존 화면 내용을
-덮어쓰지 않습니다. 표준 IO 관리 창을 닫고 최신 내용을 다시 불러온 뒤 수정하세요.
+직접 추가한 모델만 삭제할 수 있습니다. 사용 중인 추가 모델을 삭제하면 기존
+이미지의 카메라 연결은 해제됩니다. 기본 제공 모델은 수정할 수 있지만 삭제할 수
+없습니다.
 
 ---
 
@@ -196,7 +198,7 @@ docker exec aerial-survey-manager-db-1 psql -U postgres -d aerial_survey -c \
 ## 카메라 모델 등록
 
 ```bash
-# io.csv 기준으로 표준 카메라 모델 동기화
+# io.csv 기준으로 기본 제공 카메라 모델 동기화
 docker compose exec api python /app/scripts/seed_camera_models.py -f /app/data/io.csv --sync
 
 # 신규/빈 DB에서만 전체 초기화 후 등록
@@ -205,7 +207,7 @@ docker compose exec api python /app/scripts/seed_camera_models.py -f /app/data/i
 
 `io.csv`의 `$PIXEL_SIZE` 값은 마이크로미터(µm)로 관리합니다. 처리 엔진으로 전달할 때만 mm로 변환됩니다.
 
-- `--sync`는 공용 표준 모델만 갱신하며 조직 공유 모델은 보존합니다.
+- `--sync`는 기본 제공 모델만 갱신하며 직접 추가한 모델은 보존합니다.
 - 웹에서 추가한 모델은 조직 전체에 공유됩니다.
 - 같은 조직에서는 대소문자와 앞뒤 공백을 무시한 중복 이름을 만들 수 없습니다.
 - `--clear`는 조직 공유 모델까지 삭제하므로 기존 운영 DB에서는 사용하지 마십시오.

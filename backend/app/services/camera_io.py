@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -121,7 +122,7 @@ def _display_name(base_name: str, company: str, used_names: set[str]) -> str:
 def create_camera_entries(cameras: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     used_names: set[str] = set()
-    for raw_camera in cameras:
+    for source_index, raw_camera in enumerate(cameras):
         camera = calculate_sensor_dimensions(raw_camera)
         base_name = str(camera.get("name") or "").strip()
         companies = [
@@ -135,7 +136,7 @@ def create_camera_entries(cameras: list[dict[str, Any]]) -> list[dict[str, Any]]
         if len(companies) > 3:
             legacy_names.append(f"{base_name} - {', '.join(companies[:3])}")
 
-        for company in companies or [""]:
+        for company_index, company in enumerate(companies or [""]):
             name = _display_name(base_name, company, used_names)
             used_names.add(_name_key(name))
             entries.append(
@@ -151,6 +152,10 @@ def create_camera_entries(cameras: list[dict[str, Any]]) -> list[dict[str, Any]]
                     "ppa_x": camera.get("ppa_x"),
                     "ppa_y": camera.get("ppa_y"),
                     "is_custom": False,
+                    "_source_index": source_index,
+                    "_company_index": company_index,
+                    "_base_name": base_name,
+                    "_company": company,
                 }
             )
     return entries
@@ -165,7 +170,7 @@ def parse_and_validate_io(content: str) -> tuple[list[dict[str, Any]], list[dict
     return cameras, entries
 
 
-def _apply_entry(camera_model: CameraModel, entry: dict[str, Any]) -> None:
+def apply_camera_entry(camera_model: CameraModel, entry: dict[str, Any]) -> None:
     for field in (
         "name",
         "focal_length",
@@ -210,7 +215,7 @@ async def sync_standard_camera_models(
         replacement = legacy_entries.get(camera_key)
         replacement_key = _name_key(replacement["name"]) if replacement else None
         if replacement and replacement_key not in reserved_names:
-            _apply_entry(camera, replacement)
+            apply_camera_entry(camera, replacement)
             reserved_names.discard(camera_key)
             reserved_names.add(replacement_key)
             migrated += 1
@@ -236,7 +241,7 @@ async def sync_standard_camera_models(
     for entry in entries:
         camera = current.get(_name_key(entry["name"]))
         if camera:
-            _apply_entry(camera, entry)
+            apply_camera_entry(camera, entry)
             updated += 1
             continue
         db.add(
@@ -333,6 +338,106 @@ def prepare_io_update(content: str, expected_sha256: str) -> dict[str, Any]:
         "cameras": cameras,
         "entries": entries,
     }
+
+
+def _serialize_csv_row(row: list[str]) -> str:
+    output = io.StringIO()
+    csv.writer(output, lineterminator="").writerow(row)
+    return output.getvalue()
+
+
+def _replace_io_row_values(row: list[str], field: str, values: list[Any]) -> list[str]:
+    try:
+        field_index = row.index(field)
+    except ValueError:
+        return row
+    required_length = field_index + 1 + len(values)
+    if len(row) < required_length:
+        row.extend([""] * (required_length - len(row)))
+    for index, value in enumerate(values, start=field_index + 1):
+        row[index] = str(value)
+    return row
+
+
+def update_io_camera_content(
+    content: str,
+    camera_model_name: str,
+    values: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Update one IO camera block while preserving unrelated CSV rows."""
+    cameras, entries = parse_and_validate_io(content)
+    target = next(
+        (entry for entry in entries if _name_key(entry["name"]) == _name_key(camera_model_name)),
+        None,
+    )
+    if target is None:
+        raise ValueError("camera model is not present in io.csv")
+
+    requested_name = str(values.get("name") or "").strip()
+    if not requested_name:
+        raise ValueError("camera model name must not be empty")
+    company = str(target.get("_company") or "")
+    if requested_name == target["name"]:
+        base_name = target["_base_name"]
+    elif company and requested_name.endswith(f" - {company}"):
+        base_name = requested_name[: -(len(company) + 3)].strip()
+    else:
+        base_name = requested_name
+    if not base_name:
+        raise ValueError("camera model name must not be empty")
+
+    field_values = {
+        "$CAMERA_NAME:": [base_name],
+        "$FOCAL_LENGTH:": [values.get("focal_length")],
+        "$PRINCIPAL_POINT_AUTOCOLLIMATION:": [values.get("ppa_x", 0), values.get("ppa_y", 0)],
+        "$SENSOR_SIZE:": [values.get("sensor_width_px"), values.get("sensor_height_px")],
+        "$PIXEL_SIZE:": [values.get("pixel_size"), values.get("pixel_size")],
+    }
+    target_source_index = int(target["_source_index"])
+    current_source_index = -1
+    updated_lines: list[str] = []
+    for line in content.splitlines():
+        row = next(csv.reader([line]))
+        if row and row[0].strip() == "$CAMERA":
+            current_source_index += 1
+        if current_source_index == target_source_index:
+            for field, replacements in field_values.items():
+                if field in row:
+                    row = _replace_io_row_values(row, field, replacements)
+                    line = _serialize_csv_row(row)
+                    break
+        updated_lines.append(line)
+
+    updated_content = "\n".join(updated_lines) + ("\n" if content.endswith(("\n", "\r")) else "")
+    _, updated_entries = parse_and_validate_io(updated_content)
+    updated_target = next(
+        (
+            entry
+            for entry in updated_entries
+            if entry.get("_source_index") == target_source_index
+            and entry.get("_company_index") == target.get("_company_index")
+        ),
+        None,
+    )
+    if updated_target is None:
+        raise ValueError("updated camera model could not be resolved")
+    return updated_content, updated_target
+
+
+def prepare_camera_io_model_update(
+    camera_model_name: str,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    """Prepare an atomic io.csv update for one structured camera form."""
+    document = read_io_document()
+    updated_content, target_entry = update_io_camera_content(
+        document["content"],
+        camera_model_name,
+        values,
+    )
+    prepared = prepare_io_update(updated_content, document["sha256"])
+    prepared["target_entry"] = target_entry
+    return prepared
 
 
 def backup_and_replace_io(prepared: dict[str, Any]) -> Path:

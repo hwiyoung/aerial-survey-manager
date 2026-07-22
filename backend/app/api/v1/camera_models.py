@@ -22,8 +22,10 @@ from app.services.camera_models import (
     normalize_camera_model_name,
 )
 from app.services.camera_io import (
+    apply_camera_entry,
     backup_and_replace_io,
     cleanup_io_backups,
+    prepare_camera_io_model_update,
     prepare_io_update,
     read_io_document,
     restore_io,
@@ -228,6 +230,47 @@ async def update_camera_model(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Camera model not found",
         )
+
+    if not camera_model.is_custom:
+        async with io_update_lock:
+            try:
+                prepared = prepare_camera_io_model_update(
+                    camera_model.name,
+                    data.model_dump(),
+                )
+            except FileExistsError as exc:
+                raise AppError("RESOURCE_STATE_CONFLICT", internal_detail=exc) from exc
+            except (UnicodeError, ValueError) as exc:
+                raise AppError("CAMERA_IO_PARSE_FAILED", internal_detail=exc) from exc
+            except OSError as exc:
+                raise AppError("CAMERA_IO_SAVE_FAILED", internal_detail=exc) from exc
+
+            try:
+                backup_and_replace_io(prepared)
+            except OSError as exc:
+                raise AppError("CAMERA_IO_SAVE_FAILED", internal_detail=exc) from exc
+
+            try:
+                apply_camera_entry(camera_model, prepared["target_entry"])
+                await sync_standard_camera_models(db, prepared["entries"])
+                await db.commit()
+                await db.refresh(camera_model)
+            except Exception as exc:
+                await db.rollback()
+                try:
+                    restore_io(prepared)
+                except OSError as restore_error:
+                    raise AppError(
+                        "CAMERA_IO_SYNC_FAILED",
+                        internal_detail={"sync": repr(exc), "restore": repr(restore_error)},
+                    ) from exc
+                raise AppError("CAMERA_IO_SYNC_FAILED", internal_detail=exc) from exc
+
+            try:
+                cleanup_io_backups()
+            except OSError:
+                pass
+            return camera_model
 
     if not can_manage_camera_model(camera_model, current_user):
         raise HTTPException(
