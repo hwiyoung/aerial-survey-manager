@@ -25,10 +25,10 @@ Git 태그와 배포 패키지는 앞에 `v`를 붙이고, 코드 내부 버전�
 
 ```bash
 ./scripts/check-version.sh
-git commit -m "chore(release): prepare v2.0.0-rc.1"
-git tag -a v2.0.0-rc.1 -m "Aerial Survey Manager v2.0.0-rc.1"
+git commit -m "chore(release): prepare v2.0.0"
+git tag -a v2.0.0 -m "Aerial Survey Manager v2.0.0"
 git push origin develop
-git push origin v2.0.0-rc.1
+git push origin v2.0.0
 ./scripts/build-release.sh
 ```
 
@@ -42,7 +42,7 @@ git push origin v2.0.0-rc.1
 완성된 패키지는 다음 형식을 사용합니다.
 
 ```text
-aerial-survey-manager-v2.0.0-rc.1.tar.gz
+aerial-survey-manager-v2.0.0.tar.gz
 ```
 
 패키지 안의 `VERSION`과 `BUILD_INFO.txt`에서 버전, Git 커밋, 빌드 시각을
