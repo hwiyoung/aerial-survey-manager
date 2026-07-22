@@ -71,6 +71,10 @@ EXPORT_ROOT_PATH             -> /data/exports
 ```
 
 `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 만들 필요가 없습니다.
+최종 COG는 `EXPORT_ROOT_PATH/{region}_{title}.tif` 형식으로 바로
+저장되며, 프로젝트 UUID 하위 폴더를 만들지 않습니다. 같은 파일명이
+이미 있으면 `{region}_{title} (1).tif`, `(2).tif` 순서로 비어 있는
+이름을 선택합니다.
 
 ## 5. systemd 보안 설정
 

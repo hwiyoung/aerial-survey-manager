@@ -1,9 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+from uuid import UUID
 
-from app.workers.tasks import _validate_and_publish_cog
+from app.workers.tasks import (
+    _select_orthomosaic_target,
+    _validate_and_publish_cog,
+)
 
 
 class _RecordingStorage:
@@ -44,6 +49,70 @@ class ProcessingPublishTests(unittest.TestCase):
         self.assertEqual(checksum, "abc123")
         self.assertEqual(file_size, len(b"validated-cog"))
         self.assertEqual(bounds, "SRID=4326;POLYGON EMPTY")
+
+    def test_same_project_can_atomically_replace_its_flat_output(self):
+        key = "orthomosaic/서울_테스트.tif"
+        project = SimpleNamespace(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            ortho_path=key,
+        )
+        db = Mock()
+        db.query.return_value.filter.return_value.all.return_value = []
+        storage = Mock()
+        storage.object_exists.return_value = True
+
+        selected = _select_orthomosaic_target(db, project, key, storage)
+
+        self.assertEqual(selected, key)
+
+    def test_other_project_gets_next_numbered_flat_output(self):
+        key = "orthomosaic/서울_테스트.tif"
+        project = SimpleNamespace(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            ortho_path=None,
+        )
+        db = Mock()
+        db.query.return_value.filter.return_value.all.return_value = [(key,)]
+        storage = Mock()
+        storage.object_exists.return_value = False
+
+        selected = _select_orthomosaic_target(db, project, key, storage)
+
+        self.assertEqual(selected, "orthomosaic/서울_테스트 (1).tif")
+
+    def test_untracked_existing_outputs_are_skipped_in_number_order(self):
+        key = "orthomosaic/서울_테스트.tif"
+        project = SimpleNamespace(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            ortho_path=None,
+        )
+        db = Mock()
+        db.query.return_value.filter.return_value.all.return_value = []
+        storage = Mock()
+        storage.object_exists.side_effect = lambda candidate: candidate in {
+            key,
+            "orthomosaic/서울_테스트 (1).tif",
+        }
+
+        selected = _select_orthomosaic_target(db, project, key, storage)
+
+        self.assertEqual(selected, "orthomosaic/서울_테스트 (2).tif")
+
+    def test_same_project_keeps_its_numbered_name_when_reprocessed(self):
+        key = "orthomosaic/서울_테스트.tif"
+        current = "orthomosaic/서울_테스트 (2).tif"
+        project = SimpleNamespace(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            ortho_path=current,
+        )
+        db = Mock()
+        db.query.return_value.filter.return_value.all.return_value = []
+        storage = Mock()
+        storage.object_exists.return_value = True
+
+        selected = _select_orthomosaic_target(db, project, key, storage)
+
+        self.assertEqual(selected, current)
 
 
 if __name__ == "__main__":

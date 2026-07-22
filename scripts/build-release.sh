@@ -464,8 +464,11 @@ Aerial Survey Manager 운영 체크리스트 (${VERSION})
 경로/정사영상:
   [ ] LOCAL_STORAGE_PATH/projects 만 /data/storage/projects 로 마운트됨
   [ ] EXPORT_ROOT_PATH 가 /data/storage/orthomosaic 및 /data/exports 로 마운트됨
+  [ ] 최종 COG가 EXPORT_ROOT_PATH/{region}_{title}.tif 평면 구조로 저장됨
   [ ] LOCAL_STORAGE_PATH/orthomosaic 더미 디렉토리는 필요 없음
   [ ] 기존 데이터 동기화 필요 시 ./scripts/sync-ortho-result-paths.sh --apply 실행
+  [ ] v2.0.0-rc.1 UUID 폴더가 있으면 백업 후
+      ./scripts/migrate-orthomosaic-layout.sh dry-run/적용 실행
 
 카메라 IO:
   [ ] API 시작 후 data/io.csv 기준으로 표준 카메라 모델이 DB에 동기화됨

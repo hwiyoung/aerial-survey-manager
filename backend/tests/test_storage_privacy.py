@@ -1,7 +1,9 @@
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
+from uuid import UUID
 
+from app.api.v1.storage_files import _project_ids_for_storage_key
 from app.services.storage_local import LocalStorageBackend
 from app.services.storage_minio import MinIOStorageBackend
 from app.services.s3_multipart import S3MultipartService
@@ -84,6 +86,37 @@ class StoragePrivacyTests(unittest.TestCase):
             url,
             "/storage/aerial-survey/projects/example?X-Amz-Signature=signed",
         )
+
+
+class FlatOrthomosaicOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_flat_orthomosaic_owner_is_resolved_from_project_path(self):
+        project_id = UUID("11111111-1111-1111-1111-111111111111")
+        scalar_result = Mock()
+        scalar_result.all.return_value = [project_id]
+        result = Mock()
+        result.scalars.return_value = scalar_result
+        db = AsyncMock()
+        db.execute.return_value = result
+
+        owners = await _project_ids_for_storage_key(
+            "orthomosaic/서울_테스트.tif",
+            db,
+        )
+
+        self.assertEqual(owners, [project_id])
+        db.execute.assert_awaited_once()
+
+    async def test_nested_project_key_uses_encoded_uuid_without_query(self):
+        project_id = UUID("22222222-2222-2222-2222-222222222222")
+        db = AsyncMock()
+
+        owners = await _project_ids_for_storage_key(
+            f"projects/{project_id}/source/images/a.jpg",
+            db,
+        )
+
+        self.assertEqual(owners, [project_id])
+        db.execute.assert_not_awaited()
 
 
 if __name__ == "__main__":

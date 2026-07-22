@@ -20,7 +20,9 @@ from app.utils.checksum import calculate_file_checksum
 from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
 from app.utils.storage_paths import (
+    is_numbered_orthomosaic_variant,
     legacy_processing_work_dir,
+    numbered_orthomosaic_key,
     orthomosaic_key,
     processing_exclusion_path,
     processing_images_dir,
@@ -311,17 +313,89 @@ def _upload_cog_to_storage(cog_path, object_name: str, storage) -> Path:
         return cog_path
 
 
-def _validate_and_publish_cog(cog_path: Path, object_name: str, storage):
-    """Validate a completed COG before making it visible in final storage.
-
-    The output key is job-specific, so a later database failure may leave an
-    orphan for cleanup but can never overwrite the previous completed result.
-    """
+def _validate_cog(cog_path: Path):
+    """Return immutable metadata after validating a completed COG."""
     checksum = calculate_file_checksum(str(cog_path))
     file_size = os.path.getsize(cog_path)
     bounds_wkt = get_orthophoto_bounds(str(cog_path))
+    return checksum, file_size, bounds_wkt
+
+
+def _validate_and_publish_cog(cog_path: Path, object_name: str, storage):
+    """Validate a completed COG before making it visible in final storage."""
+    checksum, file_size, bounds_wkt = _validate_cog(cog_path)
     _upload_cog_to_storage(cog_path, object_name, storage)
     return checksum, file_size, bounds_wkt
+
+
+def _lock_orthomosaic_name_allocation(db, base_key: str) -> None:
+    """Serialize allocation of one base filename on PostgreSQL.
+
+    The transaction-scoped lock prevents two workers finishing projects with
+    the same region/title from both selecting the same numbered filename.
+    """
+    bind = db.get_bind()
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+    if dialect_name != "postgresql":
+        return
+
+    from sqlalchemy import text
+
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_name))"),
+        {"lock_name": f"orthomosaic-filename:{base_key}"},
+    )
+
+
+def _select_orthomosaic_target(
+    db,
+    project,
+    base_key: str,
+    storage,
+) -> str:
+    """Select a flat filename without overwriting another project's COG.
+
+    The same project keeps its current base/numbered filename when reprocessed.
+    Otherwise the first available PC-style name is returned: ``name.tif``,
+    ``name (1).tif``, ``name (2).tif``, ... . DB-owned and untracked physical
+    files are both treated as occupied.
+    """
+    from app.models.project import Project
+
+    _lock_orthomosaic_name_allocation(db, base_key)
+
+    other_project_paths = {
+        str(row[0])
+        for row in (
+            db.query(Project.ortho_path)
+            .filter(
+                Project.id != project.id,
+                Project.ortho_path.isnot(None),
+            )
+            .all()
+        )
+        if row[0]
+    }
+
+    current_key = str(project.ortho_path) if project.ortho_path else None
+    if (
+        is_numbered_orthomosaic_variant(current_key, base_key)
+        and current_key not in other_project_paths
+    ):
+        return current_key
+
+    for index in range(10_000):
+        candidate = numbered_orthomosaic_key(base_key, index)
+        if candidate in other_project_paths:
+            continue
+        if storage.object_exists(candidate):
+            continue
+        return candidate
+
+    raise RuntimeError(
+        "정사영상 최종 파일명을 만들 수 없습니다: "
+        f"{base_key}의 중복 번호가 9,999개를 초과했습니다."
+    )
 
 
 def _prepare_images(storage, images, input_dir: Path, update_progress) -> int:
@@ -699,6 +773,13 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                             f"pixel={cam.pixel_size}µm/{pixel_size_mm:.6f}mm"
                         )
             print(f"[Processing] Engine dispatch: {engine_name} / queue={queue_name}")
+
+            # This worker is the single final COG publisher. The router's
+            # legacy auto-export path targets the same EXPORT_ROOT_PATH and
+            # would otherwise create a second flat file before numbered-name
+            # allocation runs.
+            engine_options = dict(options)
+            engine_options["auto_export"] = False
             
             # Run async processing in event loop
             loop = asyncio.new_event_loop()
@@ -711,7 +792,7 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                         project_id=project_id,
                         input_dir=input_dir,
                         output_dir=output_dir,
-                        options=options,
+                        options=engine_options,
                         progress_callback=progress_callback,
                     )
                 )
@@ -743,14 +824,16 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             )
             if str(target_ortho_crs).strip().isdigit():
                 target_ortho_crs = f"EPSG:{str(target_ortho_crs).strip()}"
-            result_object_name = orthomosaic_key(
+            base_result_object_name = orthomosaic_key(
                 project_id,
                 str(target_ortho_crs),
                 region=project.region,
                 title=project.title,
-                unique_suffix=str(job.id),
             )
-            orthomosaic_cog_path = output_dir / Path(result_object_name).name
+            final_basename = Path(base_result_object_name).name
+            orthomosaic_cog_path = output_dir / (
+                f".{Path(final_basename).stem}.{job.id}.publishing.tif"
+            )
 
             try:
                 import shutil
@@ -833,11 +916,37 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     _warp_to_cog(str(cog_path), str(orthomosaic_cog_path), str(target_ortho_crs))
 
                 update_progress(94, "체크섬 및 영역 정보 확인 중...")
-                checksum, file_size, bounds_wkt = _validate_and_publish_cog(
+                checksum, file_size, bounds_wkt = _validate_cog(
+                    orthomosaic_cog_path
+                )
+                if _is_cancelled_in_db():
+                    return persist_cancelled_status()
+
+                result_object_name = _select_orthomosaic_target(
+                    db,
+                    project,
+                    base_result_object_name,
+                    storage,
+                )
+                if result_object_name != base_result_object_name:
+                    print(
+                        "정사영상 파일명 중복을 피해 저장합니다: "
+                        f"{Path(result_object_name).name}"
+                    )
+                _upload_cog_to_storage(
                     orthomosaic_cog_path,
                     result_object_name,
                     storage,
                 )
+                # Persist the filename reservation before releasing the
+                # advisory transaction lock. The project remains processing
+                # until final cleanup and geometry updates complete.
+                project.ortho_path = result_object_name
+                project.ortho_size = file_size
+                job.result_path = result_object_name
+                job.result_checksum = checksum
+                job.result_size = file_size
+                db.commit()
 
                 # Clean up intermediate files in processing/.work/
                 update_progress(96, "중간 파일 정리 중...")
@@ -1406,13 +1515,17 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         target_ortho_crs = settings.AUTO_EXPORT_TARGET_CRS or "EPSG:5186"
         if str(target_ortho_crs).strip().isdigit():
             target_ortho_crs = f"EPSG:{str(target_ortho_crs).strip()}"
-        cog_object_name = orthomosaic_key(
+        base_cog_object_name = orthomosaic_key(
             project_id,
             str(target_ortho_crs),
             region=project.region,
             title=project.title,
         )
-        final_cog_path = output_dir / Path(cog_object_name).name
+        storage = get_storage()
+        publishing_id = str(self.request.id or project_id).replace("/", "_")
+        final_cog_path = output_dir / (
+            f".{Path(base_cog_object_name).stem}.{publishing_id}.publishing.tif"
+        )
 
         # 소스가 이미 최종 경로에 있으면 복사/이동 불필요
         source_is_final = source.resolve() == final_cog_path.resolve()
@@ -1456,7 +1569,7 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         if _is_cog_in_target_crs(final_cog_path, str(target_ortho_crs)):
             print(f"✓ 입력 파일이 이미 대상 CRS({target_ortho_crs})의 COG 형식")
         else:
-            warped_cog_path = output_dir / f"_warped_{Path(cog_object_name).name}"
+            warped_cog_path = output_dir / f".{publishing_id}.warped.tif"
             try:
                 _warp_to_cog(str(final_cog_path), str(warped_cog_path), str(target_ortho_crs))
                 shutil.move(str(warped_cog_path), str(final_cog_path))
@@ -1465,8 +1578,17 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
                 return {"status": "error", "message": f"정사영상 COG/CRS 변환 실패: {e}"}
 
         # Upload / move to storage
-        storage = get_storage()
-
+        cog_object_name = _select_orthomosaic_target(
+            db,
+            project,
+            base_cog_object_name,
+            storage,
+        )
+        if cog_object_name != base_cog_object_name:
+            print(
+                "정사영상 파일명 중복을 피해 저장합니다: "
+                f"{Path(cog_object_name).name}"
+            )
         print("📤 스토리지로 이동/업로드 중...")
         final_cog_path = _upload_cog_to_storage(final_cog_path, cog_object_name, storage)
         print(f"✓ 스토리지 저장 완료: {final_cog_path}")
