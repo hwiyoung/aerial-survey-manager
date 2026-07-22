@@ -51,18 +51,18 @@ perf(map): 대용량 도엽 렌더링 개선
 5. `VERSION`과 연동된 모든 버전 표기를 동일하게 올립니다.
 6. 버전 검사, 테스트, 패키징, 태그, GitHub Release를 순서대로 수행합니다.
 
-현재 기준이 `v2.0.0-rc.1`일 때 수정 검증판은 `v2.0.0-rc.2`, 정식 출시는
-`v2.0.0`입니다. 정식 출시 이후 호환 버그 수정은 `v2.0.1`, 호환 기능 추가는
-`v2.1.0`을 사용합니다.
+`v2.0.0` 이후 정사영상 경로와 덮어쓰기 수정은 `v2.0.1`, 오류 안내·표준 IO·
+EO 미리보기·도엽 클립 같은 호환 기능 추가는 `v2.1.0`을 사용합니다. 운영
+검증이 필요한 기능 릴리스는 `v2.1.0-rc.1`부터 시작합니다.
 
 ## 릴리즈 절차
 
 ```bash
 ./scripts/check-version.sh
-git commit -m "chore(release): prepare v2.0.0"
-git tag -a v2.0.0 -m "Aerial Survey Manager v2.0.0"
+git commit -m "chore(release): prepare v2.0.1"
+git tag -a v2.0.1 -m "Aerial Survey Manager v2.0.1"
 git push origin develop
-git push origin v2.0.0
+git push origin v2.0.1
 ./scripts/build-release.sh
 ```
 
@@ -76,7 +76,7 @@ git push origin v2.0.0
 완성된 패키지는 다음 형식을 사용합니다.
 
 ```text
-aerial-survey-manager-v2.0.0.tar.gz
+aerial-survey-manager-v2.0.1.tar.gz
 ```
 
 패키지 안의 `VERSION`과 `BUILD_INFO.txt`에서 버전, Git 커밋, 빌드 시각을
