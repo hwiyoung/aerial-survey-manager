@@ -201,6 +201,29 @@ def classify_legacy_error_detail(detail: Any, status_code: int, path: str = "") 
     return classify_legacy_http_error(status_code, path)
 
 
+def classify_processing_error(error: BaseException | str) -> str:
+    """Classify worker failures without exposing their original text."""
+
+    text = str(error).lower()
+    if "gpu_runtime_lost" in text or "gpu runtime" in text and "lost" in text:
+        return "GPU_RUNTIME_INTERRUPTED"
+    if ("cuda" in text or "gpu" in text) and "out of memory" in text:
+        return "GPU_MEMORY_EXHAUSTED"
+    if ("nvidia" in text or "gpu" in text) and "driver" in text:
+        return "GPU_DRIVER_UNAVAILABLE"
+    if "no cuda-capable device" in text or "gpu device" in text and "unavailable" in text:
+        return "GPU_DEVICE_UNAVAILABLE"
+    if "checkpoint" in text:
+        return "PROCESSING_CHECKPOINT_FAILED"
+    if "no space left" in text or "disk full" in text:
+        return "STORAGE_CAPACITY_EXCEEDED"
+    if "permission denied" in text:
+        return "STORAGE_WRITE_FAILED"
+    if "no such file" in text or "file not found" in text:
+        return "FILE_NOT_FOUND"
+    return "PROCESSING_STEP_FAILED"
+
+
 def _response(
     code: str,
     reference_id: str,

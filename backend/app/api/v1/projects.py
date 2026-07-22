@@ -15,6 +15,7 @@ from sqlalchemy import select, func, delete, extract, or_
 from geoalchemy2.functions import ST_AsText
 
 from app.database import get_db
+from app.errors import ERROR_SPECS
 from app.models.user import User
 from app.models.project import Project, Image, ExteriorOrientation, ProcessingJob
 from app.models.group import ProjectGroup
@@ -385,6 +386,12 @@ async def _apply_active_project_overrides(
             if active_job.error_message:
                 active_job.error_message = None
                 changed = True
+            if active_job.error_code:
+                active_job.error_code = None
+                changed = True
+            if active_job.error_reference:
+                active_job.error_reference = None
+                changed = True
             if active_job.completed_at is not None:
                 active_job.completed_at = None
                 changed = True
@@ -397,16 +404,24 @@ async def _apply_active_project_overrides(
 def _processing_job_fields(
     project_id: UUID,
     display_job_map: dict[UUID, ProcessingJob],
+    latest_any_job_map: dict[UUID, ProcessingJob],
     active_job_map: dict[UUID, ProcessingJob],
 ) -> dict:
     display_job = display_job_map.get(project_id)
+    latest_job = latest_any_job_map.get(project_id)
     active_job = active_job_map.get(project_id)
     timing_job = active_job or display_job
+    error_job = latest_job if latest_job and latest_job.status in {"error", "failed"} else None
+    error_action = ERROR_SPECS[error_job.error_code].action if error_job and error_job.error_code in ERROR_SPECS else None
     return {
         "result_gsd": display_job.result_gsd if display_job else None,
         "process_mode": (active_job.process_mode if active_job else None) or (display_job.process_mode if display_job else None),
         "processing_started_at": timing_job.started_at if timing_job else None,
         "processing_completed_at": None if active_job else (display_job.completed_at if display_job else None),
+        "error_message": error_job.error_message if error_job else None,
+        "error_code": error_job.error_code if error_job else None,
+        "error_action": error_action,
+        "error_reference": error_job.error_reference if error_job else None,
     }
 
 
@@ -489,7 +504,12 @@ async def list_projects(
         project = row[0]
         bounds_wkt = row[1]
         image_counts = image_counts_map.get(project.id, _empty_project_image_counts())
-        job_fields = _processing_job_fields(project.id, display_job_map, active_job_map)
+        job_fields = _processing_job_fields(
+            project.id,
+            display_job_map,
+            latest_any_job_map,
+            active_job_map,
+        )
 
         response = _build_project_response(
             project, bounds_wkt=bounds_wkt, image_count=image_counts["image_count"],
@@ -611,7 +631,12 @@ async def get_project(
         job_by_id,
         active_tasks,
     )
-    job_fields = _processing_job_fields(project.id, display_job_map, active_job_map)
+    job_fields = _processing_job_fields(
+        project.id,
+        display_job_map,
+        latest_any_job_map,
+        active_job_map,
+    )
 
     return _build_project_response(
         project, bounds_wkt=bounds_wkt, image_count=image_counts["image_count"],

@@ -612,7 +612,13 @@ export function ProjectItem({
                     <div className="mt-2 ml-8 p-2 bg-red-50 border border-red-200 rounded-lg">
                         <div className="flex items-start gap-2">
                             <span className="text-red-500 text-xs">⚠</span>
-                            <p className="text-[11px] text-red-700 leading-relaxed">{project.error_message}</p>
+                            <div className="text-[11px] text-red-700 leading-relaxed whitespace-pre-line">
+                                <p>{project.error_message}</p>
+                                {project.error_action && <p className="mt-1">{project.error_action}</p>}
+                                {project.error_reference && (
+                                    <p className="mt-1 font-mono text-[10px]">오류 참조번호: {project.error_reference}</p>
+                                )}
+                            </div>
                         </div>
                     </div>
                 )}

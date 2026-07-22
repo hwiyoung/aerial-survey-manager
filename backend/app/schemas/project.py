@@ -60,6 +60,10 @@ class ProjectResponse(ProjectBase):
     # 처리 시간 정보
     processing_started_at: Optional[datetime] = None
     processing_completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    error_code: Optional[str] = None
+    error_action: Optional[str] = None
+    error_reference: Optional[str] = None
 class ProjectListResponse(BaseModel):
     """Paginated project list response."""
     items: List[ProjectResponse]
@@ -263,6 +267,9 @@ class ProcessingJobResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    error_code: Optional[str] = None
+    error_action: Optional[str] = None
+    error_reference: Optional[str] = None
     result_path: Optional[str] = None
     result_size: Optional[int] = None
     result_gsd: Optional[float] = None  # 처리 결과 GSD (cm/pixel)
@@ -307,6 +314,9 @@ class ProcessingStatusUpdate(BaseModel):
     status: str
     progress: int
     message: Optional[str] = None
+    error_code: Optional[str] = None
+    error_action: Optional[str] = None
+    error_reference: Optional[str] = None
 
 
 # --- QC Schemas ---

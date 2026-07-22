@@ -7,6 +7,7 @@ from app.errors import (
     AppError,
     classify_legacy_error_detail,
     classify_legacy_http_error,
+    classify_processing_error,
     new_error_reference_id,
     public_error_payload,
     safe_legacy_error_context,
@@ -108,3 +109,11 @@ def test_http_handler_hides_raw_detail_and_returns_reference_header():
         "can_resume": True,
     }
     assert "/private/project/metadata.txt" not in response.body.decode()
+
+
+def test_processing_error_classification_uses_stable_codes():
+    assert classify_processing_error("GPU_RUNTIME_LOST before step") == "GPU_RUNTIME_INTERRUPTED"
+    assert classify_processing_error("CUDA out of memory") == "GPU_MEMORY_EXHAUSTED"
+    assert classify_processing_error("checkpoint restore failed") == "PROCESSING_CHECKPOINT_FAILED"
+    assert classify_processing_error("No space left on device") == "STORAGE_CAPACITY_EXCEEDED"
+    assert classify_processing_error("unexpected engine exit") == "PROCESSING_STEP_FAILED"

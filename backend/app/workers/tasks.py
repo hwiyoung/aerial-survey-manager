@@ -1,4 +1,5 @@
 """Celery application and async tasks."""
+import logging
 import os
 import json
 import shutil
@@ -16,6 +17,7 @@ from celery import Celery
 
 from app.config import get_settings
 from app.auth.jwt import create_internal_token
+from app.errors import ERROR_SPECS, classify_processing_error, new_error_reference_id
 from app.utils.checksum import calculate_file_checksum
 from app.utils.formatting import format_elapsed as _fmt_elapsed
 from app.utils.gdal import extract_bounds_wkt as get_orthophoto_bounds
@@ -37,6 +39,7 @@ from app.utils.storage_paths import (
 )
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 QUEUE_WAIT_WARN_SECONDS = float(os.getenv("PROCESSING_QUEUE_WAIT_WARN_SECONDS", "300"))
 PROCESSING_TOTAL_WARN_SECONDS = float(os.getenv("PROCESSING_TOTAL_WARN_SECONDS", "7200"))
@@ -148,7 +151,16 @@ def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:
 # Shared helpers (used by multiple tasks)
 # ============================================================================
 
-def _broadcast_ws(project_id: str, status: str, progress: int, message: str):
+def _broadcast_ws(
+    project_id: str,
+    status: str,
+    progress: int,
+    message: str,
+    *,
+    error_code: str | None = None,
+    error_action: str | None = None,
+    error_reference: str | None = None,
+):
     """Broadcast processing status update via WebSocket."""
     try:
         import httpx
@@ -164,7 +176,10 @@ def _broadcast_ws(project_id: str, status: str, progress: int, message: str):
                 "project_id": project_id,
                 "status": status,
                 "progress": progress,
-                "message": message
+                "message": message,
+                "error_code": error_code,
+                "error_action": error_action,
+                "error_reference": error_reference,
             },
             timeout=5.0
         )
@@ -566,6 +581,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             # Update status to processing
             job.status = "processing"
             job.started_at = job.started_at or datetime.utcnow()
+            job.error_message = None
+            job.error_code = None
+            job.error_reference = None
             project.status = "processing"
             db.commit()
 
@@ -647,6 +665,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 message: str,
                 status_value: str = "processing",
                 metrics: dict[str, object] | None = None,
+                error_code: str | None = None,
+                error_action: str | None = None,
+                error_reference: str | None = None,
             ):
                 try:
                     payload = {
@@ -659,6 +680,12 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                     }
                     if metrics is not None:
                         payload["metrics"] = metrics
+                    if error_code:
+                        payload["error_code"] = error_code
+                    if error_action:
+                        payload["error_action"] = error_action
+                    if error_reference:
+                        payload["error_reference"] = error_reference
                     with open(status_file, "w", encoding="utf-8") as f:
                         json.dump(payload, f)
                 except Exception:
@@ -684,6 +711,8 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
                 job.progress = cancel_progress
                 job.completed_at = job.completed_at or datetime.utcnow()
                 job.error_message = None
+                job.error_code = None
+                job.error_reference = None
                 project.status = "cancelled"
                 project.progress = cancel_progress
                 db.commit()
@@ -1037,6 +1066,9 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             job.status = "completed"
             job.progress = 100
             job.completed_at = datetime.utcnow()
+            job.error_message = None
+            job.error_code = None
+            job.error_reference = None
             project.status = "completed"
             project.progress = 100
             project.ortho_path = result_object_name  # Store ortho path in project
@@ -1090,42 +1122,53 @@ def process_orthophoto(self, job_id: str, project_id: str, options: dict):
             if "persist_cancelled_status" in locals() and _is_cancelled_in_db():
                 return persist_cancelled_status()
 
-            # Handle error - extract user-friendly message from processing output
-            error_str = str(e)
-            
-            # Try to find [ERROR] message in output
-            user_friendly_error = "처리 중 오류가 발생했습니다."
-            if "GPU_RUNTIME_LOST" in error_str:
-                user_friendly_error = (
-                    "GPU 처리 장치 연결이 끊겨 처리가 중단되었습니다. "
-                    "GPU 워커 상태를 확인한 뒤 다시 처리해주세요."
-                )
-            elif "[ERROR]" in error_str:
-                # Extract the ERROR line
-                import re
-                error_match = re.search(r'\[ERROR\]\s*(.+?)(?:\n|$)', error_str)
-                if error_match:
-                    user_friendly_error = error_match.group(1).strip()
-            elif "Exit code:" in error_str:
-                user_friendly_error = "처리 실패 (데이터 품질 문제일 수 있음)"
-            
+            error_code = classify_processing_error(e)
+            error_reference = new_error_reference_id()
+            error_spec = ERROR_SPECS[error_code]
+            user_friendly_error = error_spec.message
+            logger.exception(
+                "processing_failed reference_id=%s code=%s project_id=%s job_id=%s",
+                error_reference,
+                error_code,
+                project_id,
+                getattr(job, "id", None),
+            )
             job.status = "error"
             job.error_message = user_friendly_error
+            job.error_code = error_code
+            job.error_reference = error_reference
             project.status = "error"
-            project.error_message = user_friendly_error  # Also save to project for UI display
             db.commit()
             try:
-                error_metrics = {"error_message": user_friendly_error}
+                error_metrics = {
+                    "error_code": error_code,
+                    "error_reference": error_reference,
+                }
                 if 'phase_timings' in dir():
                     error_metrics["phase_elapsed_seconds"] = {
                         pn: round(el, 2) for pn, el in phase_timings
                     }
-                write_status_file(0, user_friendly_error, status_value="error", metrics=error_metrics)
+                write_status_file(
+                    0,
+                    user_friendly_error,
+                    status_value="error",
+                    metrics=error_metrics,
+                    error_code=error_code,
+                    error_action=error_spec.action,
+                    error_reference=error_reference,
+                )
             except NameError:
                 pass  # write_status_file/phase_timings not yet defined (early failure)
-            
-            # Broadcast error via WebSocket
-            _broadcast_ws(project_id, "error", 0, user_friendly_error)
+
+            _broadcast_ws(
+                project_id,
+                "error",
+                0,
+                user_friendly_error,
+                error_code=error_code,
+                error_action=error_spec.action,
+                error_reference=error_reference,
+            )
 
             raise
 
@@ -1471,6 +1514,8 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
                 print(f"⚠ Celery 태스크 취소: {running_job.celery_task_id}")
             running_job.status = "cancelled"
             running_job.error_message = "외부 COG 삽입으로 인해 취소됨"
+            running_job.error_code = None
+            running_job.error_reference = None
             db.commit()
 
         # Validate GeoTIFF via gdalinfo
@@ -1623,6 +1668,8 @@ def inject_external_cog(self, project_id: str, source_path: str, gsd_cm: float =
         job.result_size = file_size
         job.progress = 100
         job.error_message = None
+        job.error_code = None
+        job.error_reference = None
         if not job.started_at:
             job.started_at = datetime.utcnow()
 

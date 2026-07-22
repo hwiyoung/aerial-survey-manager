@@ -23,6 +23,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.database import get_db
+from app.errors import ERROR_SPECS, new_error_reference_id
 from app.models.user import User
 from app.models.project import Project, ProcessingJob, Image, ExteriorOrientation
 from app.schemas.project import (
@@ -152,6 +153,8 @@ def _mark_job_cancelled(
     job.progress = cancel_progress
     job.completed_at = job.completed_at or datetime.utcnow()
     job.error_message = None
+    job.error_code = None
+    job.error_reference = None
     if job.crs_correction_status == "pending":
         job.crs_correction_source_crs = None
         job.crs_correction_status = "cancelled"
@@ -798,6 +801,12 @@ async def _build_processing_status_response(
         if job.error_message:
             job.error_message = None
             changed = True
+        if job.error_code:
+            job.error_code = None
+            changed = True
+        if job.error_reference:
+            job.error_reference = None
+            changed = True
         if project.progress != runtime_progress:
             project.progress = runtime_progress
             changed = True
@@ -819,9 +828,14 @@ async def _build_processing_status_response(
             job.progress = 100
             project.progress = 100
             job.error_message = None
+            job.error_code = None
+            job.error_reference = None
             _mark_unapplied_crs_correction(job)
         elif terminal_message:
             job.error_message = terminal_message
+            payload_error_code = status_payload.get("error_code")
+            job.error_code = payload_error_code if payload_error_code in ERROR_SPECS else "PROCESSING_STEP_FAILED"
+            job.error_reference = status_payload.get("error_reference") or new_error_reference_id()
         if job.completed_at is None:
             job.completed_at = datetime.utcnow()
         await db.commit()
@@ -845,6 +859,8 @@ async def _build_processing_status_response(
         await db.refresh(job)
 
     response = ProcessingJobResponse.model_validate(job)
+    if response.error_code in ERROR_SPECS:
+        response.error_action = ERROR_SPECS[response.error_code].action
     response.current_source_crs = await _current_processing_source_crs(db, project_id, job)
     if job.crs_correction_status in {"pending", "applying", "applied"} and job.crs_correction_source_crs:
         response.eo_display_source_crs = job.crs_correction_source_crs
@@ -855,6 +871,9 @@ async def _build_processing_status_response(
         response.status = "processing"
         response.progress = runtime_progress
         response.error_message = None
+        response.error_code = None
+        response.error_action = None
+        response.error_reference = None
     elif job.status in ("queued", "processing"):
         response.progress = runtime_progress
 
@@ -1235,7 +1254,9 @@ async def start_processing(
         if stale_reason:
             # Auto-reset stale job
             existing_job.status = "failed"
-            existing_job.error_message = f"작업이 자동 초기화되었습니다: {stale_reason}"
+            existing_job.error_code = "PROCESSING_INTERRUPTED"
+            existing_job.error_reference = new_error_reference_id()
+            existing_job.error_message = ERROR_SPECS[existing_job.error_code].message
             existing_job.completed_at = now
             await db.flush()
         else:
@@ -1350,7 +1371,9 @@ async def start_processing(
     except Exception:
         # Celery submission failed — revert DB state
         job.status = "error"
-        job.error_message = "태스크 큐 전송 실패"
+        job.error_code = "PROCESSING_ENQUEUE_FAILED"
+        job.error_reference = new_error_reference_id()
+        job.error_message = ERROR_SPECS[job.error_code].message
         project.status = "error"
         await db.commit()
         raise
@@ -2038,6 +2061,9 @@ class BroadcastRequest(BaseModel):
     status: str
     progress: int
     message: str = None
+    error_code: str | None = None
+    error_action: str | None = None
+    error_reference: str | None = None
 
 @router.post("/broadcast")
 async def broadcast_update(
@@ -2057,6 +2083,9 @@ async def broadcast_update(
         "status": request.status,
         "progress": request.progress,
         "message": request.message,
+        "error_code": request.error_code,
+        "error_action": request.error_action,
+        "error_reference": request.error_reference,
         "type": "progress" if request.status == "processing" else request.status,
     })
     return {"status": "broadcast_sent"}

@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api/client';
 
+function formatProcessingError(data) {
+    const parts = [data?.error_message || data?.message || '처리 중 오류가 발생했습니다.'];
+    if (data?.error_action) parts.push(data.error_action);
+    if (data?.error_reference) parts.push(`오류 참조번호: ${data.error_reference}`);
+    return parts.join('\n');
+}
+
 /**
  * Custom hook for real-time processing progress via WebSocket
  * Connects to the backend WebSocket endpoint and receives progress updates
@@ -51,6 +58,7 @@ export function useProcessingProgress(projectId) {
                         setProgress(0);
                     } else if (data.status === 'error' || data.status === 'failed') {
                         updateStatus('error');
+                        setMessage(formatProcessingError(data));
                     } else if (data.status === 'queued') {
                         updateStatus('queued');
                     } else if (data.status === 'processing' || data.status === 'running') {
@@ -110,6 +118,7 @@ export function useProcessingProgress(projectId) {
                             setProgress(0);
                         } else if (data.status === 'error' || data.status === 'failed') {
                             updateStatus('error');
+                            setMessage(formatProcessingError(data));
                         } else if (data.status === 'queued') {
                             updateStatus('queued');
                         } else if (data.status === 'processing' || data.status === 'running') {
@@ -120,7 +129,8 @@ export function useProcessingProgress(projectId) {
 
                     const incomingMessage = String(data.message || '');
                     const isCrsCorrectionReservationMessage = /^좌표계 변경 예약/.test(incomingMessage);
-                    if (incomingMessage && !isCrsCorrectionReservationMessage) {
+                    const isErrorStatus = data.status === 'error' || data.status === 'failed';
+                    if (incomingMessage && !isCrsCorrectionReservationMessage && !isErrorStatus) {
                         setMessage(data.message);
                     }
                 } catch (e) {

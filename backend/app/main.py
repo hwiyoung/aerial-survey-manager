@@ -10,7 +10,7 @@ from app.config import get_settings
 from app.api.v1 import router as api_v1_router
 from app.api.v1.download import close_titiler_http_client
 from app.database import async_session
-from app.errors import install_error_handlers
+from app.errors import ERROR_SPECS, install_error_handlers, new_error_reference_id
 from app.models.project import ProcessingJob, Project
 from app.services.processing_lifecycle import startup_recovery_in_grace_period
 from app.utils.storage_paths import processing_status_path
@@ -184,6 +184,8 @@ async def _recover_stuck_jobs():
                     status="cancelled",
                     completed_at=now,
                     error_message=None,
+                    error_code=None,
+                    error_reference=None,
                 )
             )
             await db.execute(
@@ -223,6 +225,8 @@ async def _recover_stuck_jobs():
                     progress=100,
                     completed_at=now,
                     error_message=None,
+                    error_code=None,
+                    error_reference=None,
                 )
             )
             unapplied_crs_job_ids = [
@@ -273,19 +277,15 @@ async def _recover_stuck_jobs():
         if not stuck_jobs:
             return
 
-        stuck_job_ids = [job.id for job in stuck_jobs]
         stuck_project_ids = {job.project_id for job in stuck_jobs}
         print(f"[startup] 고착된 처리 작업 {len(stuck_jobs)}건 복구 중...")
 
         # processing_jobs → error로 전환
-        await db.execute(
-            update(ProcessingJob)
-            .where(ProcessingJob.id.in_(stuck_job_ids))
-            .values(
-                status="error",
-                error_message="서버 재시작(전원 차단)으로 인해 처리가 중단되었습니다. 다시 처리를 시작해주세요.",
-            )
-        )
+        for job in stuck_jobs:
+            job.status = "error"
+            job.error_code = "PROCESSING_INTERRUPTED"
+            job.error_reference = new_error_reference_id()
+            job.error_message = ERROR_SPECS[job.error_code].message
 
         # 연결된 projects → error로 전환
         await db.execute(
