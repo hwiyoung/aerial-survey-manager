@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { UploadCloud, FileText, CheckCircle2, X, Camera, FolderOpen, Info, Trash2, FilePlus, ArrowRight, Table as TableIcon, RefreshCw, AlertTriangle, Pencil } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { UploadCloud, FileText, CheckCircle2, X, Camera, FolderOpen, Info, Trash2, FilePlus, ArrowRight, Table as TableIcon, RefreshCw, AlertTriangle, Pencil, Maximize2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, Rectangle, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import proj4 from 'proj4';
@@ -412,12 +413,159 @@ function EoBoxSelection({ enabled, points, onSelectionChange, onContextMenu }) {
     );
 }
 
+function EoPreviewLightbox({ preview, onClose }) {
+    const [zoom, setZoom] = useState(1);
+    const [offset, setOffset] = useState({ x: 0, y: 0 });
+    const dragRef = useRef(null);
+
+    useEffect(() => {
+        const handleKeyDown = (event) => {
+            if (event.key === 'Escape') onClose();
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [onClose]);
+
+    const changeZoom = (nextZoom) => {
+        const clampedZoom = Math.min(4, Math.max(1, nextZoom));
+        setZoom(clampedZoom);
+        if (clampedZoom === 1) setOffset({ x: 0, y: 0 });
+    };
+
+    const resetView = () => {
+        setZoom(1);
+        setOffset({ x: 0, y: 0 });
+    };
+
+    const handlePointerDown = (event) => {
+        if (zoom <= 1) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            offsetX: offset.x,
+            offsetY: offset.y,
+        };
+    };
+
+    const handlePointerMove = (event) => {
+        if (!dragRef.current) return;
+        setOffset({
+            x: dragRef.current.offsetX + event.clientX - dragRef.current.x,
+            y: dragRef.current.offsetY + event.clientY - dragRef.current.y,
+        });
+    };
+
+    const handlePointerEnd = () => {
+        dragRef.current = null;
+    };
+
+    if (typeof document === 'undefined') return null;
+
+    return createPortal(
+        <div
+            className="fixed inset-0 z-[3000] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${preview.imageName} 확대 미리보기`}
+            onClick={(event) => {
+                if (event.target === event.currentTarget) onClose();
+            }}
+        >
+            <div className="flex h-[min(90vh,900px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl">
+                <div className="flex items-center justify-between gap-4 border-b border-white/10 bg-slate-900/95 px-4 py-3 text-white">
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-bold" title={preview.imageName}>{preview.imageName}</div>
+                        <div className="mt-0.5 truncate text-[11px] text-slate-400" title={preview.sourceName}>{preview.sourceName}</div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                        <button
+                            type="button"
+                            onClick={() => changeZoom(zoom - 0.25)}
+                            disabled={zoom <= 1}
+                            className="rounded-lg p-2 text-slate-200 hover:bg-white/10 disabled:opacity-30"
+                            aria-label="축소"
+                            title="축소"
+                        >
+                            <ZoomOut size={18} />
+                        </button>
+                        <span className="w-14 text-center text-xs font-semibold text-slate-200">{Math.round(zoom * 100)}%</span>
+                        <button
+                            type="button"
+                            onClick={() => changeZoom(zoom + 0.25)}
+                            disabled={zoom >= 4}
+                            className="rounded-lg p-2 text-slate-200 hover:bg-white/10 disabled:opacity-30"
+                            aria-label="확대"
+                            title="확대"
+                        >
+                            <ZoomIn size={18} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetView}
+                            className="rounded-lg p-2 text-slate-200 hover:bg-white/10"
+                            aria-label="보기 초기화"
+                            title="보기 초기화"
+                        >
+                            <RotateCcw size={17} />
+                        </button>
+                        <div className="mx-1 h-5 w-px bg-white/15" />
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="rounded-lg p-2 text-slate-200 hover:bg-white/10"
+                            aria-label="확대 미리보기 닫기"
+                            title="닫기 (Esc)"
+                        >
+                            <X size={20} />
+                        </button>
+                    </div>
+                </div>
+                <div
+                    className={`relative flex-1 overflow-hidden bg-slate-950 ${zoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'}`}
+                    style={{ touchAction: 'none' }}
+                    onWheel={(event) => {
+                        event.preventDefault();
+                        changeZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
+                    }}
+                    onDoubleClick={() => changeZoom(zoom === 1 ? 2 : 1)}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerEnd}
+                    onPointerCancel={handlePointerEnd}
+                >
+                    <img
+                        src={preview.dataUrl}
+                        alt=""
+                        aria-hidden="true"
+                        draggable={false}
+                        className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-35 blur-3xl"
+                    />
+                    <div className="pointer-events-none absolute inset-0 bg-slate-950/25" />
+                    <img
+                        src={preview.dataUrl}
+                        alt={`${preview.imageName} 확대 미리보기`}
+                        draggable={false}
+                        className="pointer-events-none relative z-10 h-full w-full select-none object-contain transition-transform duration-100"
+                        style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
+                    />
+                    <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-200 backdrop-blur">
+                        휠·버튼으로 확대 · 확대 후 드래그로 이동 · 더블클릭으로 전환
+                    </div>
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+}
+
 function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetExcluded, onClearExcluded }) {
     const tileConfig = getTileConfig();
     const [selectionEnabled, setSelectionEnabled] = useState(false);
     const [selectedKeys, setSelectedKeys] = useState(() => new Set());
     const [contextMenu, setContextMenu] = useState(null);
     const [previews, setPreviews] = useState({});
+    const [expandedPreview, setExpandedPreview] = useState(null);
     const previewRequestsRef = useRef(new Set());
     const validPoints = points.filter((point) => point.valid);
     const invalidCount = points.length - validPoints.length;
@@ -627,20 +775,46 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                         <div>{point.excluded ? '처리 제외됨' : '처리 포함'} · {point.sourceCrs}</div>
                                     </div>
                                 </Tooltip>
-                                <Popup minWidth={460} maxWidth={540}>
-                                    <div className="w-[460px] max-w-full space-y-2 text-xs">
-                                        <div className="font-bold text-slate-800 break-all">{point.imageName}</div>
-                                        <div className="text-slate-500 break-all">{point.sourceName}</div>
+                                <Popup minWidth={520} maxWidth={600}>
+                                    <div className="w-[520px] max-w-full space-y-2.5 text-xs">
+                                        <div className="text-center">
+                                            <div className="break-all text-sm font-bold text-slate-800">{point.imageName}</div>
+                                            <div className="mt-0.5 break-all text-[11px] text-slate-500">{point.sourceName}</div>
+                                        </div>
                                         {!point.previewPath ? (
-                                            <div className="h-48 rounded bg-slate-50 flex items-center justify-center text-slate-400 text-center px-3">
+                                            <div className="flex h-64 items-center justify-center rounded-xl bg-slate-50 px-3 text-center text-slate-400">
                                                 선택한 원본 이미지와 연결되지 않았습니다.
                                             </div>
                                         ) : preview?.status === 'ready' ? (
-                                            <img
-                                                src={preview.dataUrl}
-                                                alt={`${point.imageName} 미리보기`}
-                                                className="w-full max-h-72 object-contain rounded bg-slate-900"
-                                            />
+                                            <button
+                                                type="button"
+                                                className="group relative h-80 w-full overflow-hidden rounded-xl bg-slate-950 shadow-inner"
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    setExpandedPreview({
+                                                        dataUrl: preview.dataUrl,
+                                                        imageName: point.imageName,
+                                                        sourceName: point.sourceName,
+                                                    });
+                                                }}
+                                                title="클릭하여 크게 보기"
+                                            >
+                                                <img
+                                                    src={preview.dataUrl}
+                                                    alt=""
+                                                    aria-hidden="true"
+                                                    className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl"
+                                                />
+                                                <div className="absolute inset-0 bg-slate-950/20" />
+                                                <img
+                                                    src={preview.dataUrl}
+                                                    alt={`${point.imageName} 미리보기`}
+                                                    className="relative z-10 h-full w-full object-contain transition-transform duration-200 group-hover:scale-[1.015]"
+                                                />
+                                                <span className="absolute bottom-2 right-2 z-20 inline-flex items-center gap-1 rounded-md bg-slate-950/75 px-2 py-1 text-[11px] font-semibold text-white opacity-90 backdrop-blur transition-opacity group-hover:opacity-100">
+                                                    <Maximize2 size={13} /> 크게 보기
+                                                </span>
+                                            </button>
                                         ) : preview?.status === 'error' ? (
                                             <div className="min-h-48 rounded bg-red-50 text-red-700 whitespace-pre-line flex items-center justify-center text-center px-3 py-2">
                                                 {preview.message}
@@ -658,22 +832,29 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                                 <span className="font-bold text-slate-700">EO 전체 정보</span>
                                                 <span className="font-mono text-[11px] text-slate-500">{point.sourceCrs}</span>
                                             </div>
-                                            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                                                {Object.entries({ X: point.eo.x, Y: point.eo.y, Z: point.eo.z, Omega: point.eo.omega, Phi: point.eo.phi, Kappa: point.eo.kappa }).map(([label, value]) => (
-                                                    <div key={label} className="flex min-w-0 justify-between gap-3">
-                                                        <span className="font-semibold text-slate-500">{label}</span>
-                                                        <span className="truncate font-mono text-slate-800" title={String(value)}>{value}</span>
-                                                    </div>
-                                                ))}
+                                            <div className="space-y-1.5">
+                                                <div className="grid grid-cols-[3rem_repeat(3,minmax(0,1fr))] items-center gap-2">
+                                                    <span className="font-bold text-slate-500">위치</span>
+                                                    {Object.entries({ X: point.eo.x, Y: point.eo.y, Z: point.eo.z }).map(([label, value]) => (
+                                                        <div key={label} className="flex min-w-0 items-center gap-1.5">
+                                                            <span className="font-semibold text-slate-400">{label}</span>
+                                                            <span className="truncate font-mono text-slate-800" title={String(value)}>{value}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div className="grid grid-cols-[3rem_repeat(3,minmax(0,1fr))] items-center gap-2">
+                                                    <span className="font-bold text-slate-500">자세</span>
+                                                    {Object.entries({ Omega: point.eo.omega, Phi: point.eo.phi, Kappa: point.eo.kappa }).map(([label, value]) => (
+                                                        <div key={label} className="flex min-w-0 items-center gap-1.5">
+                                                            <span className="font-semibold text-slate-400">{label}</span>
+                                                            <span className="truncate font-mono text-slate-800" title={String(value)}>{value}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         </div>
-                                        <div className="flex items-center justify-between gap-3">
-                                            <div className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${point.excluded ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-blue-50 text-blue-700'}`}>
-                                                {point.excluded ? '처리 제외됨' : '처리 포함'}
-                                            </div>
-                                            <div className="font-mono text-[11px] text-slate-500">
-                                                WGS84 {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
-                                            </div>
+                                        <div className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${point.excluded ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-blue-50 text-blue-700'}`}>
+                                            {point.excluded ? '처리 제외됨' : '처리 포함'}
                                         </div>
                                         <button
                                             onClick={() => onToggleExcluded(point.imageKey)}
@@ -726,6 +907,12 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                 <div className="px-3 py-1.5 bg-amber-50 text-[11px] text-amber-700 border-t border-amber-100 shrink-0">
                     좌표 변환 실패 행은 CRS/열 매핑을 확인해야 합니다.
                 </div>
+            )}
+            {expandedPreview && (
+                <EoPreviewLightbox
+                    preview={expandedPreview}
+                    onClose={() => setExpandedPreview(null)}
+                />
             )}
         </div>
     );
