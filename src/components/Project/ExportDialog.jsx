@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { X, Download, FileOutput, Trash2, AlertTriangle, HardDrive } from 'lucide-react';
-import api from '../../api/client';
+import api, { formatUserError } from '../../api/client';
 
 // result_gsd가 없을 때 사용할 기본 GSD (cm/pixel)
 const DEFAULT_GSD = 5;
@@ -131,7 +131,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                 return;
             }
             console.error('Batch export failed:', err);
-            alert('내보내기 실패: ' + err.message);
+            alert('내보내기 실패: ' + formatUserError(err));
             setIsExporting(false);
             setProgress(0);
         } finally {
@@ -159,7 +159,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             onClose();
         } catch (err) {
             console.error('COG deletion failed:', err);
-            alert('정사영상 삭제 실패:' + err.message);
+            alert('정사영상 삭제 실패: ' + formatUserError(err));
             setIsDeleting(false);
         }
     };

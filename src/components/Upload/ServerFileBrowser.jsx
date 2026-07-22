@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Folder, FileImage, FileText, ChevronRight, ArrowUp, X, CheckCircle2, Loader2, AlertCircle, Image as ImageIcon, CheckSquare, Square, HardDrive, Info, RefreshCw } from 'lucide-react';
-import api from '../../api/client';
+import api, { formatUserError } from '../../api/client';
 
 /**
  * ServerFileBrowser - a modal dialog that browses the server's filesystem via API.
@@ -43,7 +43,7 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
             setSelectedFiles(new Set());
             setLastClickedIndex(-1);
         } catch (err) {
-            setError(err.message || '디바이스 목록을 불러올 수 없습니다');
+            setError(formatUserError(err, '디바이스 목록을 불러올 수 없습니다.'));
         } finally {
             setLoading(false);
         }
@@ -62,7 +62,7 @@ export default function ServerFileBrowser({ isOpen, onClose, onSelect, mode = 'f
             setImageCount(data.image_count);
             setIsRootsView(false);
         } catch (err) {
-            setError(err.message || 'Failed to browse directory');
+            setError(formatUserError(err, '폴더 내용을 불러올 수 없습니다.'));
             setEntries([]);
             setImageCount(0);
         } finally {

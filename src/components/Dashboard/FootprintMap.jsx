@@ -2,7 +2,7 @@ import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import { MapContainer, TileLayer, Rectangle, Popup, Tooltip, useMap, GeoJSON, ImageOverlay } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { api } from '../../api/client';
+import { api, formatUserError } from '../../api/client';
 import { Layers, Eye, EyeOff, ChevronRight, X, Map as MapIcon, Grid3X3, Search, Download } from 'lucide-react';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 import SheetGridOverlay from '../Project/SheetGridOverlay';
@@ -163,7 +163,7 @@ export function TiTilerOrthoLayer({
             } catch (err) {
                 if (currentProjectIdRef.current === projectId) {
                     console.error('[TiTiler] Failed to initialize:', err);
-                    onLoadError?.(err.message);
+                    onLoadError?.(formatUserError(err));
                 }
             }
         };
@@ -621,7 +621,7 @@ function SheetControlPanel({ sheetState, onSheetStateChange, selectedProject }) 
             });
             api.triggerDirectDownload(result.download_id);
         } catch (err) {
-            alert('도엽 클립 실패: ' + err.message);
+            alert('도엽 클립 실패: ' + formatUserError(err));
         } finally {
             setIsClipping(false);
         }

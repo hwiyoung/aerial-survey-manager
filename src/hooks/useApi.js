@@ -2,7 +2,7 @@
  * Custom hooks for API data fetching
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import api from '../api/client';
+import api, { formatUserError } from '../api/client';
 
 /**
  * Hook for fetching and managing projects
@@ -46,7 +46,7 @@ export function useProjects(options = {}) {
                 pageSize: response.page_size,
             });
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             setProjects([]);
         } finally {
             setLoading(false);
@@ -59,7 +59,7 @@ export function useProjects(options = {}) {
             setProjects(prev => [newProject, ...prev]);
             return newProject;
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             throw err;
         }
     }, []);
@@ -70,7 +70,7 @@ export function useProjects(options = {}) {
             setProjects(prev => prev.map(p => p.id === projectId ? updated : p));
             return updated;
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             throw err;
         }
     }, []);
@@ -82,13 +82,13 @@ export function useProjects(options = {}) {
                 const failed = result.failed.find((item) => item.project_id === projectId);
                 const reason = failed?.reason || '프로젝트 삭제에 실패했습니다.';
                 const err = new Error(reason);
-                setError(err.message);
+                setError(formatUserError(err));
                 throw err;
             }
             setProjects(prev => prev.filter(p => p.id !== projectId));
             return result;
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             throw err;
         }
     }, []);
@@ -100,7 +100,7 @@ export function useProjects(options = {}) {
             setProjects(prev => prev.filter(p => !successSet.has(p.id)));
             return result;
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             throw err;
         }
     }, []);
@@ -113,7 +113,7 @@ export function useProjects(options = {}) {
         try {
             return await api.getProjectImages(projectId);
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             throw err;
         }
     }, []);
@@ -164,7 +164,7 @@ export function useProject(projectId) {
             setProject(projectData);
             setImages(imagesData);
         } catch (err) {
-            setError(err.message);
+            setError(formatUserError(err));
             setProject(null);
         } finally {
             setLoading(false);

@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.api.v1 import router as api_v1_router
 from app.api.v1.download import close_titiler_http_client
 from app.database import async_session
+from app.errors import install_error_handlers
 from app.models.project import ProcessingJob, Project
 from app.services.processing_lifecycle import startup_recovery_in_grace_period
 from app.utils.storage_paths import processing_status_path
@@ -319,6 +320,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+install_error_handlers(app)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -326,7 +329,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Range", "Accept-Ranges", "X-File-Checksum"],
+    expose_headers=["Content-Range", "Accept-Ranges", "X-File-Checksum", "X-Error-Reference"],
 )
 
 # Include API routers

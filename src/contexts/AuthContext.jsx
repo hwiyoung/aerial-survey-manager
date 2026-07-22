@@ -2,7 +2,7 @@
  * Authentication Context and Provider
  */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import api from '../api/client';
+import api, { formatUserError } from '../api/client';
 
 const AuthContext = createContext(null);
 
@@ -38,7 +38,7 @@ export function AuthProvider({ children }) {
             setUser(userData);
             return true;
         } catch (err) {
-            setError(err?.response?.data?.detail || err.message || '로그인에 실패했습니다.');
+            setError(formatUserError(err, '로그인에 실패했습니다.'));
             return false;
         }
     }, []);

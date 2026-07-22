@@ -5,6 +5,117 @@
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+const CLIENT_ERROR_SPECS = {
+    AUTH_INVALID_CREDENTIALS: {
+        message: '로그인 정보를 확인할 수 없습니다.',
+        action: '계정과 비밀번호를 확인해주세요.',
+        retryable: true,
+    },
+    AUTH_SESSION_EXPIRED: {
+        message: '로그인 시간이 만료되었습니다.',
+        action: '다시 로그인해주세요.',
+        retryable: true,
+    },
+    AUTH_ACCESS_DENIED: {
+        message: '이 작업을 수행할 수 없습니다.',
+        action: '로그인 상태를 확인한 뒤 다시 시도해주세요.',
+        retryable: false,
+    },
+    REQUEST_INVALID: {
+        message: '요청 내용을 처리할 수 없습니다.',
+        action: '입력값을 확인해주세요.',
+        retryable: false,
+    },
+    RESOURCE_NOT_FOUND: {
+        message: '요청한 항목을 찾을 수 없습니다.',
+        action: '목록을 새로고침하고 대상을 다시 선택해주세요.',
+        retryable: false,
+    },
+    RESOURCE_STATE_CONFLICT: {
+        message: '현재 상태에서는 이 작업을 수행할 수 없습니다.',
+        action: '최신 상태를 확인한 뒤 다시 시도해주세요.',
+        retryable: true,
+    },
+    NETWORK_OFFLINE: {
+        message: '네트워크에 연결되어 있지 않습니다.',
+        action: '연결 상태를 확인해주세요.',
+        retryable: true,
+    },
+    SERVER_UNAVAILABLE: {
+        message: '서버에 연결할 수 없습니다.',
+        action: '잠시 후 새로고침해주세요.',
+        retryable: true,
+    },
+    INTERNAL_ERROR: {
+        message: '시스템 내부 오류가 발생했습니다.',
+        action: '오류 참조번호를 운영 담당자에게 전달해주세요.',
+        retryable: false,
+    },
+};
+
+function fallbackCodeForStatus(status, endpoint = '') {
+    if (status === 401) {
+        return endpoint.includes('/auth/login') ? 'AUTH_INVALID_CREDENTIALS' : 'AUTH_SESSION_EXPIRED';
+    }
+    if (status === 403) return 'AUTH_ACCESS_DENIED';
+    if (status === 404) return 'RESOURCE_NOT_FOUND';
+    if (status === 409) return 'RESOURCE_STATE_CONFLICT';
+    if (status >= 500) return status === 503 ? 'SERVER_UNAVAILABLE' : 'INTERNAL_ERROR';
+    return 'REQUEST_INVALID';
+}
+
+function createUserError(publicError, status = 0, context = {}) {
+    const fallback = CLIENT_ERROR_SPECS[publicError?.code] || CLIENT_ERROR_SPECS.INTERNAL_ERROR;
+    const error = new Error(publicError?.message || fallback.message);
+    error.name = 'ApiError';
+    error.status = status;
+    error.code = publicError?.code || 'INTERNAL_ERROR';
+    error.summary = publicError?.message || fallback.message;
+    error.action = publicError?.action || fallback.action;
+    error.referenceId = publicError?.reference_id || null;
+    error.retryable = publicError?.retryable ?? fallback.retryable;
+    error.data = {
+        ...context,
+        code: error.code,
+        message: error.summary,
+        action: error.action,
+        reference_id: error.referenceId,
+        retryable: error.retryable,
+    };
+    return error;
+}
+
+function createNetworkError(cause) {
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    const code = offline ? 'NETWORK_OFFLINE' : 'SERVER_UNAVAILABLE';
+    const error = createUserError({ code, ...CLIENT_ERROR_SPECS[code] });
+    error.cause = cause;
+    return error;
+}
+
+async function parseErrorResponse(response, endpoint = '') {
+    const body = await response.json().catch(() => ({}));
+    const candidate = body?.error;
+    const fallbackCode = fallbackCodeForStatus(response.status, endpoint);
+    const fallback = CLIENT_ERROR_SPECS[fallbackCode] || CLIENT_ERROR_SPECS.INTERNAL_ERROR;
+    const referenceId = candidate?.reference_id || response.headers.get('X-Error-Reference');
+    return createUserError(
+        candidate?.code
+            ? { ...fallback, ...candidate, reference_id: referenceId }
+            : { code: fallbackCode, ...fallback, reference_id: referenceId },
+        response.status,
+        body?.context || {},
+    );
+}
+
+export function formatUserError(error, fallback = '요청을 처리하지 못했습니다.') {
+    const message = error?.summary || error?.message || fallback;
+    const parts = [message];
+    if (error?.action && error.action !== message) parts.push(error.action);
+    if (error?.referenceId) parts.push(`오류 참조번호: ${error.referenceId}`);
+    return parts.join('\n');
+}
+
 class ApiClient {
     constructor() {
         this.token = localStorage.getItem('access_token');
@@ -42,37 +153,33 @@ class ApiClient {
             headers['Authorization'] = `Bearer ${this.token}`;
         }
 
-        const response = await fetch(url, {
-            ...options,
-            headers,
-        });
+        let response;
+        try {
+            response = await fetch(url, {
+                ...options,
+                headers,
+            });
+        } catch (cause) {
+            if (cause?.name === 'AbortError') throw cause;
+            throw createNetworkError(cause);
+        }
 
         // Handle token refresh on 401
         if (response.status === 401 && this.refreshToken) {
             const refreshed = await this.refreshAccessToken();
             if (refreshed) {
                 headers['Authorization'] = `Bearer ${this.token}`;
-                return fetch(url, { ...options, headers });
+                try {
+                    response = await fetch(url, { ...options, headers });
+                } catch (cause) {
+                    if (cause?.name === 'AbortError') throw cause;
+                    throw createNetworkError(cause);
+                }
             }
         }
 
         if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            const detail = errorData.detail;
-            const validationMessage = Array.isArray(detail)
-                ? detail.map((item) => {
-                    const location = Array.isArray(item.loc) ? item.loc.join('.') : item.loc;
-                    return `${location}: ${item.msg}`;
-                }).join('\n')
-                : null;
-            const error = new Error(
-                typeof detail === 'string'
-                    ? detail
-                    : detail?.message || validationMessage || `Request failed: ${response.status}`
-            );
-            error.status = response.status;
-            error.data = detail;
-            throw error;
+            throw await parseErrorResponse(response, endpoint);
         }
 
         if (response.status === 204) {
@@ -106,15 +213,20 @@ class ApiClient {
 
     // --- Authentication ---
     async login(email, password) {
-        const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
-        });
+        const endpoint = '/auth/login';
+        let response;
+        try {
+            response = await fetch(`${API_BASE}/api/v1${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
+        } catch (cause) {
+            throw createNetworkError(cause);
+        }
 
         if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Login failed');
+            throw await parseErrorResponse(response, endpoint);
         }
 
         const data = await response.json();

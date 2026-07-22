@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Settings, ArrowLeft, Loader2, X, CheckCircle2, AlertTriangle, Save, Trash2, Play, Camera, RotateCcw, MapPinned } from 'lucide-react';
-import api from '../../api/client';
+import api, { formatUserError } from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 import CrsCorrectionModal from './CrsCorrectionModal';
 import { formatCrsLabel } from '../../constants/crs';
@@ -391,7 +391,7 @@ export default function ProcessingSidebar({
             alert('프리셋이 저장되었습니다.');
         } catch (err) {
             console.error('Failed to save preset:', err);
-            alert('프리셋 저장 실패: ' + err.message);
+            alert('프리셋 저장 실패: ' + formatUserError(err));
         }
     };
 
@@ -404,7 +404,7 @@ export default function ProcessingSidebar({
             if (selectedPresetId === presetId) setSelectedPresetId(null);
         } catch (err) {
             console.error('Failed to delete preset:', err);
-            alert('삭제 실패: ' + err.message);
+            alert('삭제 실패: ' + formatUserError(err));
         }
     };
 
@@ -527,7 +527,7 @@ export default function ProcessingSidebar({
                 }
             }
 
-            const message = errorData?.message || error.message || '처리 시작에 실패했습니다.';
+            const message = formatUserError(error, '처리 시작에 실패했습니다.');
             if (message) {
                 setStartError(message);
             }
@@ -597,7 +597,7 @@ export default function ProcessingSidebar({
             }
             setIsCrsCorrectionModalOpen(false);
         } catch (error) {
-            setCrsCorrectionError(error.data?.message || error.data?.detail?.message || error.message || '좌표계 변경 예약에 실패했습니다.');
+            setCrsCorrectionError(formatUserError(error, '좌표계 변경 예약에 실패했습니다.'));
         } finally {
             setIsSavingCrsCorrection(false);
         }
@@ -628,7 +628,7 @@ export default function ProcessingSidebar({
             }
             setIsCrsCorrectionModalOpen(false);
         } catch (error) {
-            setCrsCorrectionError(error.data?.message || error.data?.detail?.message || error.message || '좌표계 변경 예약 취소에 실패했습니다.');
+            setCrsCorrectionError(formatUserError(error, '좌표계 변경 예약 취소에 실패했습니다.'));
         } finally {
             setIsSavingCrsCorrection(false);
         }
@@ -710,7 +710,7 @@ export default function ProcessingSidebar({
                                             }
                                         } catch (err) {
                                             setHasTriggeredCancel(false);
-                                            alert('중단 실패: ' + err.message);
+                                            alert('중단 실패: ' + formatUserError(err));
                                         }
                                     }}
                                     className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-2 py-2.5 text-xs font-bold text-red-600 shadow-sm transition-all hover:bg-red-100"

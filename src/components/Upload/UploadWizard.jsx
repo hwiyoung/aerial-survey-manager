@@ -4,7 +4,7 @@ import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, Rectangle, useMa
 import L from 'leaflet';
 import proj4 from 'proj4';
 
-import api from '../../api/client';
+import api, { formatUserError } from '../../api/client';
 import ServerFileBrowser from './ServerFileBrowser';
 import { getTileConfig, MAP_CONFIG } from '../../config/mapConfig';
 import { useAuth } from '../../contexts/AuthContext';
@@ -249,11 +249,11 @@ const transformEoPointToWgs84 = (row, config) => {
             valid,
             reason: valid ? null : '변환된 위경도가 유효 범위를 벗어났습니다.',
         };
-    } catch (error) {
+    } catch {
         return {
             valid: false,
             sourceCrs,
-            reason: `좌표 변환 실패: ${error.message}`,
+            reason: '좌표 변환 실패: 좌표계와 좌표값을 확인해주세요.',
         };
     }
 };
@@ -750,7 +750,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
             }
             closeCameraForm();
         } catch (err) {
-            alert(err?.message || "카메라 모델 저장에 실패했습니다.");
+            alert(formatUserError(err, '카메라 모델 저장에 실패했습니다.'));
         }
     };
 
@@ -769,7 +769,7 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
                 closeCameraForm();
             }
         } catch (err) {
-            alert(err?.message || "카메라 모델 삭제에 실패했습니다.");
+            alert(formatUserError(err, '카메라 모델 삭제에 실패했습니다.'));
         }
     };
     const [selectedEoFile, setSelectedEoFile] = useState(null);
@@ -906,7 +906,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             });
             applyEoContents(merged);
         } catch (err) {
-            alert(`EO 파일 읽기 실패: ${err.message}`);
+            alert(`EO 파일 읽기 실패: ${formatUserError(err)}`);
         }
     };
 
@@ -1154,7 +1154,7 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
             onClose();
         } catch (error) {
             console.error('Upload completion failed:', error);
-            alert(`프로젝트 생성 처리 실패: ${error?.message || '알 수 없는 오류'}`);
+            alert(`프로젝트 생성 처리 실패: ${formatUserError(error, '알 수 없는 오류')}`);
         } finally {
             setIsFinishing(false);
         }

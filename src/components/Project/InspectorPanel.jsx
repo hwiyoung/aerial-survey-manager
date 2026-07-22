@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { FileImage, Download, Loader2, X, CheckCircle2, Trash2, Camera, Calendar } from 'lucide-react';
-import api from '../../api/client';
+import api, { formatUserError } from '../../api/client';
 import { useProcessingProgress } from '../../hooks/useProcessingProgress';
 import { formatKstDateTime } from '../../utils/dateTime';
 
@@ -35,7 +35,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
         try {
             await api.cancelProcessing(project.id);
         } catch (err) {
-            alert('중단 요청 실패: ' + err.message);
+            alert('중단 요청 실패: ' + formatUserError(err));
         } finally {
             setIsCancelling(false);
         }
@@ -55,7 +55,7 @@ export default function InspectorPanel({ project, image, qcData, onQcUpdate, onC
                 onProjectUpdate({ ...project, ortho_path: null, ortho_size: null });
             }
         } catch (err) {
-            alert('정사영상 삭제 실패:' + err.message);
+            alert('정사영상 삭제 실패: ' + formatUserError(err));
         } finally {
             setIsDeletingCog(false);
         }

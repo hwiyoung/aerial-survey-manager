@@ -5,7 +5,7 @@ import { Folder, Loader2, X } from 'lucide-react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useProjects } from './hooks/useApi';
 import LoginPage from './components/LoginPage';
-import api from './api/client';
+import api, { formatUserError } from './api/client';
 import S3MultipartUploader from './services/s3Upload';
 import { formatSpeed } from './utils/formatting';
 import { formatDuration, formatKstDate, formatKstDateTime } from './utils/dateTime';
@@ -305,7 +305,7 @@ function Dashboard() {
       await updateProject(projectId, { title: newTitle });
     } catch (err) {
       console.error('Failed to rename project:', err);
-      alert('이름 변경 실패: ' + err.message);
+      alert('이름 변경 실패: ' + formatUserError(err));
     }
   };
 
@@ -1008,11 +1008,11 @@ function Dashboard() {
                 ...upload,
                 status: 'error',
                 progress: 100,
-                error: err.message || '로컬 이미지 등록 실패',
+                error: formatUserError(err, '로컬 이미지 등록 실패'),
               })),
             }));
-            appendUploadEvent(created.id, `로컬 이미지 등록 실패: ${err.message || '알 수 없는 오류'}`, 'error');
-            alert('로컬 이미지 등록 실패: ' + err.message);
+            appendUploadEvent(created.id, `로컬 이미지 등록 실패: ${formatUserError(err, '알 수 없는 오류')}`, 'error');
+            alert('로컬 이미지 등록 실패: ' + formatUserError(err));
             await cleanupCreatedProject('local import failed');
             setViewMode('dashboard');
             setProcessingProject(null);
@@ -1038,7 +1038,7 @@ function Dashboard() {
           );
         } catch (err) {
           console.error('Failed to initialize multipart uploads:', err);
-          alert('이미지 업로드 초기화 실패: ' + err.message);
+          alert('이미지 업로드 초기화 실패: ' + formatUserError(err));
           await cleanupCreatedProject('multipart initialization failed');
           return { ok: false };
         }
@@ -1279,7 +1279,7 @@ function Dashboard() {
               const next = [...projectUploads];
               const targetIdx = next[idx]?.name === name ? idx : next.findIndex(u => u.name === name);
               if (targetIdx >= 0) {
-                next[targetIdx] = { ...next[targetIdx], status: 'error', error: err?.message || '업로드 실패' };
+                next[targetIdx] = { ...next[targetIdx], status: 'error', error: formatUserError(err, '업로드 실패') };
               }
               return { ...prev, [projectId]: next };
             });
@@ -1323,7 +1323,7 @@ function Dashboard() {
 
     } catch (err) {
       console.error('Failed to create project:', err);
-      alert('프로젝트 생성 실패: ' + err.message);
+      alert('프로젝트 생성 실패: ' + formatUserError(err));
       return { ok: false };
     }
   };
@@ -1504,7 +1504,7 @@ function Dashboard() {
         alert(`그룹의 ${result.succeeded.length}개 프로젝트가 삭제되었습니다.`);
       }
     } catch (err) {
-      alert(`그룹 삭제 실패: ${err.message}`);
+      alert(`그룹 삭제 실패: ${formatUserError(err)}`);
     }
   };
 
@@ -1512,12 +1512,7 @@ function Dashboard() {
     setExportModalState({ isOpen: true, projectIds: projectIds });
   };
 
-  const formatApiError = (error, fallback) => (
-    error?.data?.message ||
-    error?.data?.detail?.message ||
-    error?.message ||
-    fallback
-  );
+  const formatApiError = (error, fallback) => formatUserError(error, fallback);
 
   const closeDashboardCrsCorrectionModal = () => {
     if (crsCorrectionModalState.isSaving) return;
@@ -1769,7 +1764,7 @@ function Dashboard() {
                 if (selectedProjectId === id) setSelectedProjectId(null);
                 alert('프로젝트가 삭제되었습니다.');
               } catch (err) {
-                alert('삭제 실패: ' + err.message);
+                alert('삭제 실패: ' + formatUserError(err));
               }
             } : null}
             onRenameProject={canEditAnyProject ? handleRenameProject : null}
@@ -1848,7 +1843,7 @@ function Dashboard() {
                   await refreshProjects();
                 }
               } catch (err) {
-                alert('삭제 실패: ' + err.message);
+                alert('삭제 실패: ' + formatUserError(err));
               }
             }}
             onOpenProcessing={async (projectId) => {
@@ -2041,7 +2036,7 @@ function Dashboard() {
                 }
                 closeGroupModal();
               } catch (err) {
-                alert('실패: ' + err.message);
+                alert('실패: ' + formatUserError(err));
               }
             }} className="p-6 space-y-4">
               <div className="space-y-2">
