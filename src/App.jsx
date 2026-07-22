@@ -10,6 +10,11 @@ import S3MultipartUploader from './services/s3Upload';
 import { formatSpeed } from './utils/formatting';
 import { formatDuration, formatKstDate, formatKstDateTime } from './utils/dateTime';
 import { useGroupState } from './hooks/useGroupState';
+import {
+  clearProjectRoute,
+  parseAppRoute,
+  setProcessingRoute,
+} from './utils/appRoute';
 
 // Modularized Components
 import Header from './components/Dashboard/Header';
@@ -152,6 +157,7 @@ function Dashboard() {
   // Use API hook for projects
   const {
     projects: apiProjects,
+    loading: projectsLoading,
     refresh: refreshProjects,
     createProject,
     updateProject,
@@ -309,21 +315,14 @@ function Dashboard() {
     }
   };
 
-  // Read project ID from URL query parameter on initial load
-  const initialProjectId = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('projectId');
-  }, []);
-
-  // Read viewMode from URL query parameter
-  const initialViewMode = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('viewMode') || 'dashboard';
-  }, []);
-
-  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
+  const initialRoute = useMemo(() => parseAppRoute(window.location.search), []);
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    initialRoute.valid ? initialRoute.projectId : null
+  );
   const [highlightProjectId, setHighlightProjectId] = useState(null);
-  const [viewMode, setViewMode] = useState(initialViewMode);
+  const [viewMode, setViewMode] = useState(
+    initialRoute.valid ? initialRoute.viewMode : 'dashboard'
+  );
   const [processingProject, setProcessingProject] = useState(null);
 
   // 자동 선택 제거: 사용자가 명시적으로 선택할 때만 프로젝트 선택
@@ -558,38 +557,6 @@ function Dashboard() {
   }, [processingProject, projects, projectImages]);
 
 
-  // Set processingProject when viewMode is processing and project is loaded
-  useEffect(() => {
-    if (initialViewMode === 'processing' && initialProjectId && projects.length > 0) {
-      const proj = projects.find(p => p.id === initialProjectId);
-      if (proj && !processingProject) {
-        setProcessingProject({
-          ...proj,
-          images: projectImages
-        });
-      }
-    }
-  }, [initialViewMode, initialProjectId, projects, projectImages, processingProject]);
-
-  // 브라우저 뒤로가기/앞으로가기 처리
-  // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (업로드 중단하지 않음)
-  useEffect(() => {
-    const handlePopState = () => {
-      // 뒤로가기 시 대시보드로 복귀 (업로드는 계속 진행)
-      setViewMode('dashboard');
-      setProcessingProject(null);
-      setSelectedProjectId(null);
-      setSelectedImageId(null);
-      setShowInspector(false);
-      setHighlightProjectId(null);
-      // 업로드는 유지 (글로벌 업로드)
-      refreshProjects();
-    };
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [refreshProjects]);
-
   // 업로드 중 페이지 이탈 시 경고 표시
   useEffect(() => {
     if (!hasAnyActiveUploads) return;
@@ -658,6 +625,108 @@ function Dashboard() {
 
   // Map reset key - increment to reset map to default view
   const [mapResetKey, setMapResetKey] = useState(0);
+  const appliedRouteKeyRef = useRef(null);
+
+  const resetProjectViewState = useCallback((resetDashboardFilters = false) => {
+    setViewMode('dashboard');
+    setProcessingProject(null);
+    setSelectedProjectId(null);
+    setSelectedImageId(null);
+    setProjectImages([]);
+    setShowInspector(false);
+    setHighlightProjectId(null);
+    setCheckedProjectIds(new Set());
+    setSheetState({ visible: false, scale: 5000, selectedSheets: [], searchResult: null });
+    setExportModalState({ isOpen: false, projectIds: [] });
+    if (resetDashboardFilters) {
+      clearGroupFilter();
+      setSearchTerm('');
+      setRegionFilter('ALL');
+      setMapResetKey(prev => prev + 1);
+    }
+  }, [clearGroupFilter]);
+
+  const exitProjectView = useCallback(({
+    replace = true,
+    resetDashboardFilters = false,
+    refresh = true,
+  } = {}) => {
+    resetProjectViewState(resetDashboardFilters);
+    appliedRouteKeyRef.current = 'dashboard';
+    clearProjectRoute({ replace });
+    if (refresh) void refreshProjects();
+  }, [refreshProjects, resetProjectViewState]);
+
+  const enterProcessingView = useCallback((project, images = [], {
+    historyMode = 'push',
+  } = {}) => {
+    if (!project?.id) return;
+    const normalizedImages = Array.isArray(images) ? images : [];
+    setProcessingProject({ ...project, images: normalizedImages });
+    setProjectImages(normalizedImages);
+    setSelectedProjectId(project.id);
+    setSelectedImageId(null);
+    setShowInspector(false);
+    setHighlightProjectId(null);
+    setViewMode('processing');
+    appliedRouteKeyRef.current = `processing:${project.id}`;
+    if (historyMode !== 'none') {
+      setProcessingRoute(project.id, { replace: historyMode === 'replace' });
+    }
+  }, []);
+
+  const applyBrowserRoute = useCallback(async (route, { force = false } = {}) => {
+    const routeKey = route.valid && route.viewMode === 'processing'
+      ? `processing:${route.projectId}`
+      : 'dashboard';
+    if (!force && appliedRouteKeyRef.current === routeKey) return;
+    appliedRouteKeyRef.current = routeKey;
+
+    if (!route.valid || route.viewMode !== 'processing') {
+      resetProjectViewState(false);
+      if (!route.valid) clearProjectRoute({ replace: true });
+      return;
+    }
+
+    try {
+      const project = projects.find(item => item.id === route.projectId)
+        || await api.getProject(route.projectId);
+      const rawImages = await fetchImages(route.projectId).catch(() => []);
+      const images = rawImages.map(mapApiImageToProjectPoint).filter(item => item.hasEo);
+      const currentRoute = parseAppRoute(window.location.search);
+      if (
+        !currentRoute.valid
+        || currentRoute.viewMode !== 'processing'
+        || currentRoute.projectId !== route.projectId
+      ) {
+        return;
+      }
+      enterProcessingView(project, images, { historyMode: 'none' });
+    } catch (error) {
+      if (error?.status === 403 || error?.status === 404) {
+        resetProjectViewState(false);
+        appliedRouteKeyRef.current = 'dashboard';
+        clearProjectRoute({ replace: true });
+        return;
+      }
+      console.warn('직접 링크 프로젝트를 불러오지 못했습니다.', error);
+    }
+  }, [enterProcessingView, fetchImages, projects, resetProjectViewState]);
+
+  // 유효한 처리 직접 링크는 복원하고, 잘못된 링크는 URL과 선택 상태를 정리한다.
+  useEffect(() => {
+    if (projectsLoading) return undefined;
+
+    const applyCurrentRoute = (force = false) => {
+      void applyBrowserRoute(parseAppRoute(window.location.search), { force });
+    };
+    const handlePopState = () => applyCurrentRoute(true);
+
+    applyCurrentRoute(false);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [applyBrowserRoute, projectsLoading]);
+
   const selectedProject = useMemo(() => {
     // Try to find in projects list first
     const proj = projects.find(p => p.id === selectedProjectId);
@@ -854,10 +923,8 @@ function Dashboard() {
         };
 
         setUploadsByProject(prev => ({ ...prev, [created.id]: initialUploads }));
-        setProcessingProject(projectForProcessing);
-        setViewMode('processing');
+        enterProcessingView(projectForProcessing, projectForProcessing.images);
         setIsUploadOpen(false);
-        window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
         appendUploadEvent(created.id, '프로젝트가 생성되었습니다.', 'success');
         appendUploadEvent(created.id, `${expectedLocalCount || '선택된'}개 로컬 이미지 등록을 시작합니다.`, 'info');
         void refreshProjects();
@@ -890,9 +957,7 @@ function Dashboard() {
                   : '이미지 파일을 찾을 수 없습니다: ' + sourceDir
               );
               await cleanupCreatedProject('local import registered no usable images');
-              setViewMode('dashboard');
-              setProcessingProject(null);
-              window.history.pushState({}, '', window.location.pathname);
+              exitProjectView({ replace: true });
               return;
             }
 
@@ -960,9 +1025,7 @@ function Dashboard() {
                 appendUploadEvent(created.id, `EO 데이터 업로드 실패: ${formatEoUploadError(e)}`, 'error');
                 alert("EO 데이터 업로드 실패: " + formatEoUploadError(e) + "\n\n프로젝트 생성을 취소했습니다. EO 파일을 수정한 뒤 다시 생성해주세요.");
                 await cleanupCreatedProject('EO upload failed during local import');
-                setViewMode('dashboard');
-                setProcessingProject(null);
-                window.history.pushState({}, '', window.location.pathname);
+                exitProjectView({ replace: true });
                 return;
               }
             }
@@ -1014,9 +1077,7 @@ function Dashboard() {
             appendUploadEvent(created.id, `로컬 이미지 등록 실패: ${formatUserError(err, '알 수 없는 오류')}`, 'error');
             alert('로컬 이미지 등록 실패: ' + formatUserError(err));
             await cleanupCreatedProject('local import failed');
-            setViewMode('dashboard');
-            setProcessingProject(null);
-            window.history.pushState({}, '', window.location.pathname);
+            exitProjectView({ replace: true });
           }
         };
 
@@ -1310,11 +1371,8 @@ function Dashboard() {
         processing_image_count: hasFilesToUpload ? 0 : (files?.length || 0),
       };
 
-      setProcessingProject(projectForProcessing);
-      setViewMode('processing');
+      enterProcessingView(projectForProcessing, imagesToUse);
       setIsUploadOpen(false);
-      // 브라우저 히스토리에 추가 (뒤로가기 지원)
-      window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${created.id}`);
 
       // Ensure project list is refreshed with new data including EO
       await refreshProjects();
@@ -1680,20 +1738,7 @@ function Dashboard() {
       <Header
         onLogoClick={() => {
           // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
-          // 상태 기반 네비게이션으로 대시보드 복귀
-          setViewMode('dashboard');
-          setProcessingProject(null);
-          setSelectedProjectId(null);
-          setShowInspector(false);
-          setHighlightProjectId(null);
-          clearGroupFilter();
-          setSearchTerm('');
-          setRegionFilter('ALL');
-          // 지도 초기화 (한국 전체 뷰로 리셋)
-          setMapResetKey(prev => prev + 1);
-          // 업로드는 유지 (글로벌 업로드)
-          refreshProjects();
-          window.history.pushState({}, '', window.location.pathname);
+          exitProjectView({ resetDashboardFilters: true });
         }}
       />
       <div className="flex flex-1 overflow-hidden relative">
@@ -1707,10 +1752,7 @@ function Dashboard() {
             onEoPointsChanged={refreshProjectEoPoints}
             onCancel={() => {
               // 글로벌 업로드: 앱 내 네비게이션 시 업로드 유지 (경고 없이 이동)
-              setViewMode('dashboard');
-              setProcessingProject(null);
-              // 업로드는 유지 (글로벌 업로드)
-              refreshProjects();
+              exitProjectView();
             }}
             onStartProcessing={handleStartProcessing}
             availableEngines={processingEngines}
@@ -1870,14 +1912,7 @@ function Dashboard() {
                     imagesToUse = [];
                   }
                 }
-                setProcessingProject({
-                  ...proj,
-                  images: imagesToUse
-                });
-                setSelectedProjectId(projectId);
-                setViewMode('processing');
-                // 브라우저 히스토리에 추가 (뒤로가기 지원)
-                window.history.pushState({ viewMode: 'processing' }, '', `?viewMode=processing&projectId=${projectId}`);
+                enterProcessingView(proj, imagesToUse);
               }
             }}
             onOpenExport={canExportProject ? (projectId) => {

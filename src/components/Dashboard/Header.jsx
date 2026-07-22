@@ -1,5 +1,6 @@
 import { User, LogOut } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { clearProjectRoute } from '../../utils/appRoute';
 
 export default function Header({ onLogoClick }) {
     const { user, logout } = useAuth();
@@ -14,7 +15,7 @@ export default function Header({ onLogoClick }) {
                         onLogoClick();
                     } else {
                         // 폴백: URL 파라미터 초기화하여 깨끗한 상태로 메인 페이지 복귀
-                        window.history.pushState({}, '', window.location.pathname);
+                        clearProjectRoute({ replace: true });
                         window.location.reload();
                     }
                 }}

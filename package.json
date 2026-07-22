@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint src vite.config.js",
+    "test:navigation": "node scripts/check-app-route.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
