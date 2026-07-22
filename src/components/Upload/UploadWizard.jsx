@@ -775,93 +775,103 @@ function EoLocationPreview({ points, excludedCount, onToggleExcluded, onBulkSetE
                                         <div>{point.excluded ? '처리 제외됨' : '처리 포함'} · {point.sourceCrs}</div>
                                     </div>
                                 </Tooltip>
-                                <Popup minWidth={520} maxWidth={600}>
-                                    <div className="w-[520px] max-w-full space-y-2.5 text-xs">
+                                <Popup minWidth={740} maxWidth={780}>
+                                    <div className="w-[740px] max-w-full space-y-2.5 text-xs">
                                         <div className="text-center">
                                             <div className="break-all text-sm font-bold text-slate-800">{point.imageName}</div>
                                             <div className="mt-0.5 break-all text-[11px] text-slate-500">{point.sourceName}</div>
                                         </div>
-                                        {!point.previewPath ? (
-                                            <div className="flex h-64 items-center justify-center rounded-xl bg-slate-50 px-3 text-center text-slate-400">
-                                                선택한 원본 이미지와 연결되지 않았습니다.
-                                            </div>
-                                        ) : preview?.status === 'ready' ? (
-                                            <button
-                                                type="button"
-                                                className="group relative h-80 w-full overflow-hidden rounded-xl bg-slate-950 shadow-inner"
-                                                onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    setExpandedPreview({
-                                                        dataUrl: preview.dataUrl,
-                                                        imageName: point.imageName,
-                                                        sourceName: point.sourceName,
-                                                    });
-                                                }}
-                                                title="클릭하여 크게 보기"
-                                            >
-                                                <img
-                                                    src={preview.dataUrl}
-                                                    alt=""
-                                                    aria-hidden="true"
-                                                    className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl"
-                                                />
-                                                <div className="absolute inset-0 bg-slate-950/20" />
-                                                <img
-                                                    src={preview.dataUrl}
-                                                    alt={`${point.imageName} 미리보기`}
-                                                    className="relative z-10 h-full w-full object-contain transition-transform duration-200 group-hover:scale-[1.015]"
-                                                />
-                                                <span className="absolute bottom-2 right-2 z-20 inline-flex items-center gap-1 rounded-md bg-slate-950/75 px-2 py-1 text-[11px] font-semibold text-white opacity-90 backdrop-blur transition-opacity group-hover:opacity-100">
-                                                    <Maximize2 size={13} /> 크게 보기
-                                                </span>
-                                            </button>
-                                        ) : preview?.status === 'error' ? (
-                                            <div className="min-h-48 rounded bg-red-50 text-red-700 whitespace-pre-line flex items-center justify-center text-center px-3 py-2">
-                                                {preview.message}
-                                            </div>
-                                        ) : (
-                                            <div className="h-48 rounded bg-slate-50 flex flex-col items-center justify-center gap-2 text-slate-500">
-                                                <div className="flex items-center">
-                                                    <RefreshCw size={16} className="animate-spin mr-2" /> 미리보기 생성 중
+                                        <div className="grid grid-cols-[minmax(0,1.55fr)_minmax(260px,1fr)] gap-3">
+                                            {!point.previewPath ? (
+                                                <div className="flex h-[350px] items-center justify-center rounded-xl bg-slate-50 px-3 text-center text-slate-400">
+                                                    선택한 원본 이미지와 연결되지 않았습니다.
                                                 </div>
-                                                <span className="text-[11px] text-slate-400">대용량 원본은 최초 생성에 몇 초가 걸릴 수 있습니다.</span>
-                                            </div>
-                                        )}
-                                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                                            <div className="mb-2 flex items-center justify-between gap-3">
-                                                <span className="font-bold text-slate-700">EO 전체 정보</span>
-                                                <span className="font-mono text-[11px] text-slate-500">{point.sourceCrs}</span>
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                <div className="grid grid-cols-[3rem_repeat(3,minmax(0,1fr))] items-center gap-2">
-                                                    <span className="font-bold text-slate-500">위치</span>
-                                                    {Object.entries({ X: point.eo.x, Y: point.eo.y, Z: point.eo.z }).map(([label, value]) => (
-                                                        <div key={label} className="flex min-w-0 items-center gap-1.5">
-                                                            <span className="font-semibold text-slate-400">{label}</span>
-                                                            <span className="truncate font-mono text-slate-800" title={String(value)}>{value}</span>
-                                                        </div>
-                                                    ))}
+                                            ) : preview?.status === 'ready' ? (
+                                                <button
+                                                    type="button"
+                                                    className="group relative h-[350px] w-full overflow-hidden rounded-xl bg-slate-950 shadow-inner"
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        setExpandedPreview({
+                                                            dataUrl: preview.dataUrl,
+                                                            imageName: point.imageName,
+                                                            sourceName: point.sourceName,
+                                                        });
+                                                    }}
+                                                    title="클릭하여 크게 보기"
+                                                >
+                                                    <img
+                                                        src={preview.dataUrl}
+                                                        alt=""
+                                                        aria-hidden="true"
+                                                        className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl"
+                                                    />
+                                                    <div className="absolute inset-0 bg-slate-950/20" />
+                                                    <img
+                                                        src={preview.dataUrl}
+                                                        alt={`${point.imageName} 미리보기`}
+                                                        className="relative z-10 h-full w-full object-contain transition-transform duration-200 group-hover:scale-[1.015]"
+                                                    />
+                                                    <span className="absolute bottom-2 right-2 z-20 inline-flex items-center gap-1 rounded-md bg-slate-950/75 px-2 py-1 text-[11px] font-semibold text-white opacity-90 backdrop-blur transition-opacity group-hover:opacity-100">
+                                                        <Maximize2 size={13} /> 크게 보기
+                                                    </span>
+                                                </button>
+                                            ) : preview?.status === 'error' ? (
+                                                <div className="flex h-[350px] items-center justify-center whitespace-pre-line rounded-xl bg-red-50 px-3 py-2 text-center text-red-700">
+                                                    {preview.message}
                                                 </div>
-                                                <div className="grid grid-cols-[3rem_repeat(3,minmax(0,1fr))] items-center gap-2">
-                                                    <span className="font-bold text-slate-500">자세</span>
-                                                    {Object.entries({ Omega: point.eo.omega, Phi: point.eo.phi, Kappa: point.eo.kappa }).map(([label, value]) => (
-                                                        <div key={label} className="flex min-w-0 items-center gap-1.5">
-                                                            <span className="font-semibold text-slate-400">{label}</span>
-                                                            <span className="truncate font-mono text-slate-800" title={String(value)}>{value}</span>
+                                            ) : (
+                                                <div className="flex h-[350px] flex-col items-center justify-center gap-2 rounded-xl bg-slate-50 text-slate-500">
+                                                    <div className="flex items-center">
+                                                        <RefreshCw size={16} className="mr-2 animate-spin" /> 미리보기 생성 중
+                                                    </div>
+                                                    <span className="text-[11px] text-slate-400">대용량 원본은 최초 생성에 몇 초가 걸릴 수 있습니다.</span>
+                                                </div>
+                                            )}
+                                            <div className="flex h-[350px] min-w-0 flex-col gap-2">
+                                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                                    <div className="mb-3 flex items-center justify-between gap-3">
+                                                        <span className="font-bold text-slate-700">EO 전체 정보</span>
+                                                        <span className="font-mono text-[11px] text-slate-500">{point.sourceCrs}</span>
+                                                    </div>
+                                                    <div className="space-y-3">
+                                                        <div>
+                                                            <div className="mb-1.5 text-[11px] font-bold text-slate-500">위치 (XYZ)</div>
+                                                            <div className="grid grid-cols-3 gap-1.5">
+                                                                {Object.entries({ X: point.eo.x, Y: point.eo.y, Z: point.eo.z }).map(([label, value]) => (
+                                                                    <div key={label} className="min-w-0 rounded-md bg-white px-2 py-1.5 text-center shadow-sm ring-1 ring-slate-200">
+                                                                        <span className="block text-[10px] font-bold text-slate-400">{label}</span>
+                                                                        <span className="block truncate font-mono text-[11px] text-slate-800" title={String(value)}>{value}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
                                                         </div>
-                                                    ))}
+                                                        <div>
+                                                            <div className="mb-1.5 text-[11px] font-bold text-slate-500">자세 (Omega · Phi · Kappa)</div>
+                                                            <div className="grid grid-cols-3 gap-1.5">
+                                                                {Object.entries({ Omega: point.eo.omega, Phi: point.eo.phi, Kappa: point.eo.kappa }).map(([label, value]) => (
+                                                                    <div key={label} className="min-w-0 rounded-md bg-white px-2 py-1.5 text-center shadow-sm ring-1 ring-slate-200">
+                                                                        <span className="block truncate text-[10px] font-bold text-slate-400" title={label}>{label}</span>
+                                                                        <span className="block truncate font-mono text-[11px] text-slate-800" title={String(value)}>{value}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-auto rounded-xl border border-slate-200 bg-white p-3">
+                                                    <div className={`mb-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${point.excluded ? 'border border-slate-200 bg-slate-100 text-slate-700' : 'bg-blue-50 text-blue-700'}`}>
+                                                        {point.excluded ? '처리 제외됨' : '처리 포함'}
+                                                    </div>
+                                                    <button
+                                                        onClick={() => onToggleExcluded(point.imageKey)}
+                                                        className={`w-full rounded-lg px-2 py-2 font-bold ${point.excluded ? 'bg-blue-50 text-blue-700 hover:bg-blue-100' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                                                    >
+                                                        {point.excluded ? '다시 포함' : '처리 제외'}
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>
-                                        <div className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${point.excluded ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-blue-50 text-blue-700'}`}>
-                                            {point.excluded ? '처리 제외됨' : '처리 포함'}
-                                        </div>
-                                        <button
-                                            onClick={() => onToggleExcluded(point.imageKey)}
-                                            className={`mt-1 w-full px-2 py-1 rounded font-bold ${point.excluded ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-700'}`}
-                                        >
-                                            {point.excluded ? '다시 포함' : '처리 제외'}
-                                        </button>
                                     </div>
                                 </Popup>
                             </CircleMarker>
