@@ -68,7 +68,7 @@ def orthomosaic_prefix() -> str:
 
 
 def orthomosaic_project_prefix(project_id: str | UUID) -> str:
-    """Return the collision-free final-output prefix for a project."""
+    """Return the legacy RC project prefix used only for cleanup/migration."""
     return f"{orthomosaic_prefix()}{project_id_str(project_id)}/"
 
 
@@ -107,33 +107,62 @@ def orthomosaic_key(
     when: datetime | None = None,
     region: str | None = None,
     title: str | None = None,
-    unique_suffix: str | None = None,
 ) -> str:
     """Compute the orthomosaic storage key / export filename.
 
-    New outputs always live below a project UUID prefix so two projects with
-    the same region/title cannot overwrite one another. Callers that can
-    regenerate a project should provide a job-specific ``unique_suffix`` so a
-    failed replacement can never destroy the previously completed output.
-    Existing output keys stored in the database remain readable; this function
-    only controls new writes.
+    Final COGs use the deployment contract's flat
+    ``orthomosaic/{region}_{title}.tif`` layout. A UUID/timestamp is used only
+    when no usable title exists; it is part of the filename, never a directory.
+    Job-specific isolation belongs in the processing work directory rather
+    than the operator-facing final-output directory.
     """
-    prefix = orthomosaic_project_prefix(project_id)
-    safe_suffix = sanitize_filename_component(unique_suffix, max_len=64)
     safe_title = sanitize_filename_component(title)
     if safe_title:
         safe_region = sanitize_filename_component(region)
         basename = f"{safe_region}_{safe_title}" if safe_region else safe_title
-        if safe_suffix:
-            basename = f"{basename}_{safe_suffix}"
-        return f"{prefix}{basename}.tif"
+        return f"{orthomosaic_prefix()}{basename}.tif"
 
     stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    if safe_suffix:
-        stamp = f"{stamp}_{safe_suffix}"
     return (
-        f"{prefix}orthomosaic_{normalize_crs_label(target_crs)}_{stamp}.tif"
+        f"{orthomosaic_prefix()}{project_id_str(project_id)}_"
+        f"orthomosaic_{normalize_crs_label(target_crs)}_{stamp}.tif"
     )
+
+
+def numbered_orthomosaic_key(base_key: str, index: int) -> str:
+    """Return a PC-style numbered variant of a flat orthomosaic key.
+
+    ``index=0`` keeps the original name. Later variants use
+    ``name (1).tif``, ``name (2).tif``, and so on.
+    """
+    key = str(base_key or "")
+    path = Path(key)
+    if (
+        index < 0
+        or not key.startswith(orthomosaic_prefix())
+        or len(path.parts) != 2
+        or path.suffix.lower() != ".tif"
+    ):
+        raise ValueError(f"Invalid flat orthomosaic key: {base_key}")
+    if index == 0:
+        return key
+    return str(path.with_name(f"{path.stem} ({index}){path.suffix}"))
+
+
+def is_numbered_orthomosaic_variant(candidate_key: str | None, base_key: str) -> bool:
+    """Return whether ``candidate_key`` is the base key or its numbered form."""
+    if not candidate_key:
+        return False
+    candidate = Path(str(candidate_key))
+    base = Path(str(base_key))
+    if candidate.parent != base.parent or candidate.suffix.lower() != base.suffix.lower():
+        return False
+    if candidate.name == base.name:
+        return True
+    return re.fullmatch(
+        rf"{re.escape(base.stem)} \([1-9]\d*\){re.escape(base.suffix)}",
+        candidate.name,
+    ) is not None
 
 
 def project_root_dir(project_id: str | UUID) -> Path:

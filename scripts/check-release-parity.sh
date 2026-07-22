@@ -257,6 +257,7 @@ source_paths = [
     "scripts/systemd-start.sh",
     "scripts/check-gpu-stack.sh",
     "scripts/sync-ortho-result-paths.sh",
+    "scripts/migrate-orthomosaic-layout.sh",
 ]
 
 for path in source_paths:

@@ -19,7 +19,11 @@ class ProjectCleanupTests(unittest.TestCase):
             )
             storage.upload_bytes(
                 b"ortho",
-                f"orthomosaic/{project_id}/result.tif",
+                "orthomosaic/서울_테스트.tif",
+            )
+            storage.upload_bytes(
+                b"legacy-rc-ortho",
+                f"orthomosaic/{project_id}/old-result.tif",
             )
 
             with patch(
@@ -29,11 +33,12 @@ class ProjectCleanupTests(unittest.TestCase):
                 cleanup_project_storage(
                     project_id,
                     [source_key, "/media/external/image.jpg"],
-                    f"orthomosaic/{project_id}/result.tif",
+                    "orthomosaic/서울_테스트.tif",
                 )
 
             self.assertEqual(storage.list_objects(f"projects/{project_id}/"), [])
             self.assertEqual(storage.list_objects(f"orthomosaic/{project_id}/"), [])
+            self.assertFalse(storage.object_exists("orthomosaic/서울_테스트.tif"))
 
 
 if __name__ == "__main__":

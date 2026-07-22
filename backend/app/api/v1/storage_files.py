@@ -26,6 +26,30 @@ def _project_id_from_storage_key(path: str) -> UUID | None:
         return None
 
 
+async def _project_ids_for_storage_key(
+    path: str,
+    db: AsyncSession,
+) -> list[UUID]:
+    """Resolve projects allowed to own a private storage key.
+
+    Source and preview objects still carry the project UUID in the key. Final
+    orthomosaics intentionally use a flat operator-facing filename, so their
+    owner must be resolved from ``projects.ortho_path`` instead.
+    """
+    encoded_project_id = _project_id_from_storage_key(path)
+    if encoded_project_id is not None:
+        return [encoded_project_id]
+
+    parts = Path(path).parts
+    if len(parts) == 2 and parts[0] == "orthomosaic":
+        result = await db.execute(
+            select(Project.id).where(Project.ortho_path == path)
+        )
+        return list(result.scalars().all())
+
+    return []
+
+
 @router.get("/assets/{token}")
 async def serve_project_asset(
     token: str,
@@ -104,17 +128,23 @@ async def serve_storage_file(
             detail="Access denied",
         )
 
-    # Project files require permission on the project encoded in the key.
+    # Project files require permission on their owning project. Flat final
+    # orthomosaics do not encode a project UUID, so their owner is read from DB.
     path_parts = Path(path).parts
     if path_parts and path_parts[0] in {"projects", "orthomosaic"}:
-        project_id = _project_id_from_storage_key(path)
-        if project_id is None:
+        project_ids = await _project_ids_for_storage_key(path, db)
+        if not project_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",
             )
         permission_checker = PermissionChecker("view")
-        if not await permission_checker.check(str(project_id), current_user, db):
+        has_access = False
+        for project_id in project_ids:
+            if await permission_checker.check(str(project_id), current_user, db):
+                has_access = True
+                break
+        if not has_access:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",

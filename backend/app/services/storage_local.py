@@ -7,8 +7,11 @@ import os
 import shutil
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from app.services.storage_base import StorageBackend
+
+
 class LocalStorageBackend(StorageBackend):
     """Storage backend using local filesystem."""
 
@@ -128,12 +131,28 @@ class LocalStorageBackend(StorageBackend):
         return str(path)
 
     def move_file(self, local_path: str, object_name: str) -> str:
-        """Move a file into storage (no copy, just rename/move).
+        """Move a file into storage and atomically replace the final name.
 
-        More efficient than upload_file for large files on the same filesystem.
+        The source may be on a different filesystem, so it is first moved to a
+        temporary sibling of the destination and then published with
+        ``os.replace``. Readers therefore see either the previous complete file
+        or the new complete file, never a partially copied final output.
         """
         dest = self._resolve(object_name)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if Path(local_path).resolve() != dest.resolve():
-            shutil.move(local_path, str(dest))
+        source = Path(local_path)
+        if source.resolve() == dest.resolve():
+            return object_name
+
+        temp_dest = dest.with_name(f".{dest.name}.{uuid4().hex}.tmp")
+        try:
+            shutil.move(str(source), str(temp_dest))
+            os.replace(temp_dest, dest)
+        except Exception:
+            if temp_dest.exists():
+                if source.exists():
+                    temp_dest.unlink(missing_ok=True)
+                else:
+                    shutil.move(str(temp_dest), str(source))
+            raise
         return object_name

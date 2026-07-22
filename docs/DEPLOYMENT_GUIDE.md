@@ -52,7 +52,7 @@ cd aerial-survey-manager
 | `LOCAL_STORAGE_PATH` | 로컬 스토리지 기준 경로 | `./data` |
 | `PROCESSING_DATA_PATH` | 프로젝트별 소스/처리 데이터 경로 | `./data/projects` |
 | `EXPORT_ROOT_PATH` | 최종 COG 정사영상 경로 | `./data/orthomosaic` |
-| `AUTO_EXPORT_ENABLED` | 별도 자동 내보내기 활성화 | `false` |
+| `AUTO_EXPORT_ENABLED` | 레거시 호환 변수 — 최종 COG는 워커가 항상 저장하므로 `false` 유지 | `false` |
 | `AUTO_EXPORT_TARGET_CRS` | 최종 COG 목표 좌표계 | `EPSG:5186` |
 | `ENGINE_LICENSE_KEY` | 처리 엔진 라이선스 키 | |
 
@@ -64,7 +64,7 @@ cd aerial-survey-manager
 | `VITE_TILE_URL` | `/tiles/{z}/{x}/{y}` |
 | `TILES_PATH` | 호스트 타일 디렉토리 경로 |
 
-> 신규 배포 패키지는 설치 폴더 기준 상대경로인 `./data`를 사용합니다. 외장 디스크를 사용할 때만 절대경로로 바꾸세요. 컨테이너에는 `LOCAL_STORAGE_PATH/projects`만 `/data/storage/projects`로, `EXPORT_ROOT_PATH`가 `/data/storage/orthomosaic`와 `/data/exports`로 마운트되므로 `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 만들 필요가 없습니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
+> 신규 배포 패키지는 설치 폴더 기준 상대경로인 `./data`를 사용합니다. 외장 디스크를 사용할 때만 절대경로로 바꾸세요. 컨테이너에는 `LOCAL_STORAGE_PATH/projects`만 `/data/storage/projects`로, `EXPORT_ROOT_PATH`가 `/data/storage/orthomosaic`와 `/data/exports`로 마운트되므로 `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 만들 필요가 없습니다. 최종 COG는 `EXPORT_ROOT_PATH/{region}_{title}.tif` 형식으로 바로 저장되고, 같은 이름이 있으면 `{region}_{title} (1).tif`, `(2).tif` 순서로 저장됩니다. 기존 설치는 `LOCAL_STORAGE_PATH`, `PROCESSING_DATA_PATH`, `EXPORT_ROOT_PATH`, `TILES_PATH`, `MINIO_DATA_PATH` 값을 그대로 유지해도 됩니다.
 > 전체 변수 목록: `.env.example` 참조
 
 ### 3. GPU 연결 확인
@@ -155,6 +155,49 @@ docker compose up -d
 - [ ] 기존 프로젝트 목록이 보이는가
 - [ ] 기존 정사영상이 지도에 표시되는가
 - [ ] 새 프로젝트 생성이 가능한가
+
+### v2.0.0-rc.1 UUID 폴더 정사영상 변환
+
+`v2.0.0-rc.1`에서 생성된
+`EXPORT_ROOT_PATH/{project_uuid}/...tif` 구조를 기존 평면 구조인
+`EXPORT_ROOT_PATH/{region}_{title}.tif`로 돌릴 때 사용합니다. 파일만
+수동으로 옮기면 DB 경로가 이전 위치를 계속 가리키므로 반드시 아래
+도구를 사용합니다.
+
+1. DB와 `EXPORT_ROOT_PATH` 전체를 백업하고 모든 정사영상 처리가 종료된
+   상태인지 확인합니다.
+2. 이 수정이 포함된 새 버전으로 업그레이드하고 컨테이너를 시작합니다.
+3. 먼저 dry-run 결과만 확인합니다.
+
+```bash
+docker compose ps
+./scripts/migrate-orthomosaic-layout.sh
+```
+
+`Migration plan`의 `OLD`/`NEW`가 의도한 프로젝트와 파일명인지
+확인합니다. 같은 이름이 이미 있으면 `NEW`에 `(1)`, `(2)` 번호가 자동으로
+표시됩니다. `rc-project-directory-has-extra-files`, `source-missing`,
+`numbered-target-exhausted` 항목이 있으면 적용하지 말고 먼저 원인을
+확인합니다.
+
+4. dry-run이 정상이면 파일 이동과 DB 경로 갱신을 함께 적용합니다.
+
+```bash
+./scripts/migrate-orthomosaic-layout.sh --apply
+```
+
+적용 전 매핑은
+`EXPORT_ROOT_PATH/.migration-backups/orthomosaic_rename_backup_*.json`에
+남습니다. 완료 후 프로젝트 화면과 DB 경로를 확인합니다.
+
+```bash
+docker compose exec db psql -U postgres -d aerial_survey -c \
+  "SELECT id, title, ortho_path FROM projects WHERE ortho_path IS NOT NULL ORDER BY title;"
+find "<EXPORT_ROOT_PATH 실제 경로>" -mindepth 1 -maxdepth 1 -type f -name '*.tif'
+```
+
+> 이 도구는 로컬 스토리지 배포 전용입니다. MinIO 배포에서는 적용하지
+> 않고 별도 이전 계획을 세워야 합니다.
 
 ---
 

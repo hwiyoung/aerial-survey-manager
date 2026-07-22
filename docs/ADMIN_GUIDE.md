@@ -316,6 +316,15 @@ docker compose exec worker-engine nvidia-smi
 
 ## 내보내기 실패 대응
 
+최종 정사영상은 `EXPORT_ROOT_PATH/{region}_{title}.tif` 형식으로
+폴더 바로 아래에 저장됩니다. 같은 이름이 이미 있으면
+`{region}_{title} (1).tif`, `(2).tif` 순서로 저장합니다.
+`v2.0.0-rc.1`에서 생성된
+`{project_uuid}` 하위 폴더를 변환해야 하면
+[DEPLOYMENT_GUIDE.md의 UUID 폴더 변환 절차](DEPLOYMENT_GUIDE.md#v200-rc1-uuid-폴더-정사영상-변환)를
+따릅니다. DB 경로도 같이 바꿔야 하므로 UUID 폴더 파일을 수동으로
+`mv`하지 않습니다.
+
 ### 증상: "정사영상을 찾을 수 없습니다"
 
 내보내기 시 API가 DB의 `projects.ortho_path`와 최신 `processing_jobs.result_path`에 저장된 정사영상 키를 기준으로 파일을 찾습니다. 로컬 모드에서는 최종 정사영상이 `EXPORT_ROOT_PATH`에 저장되고 컨테이너 안에서는 `/data/storage/orthomosaic`로 보입니다. `LOCAL_STORAGE_PATH/orthomosaic` 더미 디렉토리는 필요하지 않습니다.
