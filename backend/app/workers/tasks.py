@@ -170,6 +170,7 @@ def prepare_clip_export(
         cleanup_expired_clip_exports,
         make_clip_filename,
         run_union_clip_export,
+        select_available_clip_output_path,
         validate_cog_source,
     )
     from app.services.storage import get_storage
@@ -193,6 +194,7 @@ def prepare_clip_export(
     job_dir = Path(settings.EXPORT_ROOT_PATH) / "clip-jobs" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     output_path = job_dir / output_filename
+    published_path: Path | None = None
     downloaded_sources: list[Path] = []
     source_paths: list[str] = []
     storage = get_storage()
@@ -249,22 +251,46 @@ def prepare_clip_export(
         )
         if is_cancelled():
             raise ClipExportCancelled()
-        _update_clip_export_job(
-            job_id,
-            status="completed",
-            progress=100,
-            stage="완료",
-            output_filename=output_filename,
-            result_path=str(output_path),
-            result_size=output_path.stat().st_size,
-            completed_at=datetime.utcnow(),
-            error_code=None,
-            error_reference=None,
-        )
-        return {"status": "completed", "job_id": job_id}
+        with sync_db_session() as db:
+            current = db.query(ClipExportJob).filter(ClipExportJob.id == job_id).first()
+            if not current or current.status == "cancelled":
+                raise ClipExportCancelled()
+
+            bind = db.get_bind()
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+            if dialect_name == "postgresql":
+                from sqlalchemy import text
+
+                db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:lock_name))"),
+                    {"lock_name": f"clip-export-filename:{output_filename}"},
+                )
+
+            published_path = select_available_clip_output_path(
+                settings.EXPORT_ROOT_PATH,
+                output_filename,
+            )
+            published_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.replace(published_path)
+
+            current.status = "completed"
+            current.progress = 100
+            current.stage = "완료"
+            current.output_filename = published_path.name
+            current.result_path = str(published_path)
+            current.result_size = published_path.stat().st_size
+            current.completed_at = datetime.utcnow()
+            current.error_code = None
+            current.error_reference = None
+            db.commit()
+        return {
+            "status": "completed",
+            "job_id": job_id,
+            "result_path": str(published_path),
+        }
     except ClipExportCancelled:
         try:
-            output_path.unlink()
+            (published_path or output_path).unlink()
         except OSError:
             pass
         _update_clip_export_job(
@@ -291,7 +317,7 @@ def prepare_clip_export(
             error_reference,
         )
         try:
-            output_path.unlink()
+            (published_path or output_path).unlink()
         except OSError:
             pass
         _update_clip_export_job(
@@ -309,6 +335,7 @@ def prepare_clip_export(
                 path.unlink()
             except OSError:
                 pass
+        shutil.rmtree(job_dir, ignore_errors=True)
 
 
 def get_best_region_overlap(wkt_polygon: str, db_session) -> Optional[str]:

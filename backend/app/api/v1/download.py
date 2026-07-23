@@ -29,7 +29,12 @@ from app.services.storage import get_storage
 from app.services.asset_tokens import create_asset_token, verify_asset_token
 from app.services.download_tokens import create_download_token, consume_download_token
 from app.errors import AppError, public_error_payload
-from app.services.clip_exports import FORMAT_SPECS, make_clip_filename, normalize_export_format
+from app.services.clip_exports import (
+    FORMAT_SPECS,
+    make_clip_filename,
+    make_region_aware_clip_base_filename,
+    normalize_export_format,
+)
 from app.utils.checksum import calculate_file_checksum_async as calculate_file_checksum
 from app.utils.gdal import extract_gsd_and_crs as get_source_gsd_and_crs
 
@@ -1277,13 +1282,20 @@ async def clip_export(
             sources.append({
                 "project_id": str(project.id),
                 "title": project.title,
+                "region": project.region,
                 "ortho_path": ortho_path,
             })
     if not sources:
         raise AppError("EXPORT_SOURCE_NOT_FOUND")
 
-    base_filename = request.custom_filename or (
-        f"{sources[0]['title']}_ortho" if len(sources) == 1 else "bulk_export"
+    base_filename = (
+        make_region_aware_clip_base_filename(
+            sources[0]["title"],
+            sources[0]["region"],
+            request.custom_filename,
+        )
+        if len(sources) == 1
+        else request.custom_filename or "bulk_export"
     )
     output_filename = make_clip_filename(base_filename, output_format)
     job = ClipExportJob(

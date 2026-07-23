@@ -12,6 +12,49 @@ def test_clip_filename_records_operation_without_sheet_ids():
     assert clip_exports.make_clip_filename("../../unsafe name", "PNG") == "unsafe_name_clip.png"
 
 
+def test_default_clip_filename_includes_region_before_project_title():
+    base = clip_exports.make_default_clip_base_filename(
+        "2025_5B",
+        "수도권남부 권역",
+    )
+
+    assert clip_exports.make_clip_filename(base, "GeoTiff") == (
+        "수도권남부_권역_2025_5B_ortho_clip.tif"
+    )
+
+
+def test_legacy_requested_clip_filename_gets_region_prefix_once():
+    base = clip_exports.make_region_aware_clip_base_filename(
+        "2025_5B",
+        "수도권남부 권역",
+        "2025_5B_ortho",
+    )
+    already_prefixed = clip_exports.make_region_aware_clip_base_filename(
+        "2025_5B",
+        "수도권남부 권역",
+        "수도권남부_권역_2025_5B_ortho",
+    )
+
+    assert base == "수도권남부_권역_2025_5B_ortho"
+    assert already_prefixed == base
+
+
+def test_clip_output_path_is_flat_and_uses_pc_style_numbering(tmp_path):
+    filename = "서울_2026_clip.tif"
+
+    assert clip_exports.select_available_clip_output_path(tmp_path, filename) == (
+        tmp_path / filename
+    )
+    (tmp_path / filename).touch()
+    assert clip_exports.select_available_clip_output_path(tmp_path, filename) == (
+        tmp_path / "서울_2026_clip (1).tif"
+    )
+    (tmp_path / "서울_2026_clip (1).tif").touch()
+    assert clip_exports.select_available_clip_output_path(tmp_path, filename) == (
+        tmp_path / "서울_2026_clip (2).tif"
+    )
+
+
 def test_selected_sheet_bounds_become_one_multipolygon():
     feature_collection = clip_exports.build_cutline_geojson([
         [37.0, 127.0, 37.1, 127.1],

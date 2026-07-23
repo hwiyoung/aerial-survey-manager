@@ -42,6 +42,16 @@ function outputExtension(format) {
     return format.toLowerCase();
 }
 
+function defaultSingleProjectFilename(project) {
+    return [project?.region, project?.title, 'ortho']
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join('_')
+        .replace(/[^0-9A-Za-z가-힣._-]+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^[._-]+|[._-]+$/g, '');
+}
+
 function previewClipFilename(filename, format) {
     const base = String(filename || 'export')
         .replace(/\.(?:tiff?|jpe?g|png|ecw|zip)$/i, '')
@@ -136,7 +146,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             setJobError(null);
             downloadedJobRef.current = null;
             setFilename(targets.length === 1
-                ? `${targets[0].title}_ortho`
+                ? defaultSingleProjectFilename(targets[0])
                 : `Bulk_Export_${new Date().toISOString().slice(0, 10)}`);
             api.getSheetScales()
                 .then((result) => {
