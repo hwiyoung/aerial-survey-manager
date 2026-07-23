@@ -371,6 +371,9 @@ function getProjectStatusDisplay(project) {
         case 'error':
         case '오류':
             return { text: '오류', style: 'bg-red-50 text-red-600 border-red-100', icon: null };
+        case 'cancelled':
+        case '취소':
+            return { text: '취소', style: 'bg-slate-100 text-slate-600 border-slate-200', icon: null };
         case 'pending':
         case '대기':
         default:
@@ -618,6 +621,17 @@ export function ProjectItem({
                                 {project.error_reference && (
                                     <p className="mt-1 font-mono text-[10px]">오류 참조번호: {project.error_reference}</p>
                                 )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {(project.status === '취소' || project.status === 'cancelled') && (
+                    <div className="mt-2 ml-8 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                        <div className="flex items-start gap-2">
+                            <span className="text-xs text-slate-500">ℹ</span>
+                            <div className="text-[11px] leading-relaxed text-slate-600">
+                                <p className="font-medium">처리가 취소되었습니다.</p>
+                                <p className="mt-1">필요하면 처리 버튼을 눌러 다시 시작할 수 있습니다.</p>
                             </div>
                         </div>
                     </div>

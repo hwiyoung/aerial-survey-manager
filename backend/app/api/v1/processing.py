@@ -23,7 +23,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.database import get_db
-from app.errors import ERROR_SPECS, new_error_reference_id
+from app.errors import AppError, ERROR_SPECS, new_error_reference_id
 from app.models.user import User
 from app.models.project import Project, ProcessingJob, Image, ExteriorOrientation
 from app.schemas.project import (
@@ -148,6 +148,7 @@ def _mark_job_cancelled(
     *,
     progress: int | None = None,
     message: str = CANCELLED_PROCESSING_MESSAGE,
+    write_status: bool = True,
 ) -> int:
     cancel_progress = max(
         0,
@@ -166,13 +167,14 @@ def _mark_job_cancelled(
         job.crs_correction_error = None
     project.status = "cancelled"
     project.progress = cancel_progress
-    _write_processing_terminal_status_file(
-        job.project_id,
-        "cancelled",
-        cancel_progress,
-        message,
-        job_id=job.id,
-    )
+    if write_status:
+        _write_processing_terminal_status_file(
+            job.project_id,
+            "cancelled",
+            cancel_progress,
+            message,
+            job_id=job.id,
+        )
     return cancel_progress
 
 
@@ -1791,34 +1793,72 @@ async def cancel_processing(
             detail="No running job found",
         )
     
-    # Revoke Celery task
+    # Persist the cancellation intent before terminating the worker. This closes
+    # the race where a termination exception could be recorded as a processing
+    # failure before the worker was able to observe the cancelled DB state.
     celery_task_id = job.celery_task_id or (active_task or {}).get("task_id")
-    if celery_task_id:
-        from app.workers.tasks import celery_app
-        terminate_running_task = job.status == "processing" or bool(active_task)
-        celery_app.control.revoke(celery_task_id, terminate=terminate_running_task)
-        _remove_queued_celery_message(
-            celery_task_id,
-            PROCESSING_QUEUE,
-        )
-    clear_active_processing_task_cache()
-
+    terminate_running_task = job.status == "processing" or bool(active_task)
     progress = _mark_job_cancelled(
         scoped_project,
         job,
         progress=job.progress or scoped_project.progress or 0,
         message=CANCELLED_PROCESSING_MESSAGE,
+        write_status=False,
     )
-    
-    await db.commit()
-    await manager.broadcast(
-        str(project_id),
-        {
-            "status": "cancelled",
-            "progress": progress,
-            "message": CANCELLED_PROCESSING_MESSAGE,
-        },
+
+    try:
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise AppError(
+            "PROCESSING_CANCEL_FAILED",
+            internal_detail=exc,
+            context={"project_id": str(project_id), "job_id": str(job.id)},
+        ) from exc
+
+    _write_processing_terminal_status_file(
+        project_id,
+        "cancelled",
+        progress,
+        CANCELLED_PROCESSING_MESSAGE,
+        job_id=job.id,
     )
+    clear_active_processing_task_cache()
+
+    if celery_task_id:
+        from app.workers.tasks import celery_app
+        try:
+            celery_app.control.revoke(
+                celery_task_id,
+                terminate=terminate_running_task,
+            )
+        except Exception as exc:
+            # The persisted cancelled state is also checked cooperatively by the
+            # worker, so a broker/control-channel failure must not turn a
+            # successful cancellation request into a processing-step error.
+            print(
+                "[processing.cancel] revoke failed after cancellation was persisted "
+                f"task_id={celery_task_id}: {exc}"
+            )
+        _remove_queued_celery_message(
+            celery_task_id,
+            PROCESSING_QUEUE,
+        )
+
+    try:
+        await manager.broadcast(
+            str(project_id),
+            {
+                "status": "cancelled",
+                "progress": progress,
+                "message": CANCELLED_PROCESSING_MESSAGE,
+            },
+        )
+    except Exception as exc:
+        print(
+            "[processing.cancel] broadcast failed after cancellation was persisted "
+            f"project_id={project_id}: {exc}"
+        )
     
     return {
         "message": CANCELLED_PROCESSING_MESSAGE,

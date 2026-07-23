@@ -49,7 +49,7 @@ ERROR_SPECS: dict[str, ErrorSpec] = {
     "PROCESSING_STEP_FAILED": ErrorSpec(500, "처리 단계가 완료되지 않았습니다.", "입력 데이터와 오류 참조번호를 확인한 뒤 다시 처리해주세요.", False),
     "PROCESSING_CHECKPOINT_FAILED": ErrorSpec(500, "처리 복구 정보를 저장하거나 불러오지 못했습니다.", "저장 공간을 확인한 뒤 처음부터 다시 처리해주세요.", False),
     "PROCESSING_INTERRUPTED": ErrorSpec(503, "시스템 재시작 또는 연결 중단으로 처리가 멈췄습니다.", "워커 상태를 확인한 뒤 다시 처리해주세요.", True),
-    "PROCESSING_CANCEL_FAILED": ErrorSpec(503, "처리 취소를 완료하지 못했습니다.", "상태를 새로고침한 뒤 다시 취소해주세요.", True),
+    "PROCESSING_CANCEL_FAILED": ErrorSpec(503, "처리 취소 상태를 저장하지 못했습니다.", "상태를 새로고침한 뒤 다시 취소해주세요.", True),
     "GPU_DEVICE_UNAVAILABLE": ErrorSpec(503, "GPU 처리 장치를 사용할 수 없습니다.", "GPU 워커와 장치 연결 상태를 확인해주세요.", True),
     "GPU_DRIVER_UNAVAILABLE": ErrorSpec(503, "GPU 드라이버를 사용할 수 없습니다.", "호스트 드라이버와 컨테이너 연결을 확인해주세요.", True),
     "GPU_RUNTIME_INTERRUPTED": ErrorSpec(503, "처리 중 GPU 연결이 끊겼습니다.", "GPU 워커를 복구한 뒤 다시 처리해주세요.", True),

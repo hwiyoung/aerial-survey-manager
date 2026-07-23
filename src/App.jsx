@@ -1778,6 +1778,10 @@ function Dashboard() {
                   status: 'cancelled',
                   progress: cancelledProject.progress ?? 0,
                   processing_completed_at: cancelledProject.completed_at || new Date().toISOString(),
+                  error_message: null,
+                  error_code: null,
+                  error_action: null,
+                  error_reference: null,
                 });
               }
               await refreshProjects();
