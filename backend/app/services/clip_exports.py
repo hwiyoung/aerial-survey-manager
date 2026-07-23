@@ -71,18 +71,80 @@ def normalize_export_format(value: str) -> str:
     return normalized
 
 
+def _sanitize_clip_stem(value: str, fallback: str = "export") -> str:
+    """Return the filesystem-safe stem shared by clip naming helpers."""
+
+    name = Path(str(value or fallback).strip()).name
+    name = re.sub(r"\.(?:tiff?|jpe?g|png|ecw|zip)$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", name).strip("._-")
+    return name[:140] or fallback
+
+
 def make_clip_filename(base_filename: str, output_format: str) -> str:
     """Return a safe filename that always records the clip operation."""
 
     normalized_format = normalize_export_format(output_format)
     extension = FORMAT_SPECS[normalized_format]["extension"]
-    name = Path(str(base_filename or "export").strip()).name
-    name = re.sub(r"\.(?:tiff?|jpe?g|png|ecw|zip)$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", name).strip("._-")
-    name = name[:140] or "export"
+    name = _sanitize_clip_stem(base_filename)
     if not name.lower().endswith("_clip"):
         name += "_clip"
     return f"{name}{extension}"
+
+
+def make_default_clip_base_filename(title: str, region: str | None = None) -> str:
+    """Build the default clip name from the same region/title order as a COG."""
+
+    project_title = str(title or "").strip() or "export"
+    project_region = str(region or "").strip()
+    prefix = f"{project_region}_{project_title}" if project_region else project_title
+    return f"{prefix}_ortho"
+
+
+def make_region_aware_clip_base_filename(
+    title: str,
+    region: str | None,
+    requested_filename: str | None,
+) -> str:
+    """Ensure a single-project clip name carries its region exactly once."""
+
+    requested = str(requested_filename or "").strip()
+    base = requested or make_default_clip_base_filename(title)
+    safe_base = _sanitize_clip_stem(base)
+    safe_region = _sanitize_clip_stem(str(region or ""), fallback="")
+    if safe_region and not (
+        safe_base == safe_region or safe_base.startswith(f"{safe_region}_")
+    ):
+        return f"{safe_region}_{safe_base}"
+    return safe_base
+
+
+def numbered_clip_filename(filename: str, index: int) -> str:
+    """Return a PC-style numbered variant of a clip export filename."""
+
+    name = Path(str(filename or "")).name
+    path = Path(name)
+    if index < 0 or not name or not path.suffix:
+        raise ValueError(f"invalid clip export filename: {filename}")
+    if index == 0:
+        return name
+    return f"{path.stem} ({index}){path.suffix}"
+
+
+def select_available_clip_output_path(
+    export_root: str | Path,
+    output_filename: str,
+) -> Path:
+    """Select a flat clip path without overwriting an existing export."""
+
+    root = Path(export_root)
+    for index in range(10_000):
+        candidate = root / numbered_clip_filename(output_filename, index)
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(
+        "클립 내보내기 파일명을 만들 수 없습니다: "
+        f"{output_filename}의 중복 번호가 9,999개를 초과했습니다."
+    )
 
 
 def build_cutline_geojson(sheet_bounds: list[list[float]]) -> dict:

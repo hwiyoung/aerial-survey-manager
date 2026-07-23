@@ -566,6 +566,9 @@ async def create_project(
     db.add(project)
     await db.flush()
     await db.refresh(project)
+    # FastAPI request-scoped yield dependencies finalize after the response is
+    # sent. Commit here so follow-up upload requests can always see the project.
+    await db.commit()
 
     log_audit_event(
         "project_created",
