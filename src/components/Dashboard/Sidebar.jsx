@@ -616,7 +616,12 @@ export function ProjectItem({
                         <div className="flex items-start gap-2">
                             <span className="text-red-500 text-xs">⚠</span>
                             <div className="text-[11px] text-red-700 leading-relaxed whitespace-pre-line">
-                                <p>{project.error_message}</p>
+                                {project.error_code && (
+                                    <span className="mb-1 inline-flex rounded border border-red-200 bg-red-100 px-1.5 py-0.5 font-mono text-[9px] font-medium tracking-tight text-red-700">
+                                        오류 코드: {project.error_code}
+                                    </span>
+                                )}
+                                <p className={project.error_code ? "font-medium" : undefined}>{project.error_message}</p>
                                 {project.error_action && <p className="mt-1">{project.error_action}</p>}
                                 {project.error_reference && (
                                     <p className="mt-1 font-mono text-[10px]">오류 참조번호: {project.error_reference}</p>
