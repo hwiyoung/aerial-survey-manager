@@ -482,10 +482,17 @@ getTileConfig() → {
 |-----------|------|
 | `GET /projects/{id}/ortho` | 정사영상 다운로드 (Range 헤더 지원) |
 | `POST /batch` | 배치 내보내기 (ZIP) |
-| `POST /clip` | 도엽 클립 내보내기 |
+| `POST /clip` | 비동기 union 도엽 클립 작업 생성 |
+| `GET /clip/jobs` | 최근 클립 작업 이력 |
+| `GET /clip/jobs/{id}` | 클립 진행 상태 |
+| `POST /clip/jobs/{id}/cancel` | 대기·실행 클립 취소 |
+| `POST /clip/jobs/{id}/download` | 완료 결과 다운로드 준비 |
+| `DELETE /clip/jobs/{id}/result` | 서버의 완료 결과 파일 삭제 |
 | `POST /merge` | 도엽 머지 내보내기 |
 
-**클립 처리:** `gdalwarp -t_srs {crs} -te {minx} {miny} {maxx} {maxy} -r bilinear -co COMPRESS=LZW`
+**클립 처리:** 선택 도엽을 MultiPolygon cutline으로 합쳐 일반 Celery 큐에서
+`gdalwarp`와 형식별 변환을 실행합니다. 결과는 `EXPORT_ROOT_PATH` 바로 아래에
+권역·프로젝트 기반 이름으로 게시하며, 중복 시 `(1)`, `(2)` 번호를 붙입니다.
 **머지 처리:** 각 COG 클립 후 → gdalwarp로 모자이킹
 
 ---
@@ -785,8 +792,10 @@ deactivate_engine_license.py
 ### 6.4 도엽 클립
 ```
 사용자 → 도엽 선택 → "클립" 버튼
-  → api.clipExport(projectIds, sheetIds, {crs, gsd})
-  → backend: gdalwarp -te {도엽 bounds} → 클립된 GeoTIFF
-  → 단일 도엽: 동기 처리 → 즉시 다운로드
-  → 다중 도엽: Celery 비동기 → ZIP → 다운로드
+  → api.clipExport(projectIds, sheetIds, {format, crs, gsd, custom_filename})
+  → backend: COG 검증 + 선택 도엽 MultiPolygon cutline 생성
+  → Celery: 여러 프로젝트·도엽을 결과 파일 하나로 비동기 처리
+  → EXPORT_ROOT_PATH/{권역}_{프로젝트}_ortho_clip.ext 게시
+  → 진행 상태 조회 → 완료 결과 자동 다운로드
+  → 최근 이력에서 재다운로드 또는 서버 결과 삭제
 ```

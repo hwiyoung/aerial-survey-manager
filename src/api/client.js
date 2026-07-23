@@ -619,6 +619,10 @@ class ApiClient {
         return this.request(`/download/clip/jobs/${jobId}/download`, { method: 'POST' });
     }
 
+    async deleteClipExportResult(jobId) {
+        return this.request(`/download/clip/jobs/${jobId}/result`, { method: 'DELETE' });
+    }
+
     async mergeExport(projectIds, sheetId, options = {}) {
         return this.request('/download/merge', {
             method: 'POST',

@@ -55,6 +55,58 @@ def test_clip_output_path_is_flat_and_uses_pc_style_numbering(tmp_path):
     )
 
 
+def test_long_korean_clip_filename_stays_within_filesystem_byte_limit(tmp_path):
+    base = clip_exports.make_region_aware_clip_base_filename(
+        "가" * 255,
+        "수도권남부 권역",
+        None,
+    )
+    filename = clip_exports.make_clip_filename(base, "GeoTiff")
+
+    assert filename.startswith("수도권남부_권역_")
+    assert filename.endswith("_clip.tif")
+    assert len(filename.encode("utf-8")) <= clip_exports.MAX_CLIP_FILENAME_BYTES
+    (tmp_path / filename).touch()
+
+    numbered = clip_exports.numbered_clip_filename(filename, 9999)
+    assert len(numbered.encode("utf-8")) <= clip_exports.MAX_CLIP_FILENAME_BYTES
+    (tmp_path / numbered).touch()
+
+
+def test_managed_clip_result_delete_is_scoped_and_idempotent(tmp_path):
+    export_root = tmp_path / "orthomosaic"
+    export_root.mkdir()
+    result = export_root / "수도권남부_테스트_ortho_clip.tif"
+    result.touch()
+
+    assert clip_exports.delete_managed_clip_result(
+        result,
+        export_root,
+        expected_filename=result.name,
+    )
+    assert not result.exists()
+    assert not clip_exports.delete_managed_clip_result(
+        result,
+        export_root,
+        expected_filename=result.name,
+    )
+
+
+def test_managed_clip_result_delete_rejects_paths_outside_export_root(tmp_path):
+    export_root = tmp_path / "orthomosaic"
+    export_root.mkdir()
+    outside = tmp_path / "outside_clip.tif"
+    outside.touch()
+
+    with pytest.raises(ValueError, match="outside"):
+        clip_exports.delete_managed_clip_result(
+            outside,
+            export_root,
+            expected_filename=outside.name,
+        )
+    assert outside.exists()
+
+
 def test_selected_sheet_bounds_become_one_multipolygon():
     feature_collection = clip_exports.build_cutline_geojson([
         [37.0, 127.0, 37.1, 127.1],

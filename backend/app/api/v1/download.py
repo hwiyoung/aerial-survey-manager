@@ -31,6 +31,7 @@ from app.services.download_tokens import create_download_token, consume_download
 from app.errors import AppError, public_error_payload
 from app.services.clip_exports import (
     FORMAT_SPECS,
+    delete_managed_clip_result,
     make_clip_filename,
     make_region_aware_clip_base_filename,
     normalize_export_format,
@@ -1445,6 +1446,40 @@ async def prepare_clip_export_download(
         "filename": job.output_filename,
         "file_size": os.path.getsize(job.result_path),
     }
+
+
+@router.delete("/clip/jobs/{job_id}/result")
+async def delete_clip_export_result(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.config import get_settings
+
+    job = await _get_user_clip_job(job_id, current_user, db)
+    if job.status != "completed":
+        raise AppError(
+            "RESOURCE_STATE_CONFLICT",
+            internal_detail="only completed clip results can be deleted",
+        )
+    if job.result_path:
+        try:
+            delete_managed_clip_result(
+                job.result_path,
+                get_settings().EXPORT_ROOT_PATH,
+                expected_filename=job.output_filename,
+            )
+        except (OSError, ValueError) as exc:
+            raise AppError(
+                "RESOURCE_STATE_CONFLICT",
+                internal_detail=f"clip result delete rejected: {exc}",
+            ) from exc
+
+    job.result_path = None
+    job.result_size = None
+    job.stage = "결과 삭제됨"
+    await db.commit()
+    return _serialize_clip_job(job)
 
 
 @router.post("/merge")

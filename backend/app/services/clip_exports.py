@@ -17,6 +17,9 @@ from app.config import get_settings
 
 
 settings = get_settings()
+MAX_CLIP_FILENAME_BYTES = 240
+MAX_CLIP_STEM_CHARS = 140
+MAX_CLIP_STEM_BYTES = 220
 
 FORMAT_SPECS = {
     "GeoTiff": {
@@ -71,13 +74,29 @@ def normalize_export_format(value: str) -> str:
     return normalized
 
 
-def _sanitize_clip_stem(value: str, fallback: str = "export") -> str:
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    """Truncate text without splitting a UTF-8 code point."""
+
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _sanitize_clip_stem(
+    value: str,
+    fallback: str = "export",
+    *,
+    max_chars: int = MAX_CLIP_STEM_CHARS,
+    max_bytes: int = MAX_CLIP_STEM_BYTES,
+) -> str:
     """Return the filesystem-safe stem shared by clip naming helpers."""
 
     name = Path(str(value or fallback).strip()).name
     name = re.sub(r"\.(?:tiff?|jpe?g|png|ecw|zip)$", "", name, flags=re.IGNORECASE)
     name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", name).strip("._-")
-    return name[:140] or fallback
+    name = _truncate_utf8(name[:max_chars], max_bytes).strip("._-")
+    return name or fallback
 
 
 def make_clip_filename(base_filename: str, output_format: str) -> str:
@@ -85,7 +104,15 @@ def make_clip_filename(base_filename: str, output_format: str) -> str:
 
     normalized_format = normalize_export_format(output_format)
     extension = FORMAT_SPECS[normalized_format]["extension"]
-    name = _sanitize_clip_stem(base_filename)
+    suffix = extension
+    safe_base = _sanitize_clip_stem(base_filename)
+    if not safe_base.lower().endswith("_clip"):
+        suffix = f"_clip{extension}"
+    max_stem_bytes = MAX_CLIP_FILENAME_BYTES - len(suffix.encode("utf-8"))
+    name = _sanitize_clip_stem(
+        safe_base,
+        max_bytes=max_stem_bytes,
+    )
     if not name.lower().endswith("_clip"):
         name += "_clip"
     return f"{name}{extension}"
@@ -114,8 +141,8 @@ def make_region_aware_clip_base_filename(
     if safe_region and not (
         safe_base == safe_region or safe_base.startswith(f"{safe_region}_")
     ):
-        return f"{safe_region}_{safe_base}"
-    return safe_base
+        return _sanitize_clip_stem(f"{safe_region}_{safe_base}")
+    return _sanitize_clip_stem(safe_base)
 
 
 def numbered_clip_filename(filename: str, index: int) -> str:
@@ -127,7 +154,12 @@ def numbered_clip_filename(filename: str, index: int) -> str:
         raise ValueError(f"invalid clip export filename: {filename}")
     if index == 0:
         return name
-    return f"{path.stem} ({index}){path.suffix}"
+    suffix = f" ({index}){path.suffix}"
+    stem = _truncate_utf8(
+        path.stem,
+        MAX_CLIP_FILENAME_BYTES - len(suffix.encode("utf-8")),
+    ).rstrip("._-")
+    return f"{stem}{suffix}"
 
 
 def select_available_clip_output_path(
@@ -145,6 +177,41 @@ def select_available_clip_output_path(
         "클립 내보내기 파일명을 만들 수 없습니다: "
         f"{output_filename}의 중복 번호가 9,999개를 초과했습니다."
     )
+
+
+def delete_managed_clip_result(
+    result_path: str | Path,
+    export_root: str | Path,
+    *,
+    expected_filename: str | None = None,
+) -> bool:
+    """Delete one persisted clip result without escaping the export root."""
+
+    root = Path(export_root).resolve()
+    target = Path(result_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("clip result is outside the managed export root") from exc
+
+    if target == root:
+        raise ValueError("clip result path points to the export root")
+    if expected_filename and target.name != Path(expected_filename).name:
+        raise ValueError("clip result filename does not match the persisted job")
+    if target.exists() and not target.is_file():
+        raise ValueError("clip result path is not a file")
+
+    removed = target.is_file()
+    if removed:
+        target.unlink()
+
+    clip_jobs_root = root / "clip-jobs"
+    if target.parent.parent == clip_jobs_root:
+        try:
+            target.parent.rmdir()
+        except OSError:
+            pass
+    return removed
 
 
 def build_cutline_geojson(sheet_bounds: list[list[float]]) -> dict:

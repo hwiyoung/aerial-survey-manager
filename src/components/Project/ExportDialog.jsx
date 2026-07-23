@@ -102,6 +102,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
     const [progress, setProgress] = useState(0);
     const [phase, setPhase] = useState('export');
     const [isDeleting, setIsDeleting] = useState(false);
+    const [deletingClipJobId, setDeletingClipJobId] = useState(null);
     const [jobError, setJobError] = useState(null);
     const progressIntervalRef = useRef(null);
     const wasOpenRef = useRef(false);
@@ -138,6 +139,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
             setProgress(0);
             setPhase('export');
             setIsDeleting(false);
+            setDeletingClipJobId(null);
             setGsd(resultGsd);
             setScale(5000);
             setSelectedSheets([]);
@@ -310,6 +312,20 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
         }
     };
 
+    const handleClipResultDelete = async (job) => {
+        if (!window.confirm(`서버에 보관된 클립 결과를 삭제하시겠습니까?\n${job.filename}`)) return;
+        setDeletingClipJobId(job.job_id);
+        setJobError(null);
+        try {
+            await api.deleteClipExportResult(job.job_id);
+            await refreshClipHistory();
+        } catch (error) {
+            setJobError({ message: error.summary || error.message, action: error.action, reference_id: error.referenceId });
+        } finally {
+            setDeletingClipJobId(null);
+        }
+    };
+
     const handleDeleteCog = async () => {
         setIsDeleting(true);
         try {
@@ -438,7 +454,7 @@ export default function ExportDialog({ isOpen, onClose, targetProjectIds, allPro
                             <div className="flex items-center justify-between mb-2"><span className="text-xs font-bold text-slate-700 flex items-center gap-1"><History size={13} /> 최근 클립 이력</span><button onClick={refreshClipHistory} className="text-[10px] text-blue-600">새로고침</button></div>
                             <div className="space-y-2">
                                 {clipHistory.length === 0 && <p className="text-[11px] text-slate-400">클립 이력이 없습니다.</p>}
-                                {clipHistory.map((job) => <div key={job.job_id} className="border border-slate-200 rounded p-2 text-[10px]"><div className="flex items-start justify-between gap-2"><span className="font-bold text-slate-700 break-all">{job.filename}</span><span className={`shrink-0 px-1.5 py-0.5 rounded ${job.status === 'completed' ? 'bg-green-50 text-green-700' : job.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{STATUS_LABELS[job.status] || job.status}</span></div><div className="mt-1 text-slate-400">{formatCreatedAt(job.created_at)} · 도엽 {job.sheet_ids?.length || 0}개</div><div className="mt-1 max-h-10 overflow-y-auto font-mono text-slate-500 break-all">{(job.sheet_ids || []).join(', ')}</div>{job.download_available && <button onClick={() => handleHistoryDownload(job.job_id)} className="mt-1 text-blue-600 font-bold">다시 다운로드</button>}</div>)}
+                                {clipHistory.map((job) => <div key={job.job_id} className="border border-slate-200 rounded p-2 text-[10px]"><div className="flex items-start justify-between gap-2"><span className="font-bold text-slate-700 break-all">{job.filename}</span><span className={`shrink-0 px-1.5 py-0.5 rounded ${job.status === 'completed' ? 'bg-green-50 text-green-700' : job.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{STATUS_LABELS[job.status] || job.status}</span></div><div className="mt-1 text-slate-400">{formatCreatedAt(job.created_at)} · 도엽 {job.sheet_ids?.length || 0}개</div><div className="mt-1 max-h-10 overflow-y-auto font-mono text-slate-500 break-all">{(job.sheet_ids || []).join(', ')}</div>{job.download_available ? <div className="mt-1 flex items-center gap-3"><button onClick={() => handleHistoryDownload(job.job_id)} className="text-blue-600 font-bold">다시 다운로드</button><button onClick={() => handleClipResultDelete(job)} disabled={deletingClipJobId === job.job_id} className="text-red-500 font-bold disabled:opacity-40">{deletingClipJobId === job.job_id ? '삭제 중' : '서버 결과 삭제'}</button></div> : job.status === 'completed' && <div className="mt-1 text-slate-400">서버 결과 없음</div>}</div>)}
                             </div>
                         </div>
                     </aside>

@@ -42,6 +42,25 @@ docker system prune -f
 
 ---
 
+## 클립 내보내기 결과 관리
+
+완료된 도엽 클립은 `EXPORT_ROOT_PATH` 바로 아래에 저장되고, 사용자가 최근 클립
+이력에서 **서버 결과 삭제**를 선택하거나 운영자가 정리할 때까지 보관됩니다.
+삭제 버튼은 실제 결과 파일만 제거하며 도엽번호, 파일명과 완료 상태 이력은
+유지합니다.
+
+```bash
+# 서버에 보관 중인 클립 결과 확인
+find "${EXPORT_ROOT_PATH:-./data/orthomosaic}" -maxdepth 1 \
+  -type f -name '*_clip.*' -printf '%TY-%Tm-%Td %TH:%TM %s %f\n' | sort
+```
+
+`clip-jobs/`는 처리 중 임시 공간입니다. 비정상 종료로 남은 오래된 작업 폴더만
+`CLIP_EXPORT_RETENTION_DAYS` 기본 7일 정책으로 정리되며, 루트에 게시된 완료
+결과에는 이 자동 정리 정책을 적용하지 않습니다.
+
+---
+
 ## 처리 실패 대응
 
 ### 로그로 원인 확인
