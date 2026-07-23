@@ -29,6 +29,26 @@ const createDefaultCameraModel = () => ({
     is_custom: true,
 });
 
+const deriveSensorSizeMm = (pixels, pixelSizeMicrometers) => {
+    const pixelCount = Number(pixels);
+    const pixelSize = Number(pixelSizeMicrometers);
+    if (!Number.isFinite(pixelCount) || pixelCount <= 0 || !Number.isFinite(pixelSize) || pixelSize <= 0) {
+        return null;
+    }
+    return Math.round((pixelCount * pixelSize / 1000) * 100) / 100;
+};
+
+const formatSensorSizeMm = (pixels, pixelSizeMicrometers) => {
+    const value = deriveSensorSizeMm(pixels, pixelSizeMicrometers);
+    return value === null ? '' : value.toFixed(2);
+};
+
+const EO_PREVIEW_VIEW_MODES = [
+    { id: 'fit', label: '화면 맞춤' },
+    { id: 'width', label: '너비 맞춤' },
+    { id: 'actual', label: '원본 1:1' },
+];
+
 const CRS_LABEL_BY_CODE = {
     'EPSG:4326': 'WGS84 (EPSG:4326)',
     'EPSG:5179': 'UTM-K (EPSG:5179)',
@@ -414,8 +434,10 @@ function EoBoxSelection({ enabled, points, onSelectionChange, onContextMenu }) {
 }
 
 function EoPreviewLightbox({ preview, onClose }) {
+    const [viewMode, setViewMode] = useState('fit');
     const [zoom, setZoom] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
+    const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
     const dragRef = useRef(null);
 
     useEffect(() => {
@@ -433,12 +455,33 @@ function EoPreviewLightbox({ preview, onClose }) {
     };
 
     const resetView = () => {
+        setViewMode('fit');
         setZoom(1);
         setOffset({ x: 0, y: 0 });
     };
 
+    const changeViewMode = (nextMode) => {
+        setViewMode(nextMode);
+        setZoom(1);
+        setOffset({ x: 0, y: 0 });
+    };
+
+    const canPan = zoom > 1 || viewMode !== 'fit';
+    const viewModeLabel = EO_PREVIEW_VIEW_MODES.find((mode) => mode.id === viewMode)?.label || '화면 맞춤';
+    const foregroundImageStyle = viewMode === 'fit'
+        ? { width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }
+        : viewMode === 'width'
+            ? { width: '100%', height: 'auto', maxWidth: 'none', maxHeight: 'none', objectFit: 'contain' }
+            : {
+                width: imageSize.width > 0 ? `${imageSize.width}px` : 'auto',
+                height: imageSize.height > 0 ? `${imageSize.height}px` : 'auto',
+                maxWidth: 'none',
+                maxHeight: 'none',
+                objectFit: 'contain',
+            };
+
     const handlePointerDown = (event) => {
-        if (zoom <= 1) return;
+        if (!canPan) return;
         event.currentTarget.setPointerCapture(event.pointerId);
         dragRef.current = {
             x: event.clientX,
@@ -473,12 +516,25 @@ function EoPreviewLightbox({ preview, onClose }) {
             }}
         >
             <div className="flex h-[min(90vh,900px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl">
-                <div className="flex items-center justify-between gap-4 border-b border-white/10 bg-slate-900/95 px-4 py-3 text-white">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-900/95 px-4 py-3 text-white">
                     <div className="min-w-0">
                         <div className="truncate text-sm font-bold" title={preview.imageName}>{preview.imageName}</div>
                         <div className="mt-0.5 truncate text-[11px] text-slate-400" title={preview.sourceName}>{preview.sourceName}</div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                        <div className="mr-2 flex items-center rounded-lg bg-white/5 p-1 ring-1 ring-white/10">
+                            {EO_PREVIEW_VIEW_MODES.map((mode) => (
+                                <button
+                                    key={mode.id}
+                                    type="button"
+                                    onClick={() => changeViewMode(mode.id)}
+                                    className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${viewMode === mode.id ? 'bg-blue-500 text-white shadow-sm' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+                                    aria-pressed={viewMode === mode.id}
+                                >
+                                    {mode.label}
+                                </button>
+                            ))}
+                        </div>
                         <button
                             type="button"
                             onClick={() => changeZoom(zoom - 0.25)}
@@ -489,7 +545,9 @@ function EoPreviewLightbox({ preview, onClose }) {
                         >
                             <ZoomOut size={18} />
                         </button>
-                        <span className="w-14 text-center text-xs font-semibold text-slate-200">{Math.round(zoom * 100)}%</span>
+                        <span className="min-w-16 text-center text-xs font-semibold text-slate-200">
+                            {zoom === 1 ? viewModeLabel : `${Math.round(zoom * 100)}%`}
+                        </span>
                         <button
                             type="button"
                             onClick={() => changeZoom(zoom + 0.25)}
@@ -522,7 +580,7 @@ function EoPreviewLightbox({ preview, onClose }) {
                     </div>
                 </div>
                 <div
-                    className={`relative flex-1 overflow-hidden bg-slate-950 ${zoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'}`}
+                    className={`relative flex flex-1 items-center justify-center overflow-hidden bg-slate-950 ${canPan ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'}`}
                     style={{ touchAction: 'none' }}
                     onWheel={(event) => {
                         event.preventDefault();
@@ -546,11 +604,18 @@ function EoPreviewLightbox({ preview, onClose }) {
                         src={preview.dataUrl}
                         alt={`${preview.imageName} 확대 미리보기`}
                         draggable={false}
-                        className="pointer-events-none relative z-10 h-full w-full select-none object-contain transition-transform duration-100"
-                        style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
+                        onLoad={(event) => setImageSize({
+                            width: event.currentTarget.naturalWidth,
+                            height: event.currentTarget.naturalHeight,
+                        })}
+                        className="pointer-events-none relative z-10 shrink-0 select-none transition-transform duration-100"
+                        style={{
+                            ...foregroundImageStyle,
+                            transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
+                        }}
                     />
                     <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-200 backdrop-blur">
-                        휠·버튼으로 확대 · 확대 후 드래그로 이동 · 더블클릭으로 전환
+                        {viewModeLabel} · 휠·버튼으로 확대 · 드래그로 이동 · 더블클릭으로 확대 전환
                     </div>
                 </div>
             </div>
@@ -1006,9 +1071,13 @@ export default function UploadWizard({ isOpen, onClose, onComplete }) {
 
     const handleSaveCamera = async () => {
         try {
+            const sensorWidth = deriveSensorSizeMm(newCamera.sensor_width_px, newCamera.pixel_size);
+            const sensorHeight = deriveSensorSizeMm(newCamera.sensor_height_px, newCamera.pixel_size);
             const payload = {
                 ...newCamera,
                 name: newCamera.name || 'Custom Camera',
+                sensor_width: sensorWidth,
+                sensor_height: sensorHeight,
                 is_custom: newCamera.is_custom,
             };
             if (editingCameraId) {
@@ -1653,23 +1722,27 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-500">Sensor W (mm)</label>
-                                                <input type="number" disabled={Boolean(editingCameraId && !selectedCamera?.is_custom)} className="w-full p-2 border rounded text-sm disabled:bg-slate-100 disabled:text-slate-500" value={editingCameraId && !selectedCamera?.is_custom ? ((newCamera.sensor_width_px * newCamera.pixel_size) / 1000).toFixed(2) : newCamera.sensor_width} onChange={e => setNewCamera({ ...newCamera, sensor_width: parseFloat(e.target.value) })} />
+                                                <label className="text-xs font-bold text-slate-500">센서 W (mm, 자동 계산)</label>
+                                                <input type="number" readOnly aria-readonly="true" className="w-full cursor-not-allowed rounded border bg-slate-100 p-2 text-sm text-slate-600" value={formatSensorSizeMm(newCamera.sensor_width_px, newCamera.pixel_size)} />
                                             </div>
                                             <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-500">Sensor H (mm)</label>
-                                                <input type="number" disabled={Boolean(editingCameraId && !selectedCamera?.is_custom)} className="w-full p-2 border rounded text-sm disabled:bg-slate-100 disabled:text-slate-500" value={editingCameraId && !selectedCamera?.is_custom ? ((newCamera.sensor_height_px * newCamera.pixel_size) / 1000).toFixed(2) : newCamera.sensor_height} onChange={e => setNewCamera({ ...newCamera, sensor_height: parseFloat(e.target.value) })} />
+                                                <label className="text-xs font-bold text-slate-500">센서 H (mm, 자동 계산)</label>
+                                                <input type="number" readOnly aria-readonly="true" className="w-full cursor-not-allowed rounded border bg-slate-100 p-2 text-sm text-slate-600" value={formatSensorSizeMm(newCamera.sensor_height_px, newCamera.pixel_size)} />
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-500">이미지 W (px)</label>
+                                                <label className="text-xs font-bold text-slate-500">센서 해상도 W (px)</label>
                                                 <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_width_px} onChange={e => setNewCamera({ ...newCamera, sensor_width_px: parseInt(e.target.value) })} />
                                             </div>
                                             <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-500">이미지 H (px)</label>
+                                                <label className="text-xs font-bold text-slate-500">센서 해상도 H (px)</label>
                                                 <input type="number" className="w-full p-2 border rounded text-sm" value={newCamera.sensor_height_px} onChange={e => setNewCamera({ ...newCamera, sensor_height_px: parseInt(e.target.value) })} />
                                             </div>
+                                        </div>
+                                        <div className="flex gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] leading-relaxed text-blue-700">
+                                            <Info size={14} className="mt-0.5 shrink-0" />
+                                            <span>센서 크기는 센서 해상도 × Pixel Size ÷ 1000으로 자동 계산되며, 저장 및 처리에도 같은 기준이 적용됩니다.</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1">
@@ -1681,11 +1754,6 @@ IMG_004,37.1237,127.5546,150.1,0.2,-0.1,1.3`);
                                                 <input type="number" step="0.001" className="w-full p-2 border rounded text-sm" value={newCamera.ppa_y} onChange={e => setNewCamera({ ...newCamera, ppa_y: parseFloat(e.target.value) })} />
                                             </div>
                                             </div>
-                                            {editingCameraId && !selectedCamera?.is_custom && (
-                                                <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
-                                                    저장하면 io.csv 원본을 백업한 뒤 형식을 검증하고 카메라 목록을 동기화합니다. Sensor W/H는 이미지 크기와 Pixel Size로 다시 계산됩니다.
-                                                </p>
-                                            )}
 		                                        <button onClick={handleSaveCamera} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md mt-2">
                                                 {editingCameraId ? '수정 저장' : '저장 및 선택'}
                                             </button>

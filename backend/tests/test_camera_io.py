@@ -248,3 +248,25 @@ def test_camera_update_uses_structured_io_flow_for_builtin_model():
     apply_entry.assert_called_once_with(camera, prepared["target_entry"])
     db.commit.assert_awaited_once()
     db.refresh.assert_awaited_once_with(camera)
+
+
+def test_custom_camera_update_derives_physical_sensor_size_from_pixels():
+    camera = SimpleNamespace()
+    request = CameraModelCreate(
+        name="사용자 카메라",
+        focal_length=80.0,
+        sensor_width=1.0,
+        sensor_height=1.0,
+        pixel_size=4.6,
+        sensor_width_px=11000,
+        sensor_height_px=13000,
+        ppa_x=0.1,
+        ppa_y=-0.2,
+    )
+
+    camera_models._apply_camera_model_data(camera, request)
+
+    assert camera.sensor_width == 50.6
+    assert camera.sensor_height == 59.8
+    assert camera.sensor_width_px == 11000
+    assert camera.sensor_height_px == 13000

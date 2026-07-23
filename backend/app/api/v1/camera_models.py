@@ -24,6 +24,7 @@ from app.services.camera_models import (
 from app.services.camera_io import (
     apply_camera_entry,
     backup_and_replace_io,
+    calculate_sensor_dimensions,
     cleanup_io_backups,
     prepare_camera_io_model_update,
     prepare_io_update,
@@ -73,15 +74,16 @@ def _apply_camera_model_data(
     camera_model: CameraModel,
     data: CameraModelCreate,
 ) -> None:
-    camera_model.name = normalize_camera_model_name(data.name)
-    camera_model.focal_length = data.focal_length
-    camera_model.sensor_width = data.sensor_width
-    camera_model.sensor_height = data.sensor_height
-    camera_model.pixel_size = data.pixel_size
-    camera_model.sensor_width_px = data.sensor_width_px
-    camera_model.sensor_height_px = data.sensor_height_px
-    camera_model.ppa_x = data.ppa_x
-    camera_model.ppa_y = data.ppa_y
+    values = calculate_sensor_dimensions(data.model_dump())
+    camera_model.name = normalize_camera_model_name(values["name"])
+    camera_model.focal_length = values.get("focal_length")
+    camera_model.sensor_width = values.get("sensor_width")
+    camera_model.sensor_height = values.get("sensor_height")
+    camera_model.pixel_size = values.get("pixel_size")
+    camera_model.sensor_width_px = values.get("sensor_width_px")
+    camera_model.sensor_height_px = values.get("sensor_height_px")
+    camera_model.ppa_x = values.get("ppa_x")
+    camera_model.ppa_y = values.get("ppa_y")
 
 
 async def _commit_camera_model(db: AsyncSession) -> None:
@@ -195,16 +197,17 @@ async def create_camera_model(
         organization_id=organization_id,
     )
 
+    values = calculate_sensor_dimensions(data.model_dump())
     camera_model = CameraModel(
         name=name,
-        focal_length=data.focal_length,
-        sensor_width=data.sensor_width,
-        sensor_height=data.sensor_height,
-        pixel_size=data.pixel_size,
-        sensor_width_px=data.sensor_width_px,
-        sensor_height_px=data.sensor_height_px,
-        ppa_x=data.ppa_x,
-        ppa_y=data.ppa_y,
+        focal_length=values.get("focal_length"),
+        sensor_width=values.get("sensor_width"),
+        sensor_height=values.get("sensor_height"),
+        pixel_size=values.get("pixel_size"),
+        sensor_width_px=values.get("sensor_width_px"),
+        sensor_height_px=values.get("sensor_height_px"),
+        ppa_x=values.get("ppa_x"),
+        ppa_y=values.get("ppa_y"),
         is_custom=is_custom,
         organization_id=organization_id,
     )
