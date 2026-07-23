@@ -1,7 +1,7 @@
 # 실감정사영상 생성 플랫폼 — 기술 매뉴얼
 
-> 기준일: 2026-07-22
-> 버전: v2.1.0-rc.4
+> 기준일: 2026-07-23
+> 버전: v2.1.0-rc.5
 > 대상: 개발자, 유지보수 담당자
 
 ---
@@ -358,7 +358,7 @@ getTileConfig() → {
 | `Project` | title, status, bounds(PostGIS), area, ortho_path, ortho_size, ortho_thumbnail_path | 프로젝트 |
 | `Image` | original_path, upload_status, location(PostGIS), project_id(인덱스) | 항공 이미지 |
 | `ExteriorOrientation` | x, y, z, omega, phi, kappa, crs | EO 데이터 |
-| `CameraModel` | focal_length, sensor_width/height, pixel_size, ppa_x/y | 카메라 IO |
+| `CameraModel` | focal_length, sensor_width/height, pixel_size, sensor_width_px/height_px, ppa_x/y | 카메라 IO. 물리 센서 크기는 픽셀 수와 Pixel Size로 계산 |
 | `ProcessingJob` | engine, status, progress, gsd, output_crs, process_mode, celery_task_id, result_path, result_gsd | 처리 작업 |
 | `QCResult` | issues(JSONB), status | 품질 검사 |
 
